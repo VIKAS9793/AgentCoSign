@@ -1,0 +1,100 @@
+# ==============================================================================
+# AgentCoSign — Policy & Model Configuration (Single Source of Truth)
+# ==============================================================================
+# All policy limits, thresholds, and model IDs live here.
+# Core code reads from this config — NEVER hardcode limits in logic.
+#
+# Safety invariants are deliberately NOT knobs and cannot be configured away:
+#   R4  cumulative refunds never exceed the captured amount
+#   R6  refund on an order with an open dispute escalates
+#   R7  accept_dispute_claim always escalates
+#   R11 screening verdict "injection" denies
+#   R12 any gateway/policy error denies (fail closed)
+#   R13 currency/account mismatch denies
+#   R14 stale or mismatched evidence denies
+# Money values are quoted strings so they parse as Decimal, never float.
+# Unknown keys are rejected at startup (typos must not silently use defaults).
+# ==============================================================================
+
+version: "1.1.0"
+
+# ------------------------------------------------------------------------------
+# Policy Rules
+# ------------------------------------------------------------------------------
+policy:
+  currency: "USD"
+
+  # R1: refund <= this is auto-approved (when all other rules are clean)
+  refund_auto_limit: "25.00"
+
+  # R2/R3: refund > auto limit and <= max is escalated; > max is denied
+  refund_max_limit: "250.00"
+
+  # R5: more than this many refunds for one customer in a rolling 24h escalates
+  velocity_max_refunds_24h: 3
+
+  # R8/R9: contractor payouts (conditioned on spike S4)
+  payout_new_payee_action: "escalate" # escalate | deny  (never allow)
+  payout_duplicate_window_days: 30
+
+  # R10: rolling-24h cap on executed + reserved outflow across all tools
+  daily_outflow_cap: "1000.00"
+
+# ------------------------------------------------------------------------------
+# Human approval (co-sign)
+# ------------------------------------------------------------------------------
+approval:
+  # Pending requests expire (and release their reserved budget) after this long.
+  ttl_seconds: 900
+  # Preferred assurance: passkey (WebAuthn) signature over the action hash.
+  # "session" is a weaker, clearly-flagged fallback for demo devices without a
+  # platform authenticator; the assurance level is written to the audit log.
+  allowed_assurance: ["passkey", "session"]
+
+# ------------------------------------------------------------------------------
+# Screening (R11)
+# ------------------------------------------------------------------------------
+screening:
+  # Behaviour when the screening model is unreachable/rate-limited/garbled.
+  # Never "allow". Escalate keeps the demo alive without weakening safety.
+  on_unavailable: "escalate" # escalate | deny
+  max_document_chars: 8000
+
+# ------------------------------------------------------------------------------
+# Model Layer Configurations (Provider endpoints, models, fallbacks)
+# ------------------------------------------------------------------------------
+models:
+  agent:
+    provider: "groq"
+    primary: "openai/gpt-oss-120b"
+    fallback: "qwen/qwen3.6-27b"
+    temperature: 0.1
+    # gpt-oss are reasoning models: reasoning tokens count against this budget.
+    # Verify in spike S7 that tool calls are not truncated.
+    max_tokens: 2048
+    timeout_seconds: 20
+
+  screening:
+    provider: "groq"
+    primary: "openai/gpt-oss-safeguard-20b"
+    fallback: "openai/gpt-oss-20b"
+    temperature: 0.0
+    max_tokens: 512
+    timeout_seconds: 10
+
+  extraction:
+    provider: "nvidia_nim"
+    base_url: "https://integrate.api.nvidia.com/v1"
+    primary: "writer/palmyra-fin-70b-32k"
+    fallback: "openai/gpt-oss-120b"
+    temperature: 0.0
+    max_tokens: 512
+    timeout_seconds: 15
+
+# ------------------------------------------------------------------------------
+# Audit Log & Verification
+# ------------------------------------------------------------------------------
+audit:
+  hash_algorithm: "sha256"
+  storage_type: "sqlite"
+  table_name: "audit_ledger"
