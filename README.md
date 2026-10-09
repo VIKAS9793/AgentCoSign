@@ -65,7 +65,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 
 | Component | Status |
 |---|---|
-| Strict fail-closed config, security headers, domain types, offline test suite, CI, container + Render blueprint | ✅ Built (container/Render files not yet exercised) |
+| Strict fail-closed config, security headers, domain types, offline test suite, CI, container + Render blueprint | ✅ Built (CI and the container image verified green; the Render blueprint is not yet exercised) |
 | Policy engine R1–R15, evidence fetcher, idempotent executor, ledger (hash chain + HMAC), screening, extraction | 🚧 In progress |
 | Mobile PWA approver with WebAuthn passkey co-sign, AG Grid audit viewer | 🚧 Planned |
 | Payouts adapter, PayPal webhooks, native Android approver | ⏳ Optional |

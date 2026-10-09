@@ -193,7 +193,7 @@ agentcosign/
 |---|---|
 | Config loader (strict, fail-closed), health endpoint, security headers, domain types | **Built, tested** |
 | PayPal sandbox spikes S1/S2 (headless order capture, refund, idempotent replay, over-refund rejection, evidence shape) | **Verified live** (`spikes/s1_s2_order_refund.py`) |
-| Git hooks (authorship, lint, format, types, secret scan, tests) and CI workflow | Hooks **built and exercised locally**; CI workflow written, not yet run |
+| Git hooks (authorship, lint, format, types, secret scan, tests) and CI workflow | Hooks **built and exercised locally**; CI **verified green** (lint, types, tests on Python 3.12/3.13, container build with `/health` smoke test, full-history secret scan) |
 | Policy engine R1–R15, evidence fetcher, executor, ledger, screening, extraction | Planned (G2, Oct 27) |
 | PWA approver with passkey co-sign, audit viewer | Planned (G3, Nov 2) |
 | Payouts adapter, webhooks, native Android | Optional (P1/P2) |
