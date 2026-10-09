@@ -42,6 +42,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # CLI over the whole history: the action diffs `<root>^..HEAD`, which fails on
+      # a first push because the root commit has no parent. Pinned and checksummed.
+      - name: gitleaks (full history)
+        run: |
+          V=8.30.1
+          B="https://github.com/gitleaks/gitleaks/releases/download/v${V}"
+          curl -sSfL "${B}/gitleaks_${V}_linux_x64.tar.gz" -o gl.tgz
+          curl -sSfL "${B}/gitleaks_${V}_checksums.txt" -o gl.sum
+          grep " gitleaks_${V}_linux_x64.tar.gz$" gl.sum | awk '{print $1"  gl.tgz"}' | sha256sum -c -
+          tar -xzf gl.tgz gitleaks
+          ./gitleaks git . --redact --no-banner
