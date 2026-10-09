@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# =============================================================================
+# pre-commit: local first-line quality gate (fast feedback before a commit).
+# CI (.github/workflows/ci.yml) is the non-bypassable gate; this hook catches
+# problems earlier: lint, format, types, secrets, and the product-copy style rule.
+# It skips a check cleanly when its tool is unavailable (CI still enforces).
+#
+# Tracked source of truth. Activate with: bash tools/hooks/install.sh
+# =============================================================================
+set -uo pipefail
+
+# --- Resolve tools ------------------------------------------------------------
+PY=""
+for c in ".venv/Scripts/python.exe" ".venv/bin/python"; do
+  if [ -x "$c" ]; then PY="$c"; break; fi
+done
+[ -n "$PY" ] || PY="$(command -v python3 || command -v python || true)"
+
+GITLEAKS="$(command -v gitleaks || true)"
+if [ -z "$GITLEAKS" ]; then
+  for g in "${LOCALAPPDATA:-}"/Microsoft/WinGet/Packages/Gitleaks*/gitleaks.exe; do
+    [ -x "$g" ] && GITLEAKS="$g" && break
+  done
+fi
+
+staged_py="$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true)"
+
+# --- Secrets: never let a key reach history (runs on every commit) ------------
+if [ -n "$GITLEAKS" ]; then
+  echo "pre-commit: gitleaks (staged)..."
+  if ! "$GITLEAKS" git --pre-commit --staged --redact --no-banner >/dev/null 2>&1; then
+    echo "pre-commit: FAILED: gitleaks found a possible secret in the staged changes." >&2
+    echo "            Run: gitleaks git --pre-commit --staged --redact   (rotate the key if it is real)" >&2
+    exit 1
+  fi
+else
+  echo "pre-commit: WARNING: gitleaks not found; skipping secret scan (CI still enforces)." >&2
+fi
+
+# --- Python lint, format, types ----------------------------------------------
+if [ -n "$staged_py" ] && [ -n "$PY" ] && "$PY" -m ruff --version >/dev/null 2>&1; then
+  echo "pre-commit: ruff check..."
+  # shellcheck disable=SC2086
+  if ! "$PY" -m ruff check $staged_py; then
+    echo "pre-commit: FAILED: fix lint (ruff check --fix) then re-stage." >&2
+    exit 1
+  fi
+  echo "pre-commit: ruff format --check..."
+  # shellcheck disable=SC2086
+  if ! "$PY" -m ruff format --check $staged_py; then
+    echo "pre-commit: FAILED: run 'ruff format' then re-stage." >&2
+    exit 1
+  fi
+  if echo "$staged_py" | grep -q '^agentcosign/' && "$PY" -m mypy --version >/dev/null 2>&1; then
+    echo "pre-commit: mypy..."
+    if ! "$PY" -m mypy agentcosign/; then
+      echo "pre-commit: FAILED: resolve type errors before committing." >&2
+      exit 1
+    fi
+  fi
+elif [ -n "$staged_py" ]; then
+  echo "pre-commit: WARNING: ruff not available; skipping Python checks (CI still enforces)." >&2
+fi
+
+# --- Product-copy style gate: no em dashes in user-facing UI strings ----------
+# The owner does not want em dashes in the product. Applies to the approver PWA
+# (agentcosign/web) once it exists; comments and docs are not checked here.
+if [ -d agentcosign/web ]; then
+  echo "pre-commit: em-dash copy check..."
+  em_dash_hits="$(grep -rn $'—' agentcosign/web --include='*.html' --include='*.js' --include='*.css' 2>/dev/null \
+    | grep -vE ':[0-9]+:[[:space:]]*(//|/\*|\*|<!--)' || true)"
+  if [ -n "$em_dash_hits" ]; then
+    echo "pre-commit: FAILED: em dash found in app copy. Use a comma, period, parentheses or colon:" >&2
+    echo "$em_dash_hits" >&2
+    exit 1
+  fi
+fi
+
+exit 0

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# =============================================================================
+# commit-msg — strip any Claude / Anthropic attribution from the commit message.
+# Owner convention: commits are authored as the owner alone — NO Claude
+# co-author trailer and NO "Generated with Claude Code" line. This hook removes
+# them before the commit finalizes. It never blocks the commit; it only cleans.
+# Human co-authors are preserved.
+#
+# Tracked source of truth. Activate with: bash tools/hooks/install.sh
+# =============================================================================
+set -uo pipefail
+
+MSG_FILE="${1:-}"
+[ -n "$MSG_FILE" ] && [ -f "$MSG_FILE" ] || exit 0
+
+before="$(cat "$MSG_FILE")"
+
+sed -i -E \
+  -e '/^[[:space:]]*Co-[Aa]uthored-[Bb]y:.*([Cc]laude|[Aa]nthropic|anthropic\.com)/d' \
+  -e '/[Gg]enerated with.*[Cc]laude[ -]?[Cc]ode/d' \
+  -e '/🤖/d' \
+  "$MSG_FILE"
+
+after="$(cat "$MSG_FILE")"
+if [ "$before" != "$after" ]; then
+  echo "commit-msg: stripped a Claude/Anthropic attribution trailer (owner convention: no Claude co-author)." >&2
+fi
+exit 0

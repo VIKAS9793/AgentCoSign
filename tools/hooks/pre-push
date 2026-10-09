@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# =============================================================================
+# pre-push — run the offline test suite before code leaves the machine.
+# CI enforces the same independently. Skips cleanly if the toolchain is missing.
+# Live checks (pytest -m integration) are deliberately NOT run here.
+#
+# Tracked source of truth. Activate with: bash tools/hooks/install.sh
+# =============================================================================
+set -uo pipefail
+
+PY=""
+for c in ".venv/Scripts/python.exe" ".venv/bin/python"; do
+  if [ -x "$c" ]; then PY="$c"; break; fi
+done
+[ -n "$PY" ] || PY="$(command -v python3 || command -v python || true)"
+
+if [ -z "$PY" ] || ! "$PY" -m pytest --version >/dev/null 2>&1; then
+  echo "pre-push: WARNING: pytest not available; skipping tests (CI still enforces)." >&2
+  exit 0
+fi
+
+echo "pre-push: pytest (offline)..."
+if ! "$PY" -m pytest -q; then
+  echo "pre-push: FAILED: tests must pass before pushing." >&2
+  exit 1
+fi
+exit 0
