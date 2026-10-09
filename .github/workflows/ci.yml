@@ -1,0 +1,47 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy agentcosign/
+      - run: bandit -q -r agentcosign/
+      # Hermetic: no secrets, no network. This is what a judge's clone runs.
+      - run: pytest --cov=agentcosign --cov-report=term-missing
+      - run: pip-audit --strict || true # advisory until deps are final
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t agentcosign:ci .
+      - name: Smoke test the image (hermetic, no credentials)
+        run: |
+          docker run -d --name ac -p 8000:8000 agentcosign:ci
+          for i in $(seq 1 20); do curl -sf http://127.0.0.1:8000/health && break || sleep 1; done
+          curl -sf http://127.0.0.1:8000/health | grep -q '"status":"healthy"'
+          curl -sf http://127.0.0.1:8000/api/v1/config/policy | grep -q '"refund_auto_limit":"25.00"'
+          docker logs ac
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

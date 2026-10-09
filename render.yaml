@@ -1,0 +1,29 @@
+# Render Blueprint. #requires-human-signoff before first deploy (secrets, billing).
+# Free web service: spins down after ~15 min idle (~1 min cold start) and loses
+# local files on restart. The demo is therefore stateless by design: audit data is
+# re-seeded on boot and committed evidence lives in the repo (docs/evidence).
+services:
+  - type: web
+    name: agentcosign-demo
+    runtime: docker
+    plan: free
+    branch: release # deploy from a frozen branch/tag, never main, during judging
+    autoDeploy: false
+    healthCheckPath: /health
+    envVars:
+      - key: AGENTCOSIGN_ENV
+        value: demo
+      - key: AGENTCOSIGN_REPLAY_MODE
+        value: "true"
+      - key: AGENTCOSIGN_PAYPAL_EXECUTION
+        value: recorded # flip to "sandbox" only after S1/S2 pass
+      - key: AGENTCOSIGN_AGENT_KEY
+        generateValue: true
+      - key: AGENTCOSIGN_OPERATOR_KEY
+        generateValue: true
+      - key: AGENTCOSIGN_AUDIT_KEY
+        generateValue: true
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
