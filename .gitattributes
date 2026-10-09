@@ -1,0 +1,4 @@
+# Hooks and shell scripts must keep LF endings or bash on Windows will fail.
+tools/hooks/* text eol=lf
+*.sh text eol=lf
+* text=auto
