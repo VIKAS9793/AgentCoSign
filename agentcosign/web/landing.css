@@ -1,22 +1,23 @@
 :root {
+  /* Fixed light palette: financial screens keep one meaning per colour.
+     Contrast on white: text 16:1, muted 7.6:1, primary 6.7:1, success 5.0:1. */
+  color-scheme: only light;
   --bg: #ffffff;
-  --text: #16181d;
-  --muted: #4a5160;
-  --card: #f4f6fa;
-  --border: #d5dae3;
-  --link: #0b4fc2;
+  --text: #111827;
+  --muted: #4b5563;
+  --card: #f8fafc;
+  --border: #e2e8f0;
+  --primary: #1d4ed8;
+  --primary-text: #ffffff;
+  --link: #1d4ed8;
+  --ok: #15803d;
+  --ok-bg: #ecfdf3;
+  --warn: #b45309;
+  --warn-bg: #fffbeb;
+  --danger-text: #b91c1c;
+  --danger-bg: #fef2f2;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1218;
-    --text: #eef1f6;
-    --muted: #b4bccb;
-    --card: #181d27;
-    --border: #2d3544;
-    --link: #8fb8ff;
-  }
-}
 
 * {
   box-sizing: border-box;

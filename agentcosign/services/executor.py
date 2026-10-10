@@ -31,6 +31,7 @@ class Execution:
     state: ProposalState | None
     reason: str
     paypal_id: str | None = None
+    paypal_status: str | None = None
 
 
 async def _move(
@@ -119,4 +120,10 @@ async def execute(
     paypal_id = str(response.get("id", ""))
     detail = {"paypal_id": paypal_id, "paypal_status": str(response.get("status", ""))}
     await _move(ledger, request_id, ProposalState.EXECUTED, now, detail)
-    return Execution(request_id, ProposalState.EXECUTED, "executed", paypal_id)
+    return Execution(
+        request_id,
+        ProposalState.EXECUTED,
+        "executed",
+        paypal_id,
+        detail["paypal_status"],
+    )

@@ -3,13 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="only light">
+  <meta name="theme-color" content="#ffffff">
   <title>AgentCoSign approvals</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/assets/approve.css">
 </head>
 <body>
   <main>
-    <h1>Approvals</h1>
+    <h1>Refund requests</h1>
     <p id="status" role="status" class="status"></p>
 
     <section id="enrol" class="card" hidden>
@@ -21,15 +23,16 @@
     </section>
 
     <section id="signin" class="card" hidden>
-      <h2>Sign in to see what is waiting</h2>
-      <button id="signin-button" type="button" class="primary">Sign in with your passkey</button>
+      <h2>Your AI assistant may need your OK</h2>
+      <p>Confirm it's you to see what is waiting. Nothing is sent until you decide.</p>
+      <button id="signin-button" type="button" class="primary">Open with fingerprint or screen lock</button>
     </section>
 
     <section id="queue" hidden>
       <h2 id="queue-title">Waiting for you</h2>
-      <p id="empty" class="note" hidden>Nothing is waiting for you.</p>
+      <p id="empty" class="note" hidden>Your assistant has not asked for anything. You can close this page.</p>
       <div id="requests"></div>
-      <button id="refresh-button" type="button" class="secondary">Check again</button>
+      <button id="refresh-button" type="button" class="secondary">Check for new requests</button>
     </section>
   </main>
   <script src="/assets/approve.js" defer></script>

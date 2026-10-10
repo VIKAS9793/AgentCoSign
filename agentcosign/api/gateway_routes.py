@@ -87,6 +87,7 @@ def _out(outcome: Outcome) -> OutcomeOut:
         replayed=outcome.replayed,
         execution=outcome.execution,
         paypal_id=outcome.paypal_id,
+        paypal_status=outcome.paypal_status,
     )
 
 
@@ -159,7 +160,7 @@ async def open_session(body: CredentialIn, request: Request) -> dict[str, str]:
 @router.get("/v1/approvals", dependencies=[Depends(require_approver_session)])
 async def pending_approvals(request: Request) -> list[dict[str, str]]:
     """Requests waiting for a person, oldest first."""
-    return _gateway(request).pending()
+    return await _gateway(request).pending()
 
 
 @router.post(

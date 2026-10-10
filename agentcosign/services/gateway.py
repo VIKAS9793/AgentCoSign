@@ -32,6 +32,12 @@ from agentcosign.core.config import PolicySettings, ScreeningSettings
 from agentcosign.core.exceptions import FailClosedError, PayPalClientError
 from agentcosign.models.domain import Decision, ToolAction
 from agentcosign.models.policy import OrderEvidence, Proposal, ScreeningVerdict, Signals
+from agentcosign.services.approval_view import (
+    decide_by,
+    order_facts,
+    plain_reason,
+    unavailable_facts,
+)
 from agentcosign.services.evidence import fetch_evidence
 from agentcosign.services.executor import execute
 from agentcosign.services.ledger import Ledger, ProposalState
@@ -56,6 +62,7 @@ class Outcome:
     replayed: bool = False
     execution: str | None = None
     paypal_id: str | None = None
+    paypal_status: str | None = None
 
 
 def _utc_now() -> datetime:
@@ -170,6 +177,7 @@ class Gateway:
             triggered=outcome.triggered,
             execution=execution.reason,
             paypal_id=execution.paypal_id,
+            paypal_status=execution.paypal_status,
         )
 
     def status(self, request_id: str) -> str | None:
@@ -225,9 +233,32 @@ class Gateway:
     def _token_is_valid(self, purpose: str, token: str) -> bool:
         return token_is_valid(self._secret, purpose, token, self._clock())
 
-    def pending(self) -> list[dict[str, str]]:
-        """Requests waiting for a person, facts first."""
-        return self._ledger.pending_approvals()
+    async def pending(self) -> list[dict[str, str]]:
+        """Requests waiting for a person, with live facts from PayPal and a plain
+        reason. The customer's name is read now and never stored."""
+        items = await asyncio.to_thread(self._ledger.pending_approvals)
+        views: list[dict[str, str]] = []
+        for item in items:
+            facts = unavailable_facts()
+            if item.get("order_id"):
+                try:
+                    facts = order_facts(await self._paypal.get_order(item["order_id"]))
+                except PayPalClientError:
+                    facts = unavailable_facts()
+            views.append(
+                {
+                    "request_id": item["request_id"],
+                    "tool": item["tool"],
+                    "amount": item["amount"],
+                    "currency": item["currency"],
+                    "order_id": item["order_id"],
+                    "reason": plain_reason(item["rule_id"], self._policy),
+                    "asked_at": item["created_at"],
+                    "decide_by": decide_by(item["created_at"], self._ttl),
+                    **facts,
+                }
+            )
+        return views
 
     def expire(self) -> list[str]:
         """Expire approvals that waited longer than the approval window."""

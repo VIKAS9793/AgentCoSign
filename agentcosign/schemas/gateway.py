@@ -65,6 +65,7 @@ class OutcomeOut(BaseModel):
     replayed: bool
     execution: str | None
     paypal_id: str | None
+    paypal_status: str | None = None
 
 
 class IntentIn(BaseModel):

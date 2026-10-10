@@ -128,7 +128,9 @@
         say("This phone is set up. Sign in to see what is waiting.");
       })
       .catch(function (error) {
-        say("Set up did not finish: " + error.message);
+        say(error && error.name === "NotAllowedError"
+          ? "You closed the fingerprint prompt. This phone is not set up yet."
+          : "Set up did not finish. The link may have run out. Ask for a new link.");
       });
   }
 
@@ -150,102 +152,225 @@
         loadQueue();
       })
       .catch(function (error) {
-        say("Sign in did not finish: " + error.message);
+        say(error && error.name === "NotAllowedError"
+          ? "You closed the fingerprint prompt. Try again when you are ready."
+          : "We could not open your requests. Please try again.");
       });
   }
 
-  // --- the queue -------------------------------------------------------------------
-  function money(amount, currency) {
-    return currency === "USD" ? "$" + amount : amount + " " + currency;
+  // --- the queue ---------------------------------------------------------------------
+  function money(amount) {
+    var value = Number(amount);
+    if (!isFinite(value)) {
+      return "$" + amount;
+    }
+    return "$" + value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function clock(iso) {
+    return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  function ago(iso) {
+    var minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    if (minutes < 1) {
+      return "just now";
+    }
+    return minutes === 1 ? "1 minute ago" : minutes + " minutes ago";
+  }
+
+  function el(tag, text, className) {
+    var node = document.createElement(tag);
+    if (text) {
+      node.textContent = text;
+    }
+    if (className) {
+      node.className = className;
+    }
+    return node;
   }
 
   function fact(label, value) {
-    var row = document.createElement("div");
-    row.className = "fact";
-    var name = document.createElement("span");
-    name.textContent = label;
-    var data = document.createElement("span");
-    data.textContent = value;
-    row.appendChild(name);
-    row.appendChild(data);
+    var row = el("div", "", "fact");
+    row.appendChild(el("span", label));
+    row.appendChild(el("span", value));
     return row;
   }
 
-  function paragraph(text, className) {
-    var p = document.createElement("p");
-    p.textContent = text;
-    if (className) {
-      p.className = className;
+  function showResult(card, kind, title, detail) {
+    card.replaceChildren();
+    card.className = "card result-card " + kind;
+    var heading = el("h3", title, "result-title");
+    heading.tabIndex = -1;
+    card.appendChild(el("p", kind === "sent" ? "Done" : kind === "stopped" ? "Not sent" : "Check this", "result-badge"));
+    card.appendChild(heading);
+    if (detail) {
+      card.appendChild(el("p", detail, "result-detail"));
     }
-    return p;
+    card.scrollIntoView({ behavior: "smooth", block: "start" });
+    heading.focus({ preventScroll: true });
+    updateTitle();
+  }
+
+  function outcomeMessage(item, intent, outcome) {
+    var who = item.customer;
+    var amount = money(item.amount);
+    if (intent === "reject") {
+      return ["stopped", "Not sent. Nothing moved, and your assistant was told no.", ""];
+    }
+    if (outcome.state === "executed" && outcome.paypal_status === "COMPLETED") {
+      return ["sent", "Refund sent. " + amount + " is on its way to " + who + ".",
+        "PayPal reference " + outcome.paypal_id + ". Saved with your name and the time."];
+    }
+    if (outcome.state === "executed") {
+      return ["check", "PayPal accepted the " + amount + " refund and is still processing it.",
+        "PayPal reference " + outcome.paypal_id + ". Do not send it again. PayPal finishes it on its own."];
+    }
+    if (outcome.state === "pending_approval") {
+      return ["check", "This order changed after your assistant checked it. Nothing was sent.",
+        "Please look at it again."];
+    }
+    if (outcome.state === "executing") {
+      return ["check", "PayPal has not answered yet. It will not be sent twice.",
+        "We finish it with the same request. Check again in a minute."];
+    }
+    return ["stopped", "We could not send it. Nothing was sent.", "You can ask your assistant to try again."];
+  }
+
+  // Progress and problems appear inside the card the person is looking at,
+  // never only in the page header, so nothing important needs a scroll.
+  function setProgress(card, text, isProblem) {
+    var box = card.querySelector(".progress");
+    box.textContent = text;
+    box.className = isProblem ? "progress problem" : "progress";
+    box.setAttribute("role", isProblem ? "alert" : "status");
+    box.hidden = !text;
+  }
+
+  function setButtons(card, enabled) {
+    card.querySelectorAll(".decision button").forEach(function (b) {
+      b.disabled = !enabled;
+    });
+  }
+
+  function isPastDeadline(item) {
+    return Date.now() >= new Date(item.decide_by).getTime();
+  }
+
+  function waitingCount() {
+    return document.querySelectorAll("#requests .decision").length;
+  }
+
+  function updateTitle() {
+    var count = waitingCount();
+    var title = count === 0 ? "Nothing else is waiting"
+      : count === 1 ? "1 refund is waiting for your OK"
+      : count + " refunds are waiting for your OK";
+    document.getElementById("queue-title").textContent = title;
+  }
+
+  // Once the signed decision has left the phone we cannot claim nothing was sent:
+  // the server may have acted. Ask whether the request is still waiting instead.
+  function recheckAfterLostAnswer(item, card) {
+    fetch("/v1/approvals", { headers: sessionHeaders() })
+      .then(function (response) {
+        return response.ok ? response.json() : Promise.reject(new Error("unavailable"));
+      })
+      .then(function (items) {
+        var stillWaiting = items.some(function (i) { return i.request_id === item.request_id; });
+        if (stillWaiting) {
+          setButtons(card, true);
+          setProgress(card, "Your answer did not reach us. Nothing was sent. You can try again.", true);
+        } else {
+          showResult(card, "check", "We lost the connection after you decided.",
+            "Your decision was received, so do not decide again. Check your PayPal activity for the refund.");
+        }
+      })
+      .catch(function () {
+        showResult(card, "check", "We could not confirm what happened.",
+          "It will not be sent twice. Check again when you are back online, before doing anything else.");
+      });
   }
 
   function decide(item, intent, card) {
-    var buttons = card.querySelectorAll("button");
-    buttons.forEach(function (b) {
-      b.disabled = true;
-    });
-    say("Follow the prompt on your phone.");
+    if (isPastDeadline(item)) {
+      showResult(card, "stopped", "Time ran out. Nothing was sent.", "Your assistant can ask again if it is still needed.");
+      return;
+    }
+    setButtons(card, false);
+    setProgress(card, "Confirm it's you with your fingerprint or screen lock.", false);
     var path = "/v1/approvals/" + encodeURIComponent(item.request_id);
+    var signedAndSent = false;
     post(path + "/options", { intent: intent }, sessionHeaders())
       .then(function (options) {
         return navigator.credentials.get(requestOptions(options));
       })
       .then(function (credential) {
+        signedAndSent = true;
+        setProgress(card, intent === "approve" ? "Sending to PayPal. Please keep this page open." : "Saving your answer.", false);
         return post(path + "/" + intent, { credential: assertionJson(credential) }, sessionHeaders());
       })
       .then(function (outcome) {
-        var text = intent === "approve" ? "Approved. " : "Declined. Nothing was sent. ";
-        if (outcome.state === "executed") {
-          text = "Approved and sent through PayPal (reference " + outcome.paypal_id + ").";
-        } else if (outcome.state === "pending_approval") {
-          text = "The order changed, so this needs a fresh look.";
-        } else if (outcome.state === "failed") {
-          text = "Approved, but PayPal did not complete it. Nothing was sent.";
-        }
-        card.appendChild(paragraph(text, "result"));
-        say("");
+        var message = outcomeMessage(item, intent, outcome);
+        showResult(card, message[0], message[1], message[2]);
       })
       .catch(function (error) {
-        card.appendChild(paragraph("Not done: " + error.message, "result failed"));
-        buttons.forEach(function (b) {
-          b.disabled = false;
-        });
-        say("");
+        if (signedAndSent) {
+          setProgress(card, "Checking what happened. Please wait.", false);
+          recheckAfterLostAnswer(item, card);
+          return;
+        }
+        setButtons(card, true);
+        if (error && error.name === "NotAllowedError") {
+          setProgress(card, "You closed the fingerprint prompt. Nothing was sent.", true);
+        } else {
+          setProgress(card, "We could not start this. Nothing was sent. Please try again.", true);
+        }
       });
   }
 
   function requestCard(item) {
-    var card = document.createElement("section");
-    card.className = "card";
-    var amount = money(item.amount, item.currency);
-    var heading = document.createElement("h3");
-    heading.textContent = "Refund " + amount + " to the customer on order " + item.order_id + "?";
-    card.appendChild(heading);
-    card.appendChild(fact("Amount", amount));
-    card.appendChild(fact("Order", item.order_id));
-    card.appendChild(fact("Asked at", new Date(item.created_at).toLocaleTimeString()));
-    card.appendChild(paragraph("Why it needs you: " + item.explanation, "why"));
+    var card = el("section", "", "card");
+    var amount = money(item.amount);
+    var who = item.customer;
+    card.appendChild(el("p", "Your AI assistant needs your OK", "eyebrow"));
+    card.appendChild(el("h3", "Send " + who + " a " + amount + " refund?", "question"));
+    var paidWith = item.paid_with ? " (" + item.paid_with + ")" : "";
+    card.appendChild(el("p", "Order " + item.order_id + ". " + who + paidWith + ".", "order-line"));
+    card.appendChild(el("p", item.reason, "why"));
 
-    var approve = document.createElement("button");
-    approve.type = "button";
-    approve.className = "primary";
-    approve.textContent = "Approve refund of " + amount;
-    approve.addEventListener("click", function () {
+    if (item.paid) {
+      var details = el("details", "", "details");
+      details.appendChild(el("summary", "Details from PayPal"));
+      details.appendChild(fact("Customer paid", money(item.paid)));
+      details.appendChild(fact("Already refunded", money(item.already_refunded)));
+      details.appendChild(fact("Asked", ago(item.asked_at)));
+      card.appendChild(details);
+    } else {
+      card.appendChild(el("p", "We could not load the details from PayPal right now.", "note"));
+    }
+
+    var progress = el("p", "", "progress");
+    progress.hidden = true;
+    card.appendChild(progress);
+    var decision = el("div", "", "decision");
+    var send = el("button", "Send " + amount + " refund", "primary");
+    send.type = "button";
+    send.addEventListener("click", function () {
       decide(item, "approve", card);
     });
-    card.appendChild(approve);
-    card.appendChild(paragraph("Sends " + amount + " back through PayPal. This cannot be undone.", "consequence"));
+    decision.appendChild(send);
+    decision.appendChild(el("p", "Money goes back to " + who + " now. Can't be undone.", "consequence"));
 
-    var decline = document.createElement("button");
-    decline.type = "button";
-    decline.className = "secondary";
-    decline.textContent = "Decline";
-    decline.addEventListener("click", function () {
+    var stop = el("button", "Don't send", "secondary");
+    stop.type = "button";
+    stop.addEventListener("click", function () {
       decide(item, "reject", card);
     });
-    card.appendChild(decline);
-    card.appendChild(paragraph("Nothing is sent.", "consequence"));
+    decision.appendChild(stop);
+    decision.appendChild(el("p", "Nothing is sent. Your assistant is told no.", "consequence"));
+    card.appendChild(decision);
+    card.appendChild(el("p", "Please decide by " + clock(item.decide_by) + ". If you do nothing, nothing is sent.", "deadline"));
     return card;
   }
 
@@ -267,6 +392,7 @@
           list.appendChild(requestCard(item));
         });
         show("empty", items.length === 0);
+        updateTitle();
       })
       .catch(function (error) {
         say(error.message);

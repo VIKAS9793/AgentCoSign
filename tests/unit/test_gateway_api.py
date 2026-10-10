@@ -228,6 +228,7 @@ async def test_passkey_approval_executes_the_refund_once(env: Env) -> None:
     assert response.status_code == 200
     assert body["state"] == "executed"
     assert body["paypal_id"].startswith("RF-")
+    assert body["paypal_status"] == "COMPLETED"
     assert "passkey" in body["explanation"]
     assert await env.refunded() == Decimal("10.00")
     replay = env.client.post(
@@ -332,8 +333,23 @@ def test_forged_or_expired_links_are_refused(env: Env, purpose: str) -> None:
 def test_the_approver_page_is_served_with_the_strict_policy(env: Env) -> None:
     page = env.client.get("/approve")
     assert page.status_code == 200
-    assert "Approvals" in page.text
+    assert "Refund requests" in page.text
     assert "script-src 'self'" in page.headers["content-security-policy"]
     script = env.client.get("/assets/approve.js").text
     assert "innerHTML" not in script
     assert "textContent" in script
+
+
+def test_the_approver_sees_owner_words_and_live_paypal_facts(env: Env) -> None:
+    env.propose("r1", "10.00")
+    env.enrol()
+    item = env.client.get("/v1/approvals", headers=env.session()).json()[0]
+    assert item["customer"] == "Jane Buyer"  # read live from PayPal, not stored
+    assert item["paid_with"] == "card ending 4242"
+    assert item["paid"] == "500.00"
+    assert item["already_refunded"] == "0.00"
+    assert item["reason"] == (
+        "We could not run our safety check. Please look at this one yourself."
+    )
+    assert "R15" not in json.dumps(item)
+    assert item["decide_by"] > item["asked_at"]
