@@ -55,7 +55,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 | R14 | Agent claims differ from PayPal evidence, or evidence changed before execution | DENY |
 | R15 | Screening unavailable | ESCALATE |
 
-### Four verifiable AI roles
+### Four AI roles (designed; model availability verified live, roles not yet wired into the request path)
 1. **Acting agent** (Groq `openai/gpt-oss-120b`) parses requests and calls tools.
 2. **Extraction** (NVIDIA NIM `google/diffusiongemma-26b-a4b-it`, a different model family from the agent) gives an independent second reading of amounts, payees and references.
 3. **Screening** (Groq `openai/gpt-oss-safeguard-20b`) classifies injection and social engineering, after a deterministic pre-screen.
@@ -65,8 +65,11 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 
 | Component | Status |
 |---|---|
-| Strict fail-closed config, security headers, domain types, offline test suite, CI, container + Render blueprint | ✅ Built (CI and the container image verified green; the Render blueprint is not yet exercised) |
-| Policy engine R1–R15, evidence fetcher, idempotent executor, ledger (hash chain + HMAC), screening, extraction | 🚧 In progress |
+| Strict fail-closed config, security headers, domain types, offline test suite, CI, container | ✅ Built (CI and the container image verified green) |
+| Hosted demo on Render with traffic protection (per-client limits, penalty box, reserved reviewer capacity, daily live-call pools), landing page, API reference | ✅ Built and verified on the live host |
+| Policy engine R1–R15 plus execution-drift check: 78-row scenario table, property tests for bounded exposure | ✅ Built (pure function; not yet called by an API route) |
+| Ledger (hash chain + HMAC, atomic reservations), PayPal evidence fetcher, idempotent executor, propose and approve API | 🚧 In progress |
+| Screening and extraction in the request path | 🚧 Planned (models verified live with single samples; accuracy not yet measured) |
 | Mobile PWA approver with WebAuthn passkey co-sign, AG Grid audit viewer | 🚧 Planned |
 | Payouts adapter, PayPal webhooks, native Android approver | ⏳ Optional |
 
