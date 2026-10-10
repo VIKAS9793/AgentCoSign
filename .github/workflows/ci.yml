@@ -19,10 +19,18 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
-      - run: mypy agentcosign/
+      - run: mypy agentcosign/ tools/guardrails.py
       - run: bandit -q -r agentcosign/
-      # Hermetic: no secrets, no network. This is what a judge's clone runs.
-      - run: pytest --cov=agentcosign --cov-report=term-missing
+      # Deep repo rules: fail-closed, Decimal money, secrets, layering, deploy wiring.
+      - run: python tools/guardrails.py
+      # Same commit rules as the hooks, over the range of this push or pull request.
+      - name: commit rules
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          python tools/guardrails.py history "origin/${{ github.base_ref }}..HEAD"
+      # Hermetic: no secrets, no network. This is what any fresh clone runs.
+      - run: pytest --cov=agentcosign --cov-report=term-missing --cov-fail-under=85
       - run: pip-audit --strict || true # advisory until deps are final
   container:
     runs-on: ubuntu-latest

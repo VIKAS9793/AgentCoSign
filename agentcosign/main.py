@@ -90,7 +90,7 @@ def _register_policy_routes(app: FastAPI, settings: Settings) -> None:
     async def get_active_policy() -> dict[str, Any]:
         """Return public policy limits.
 
-        Deliberately unauthenticated (ADR-007): safety rests on structural
+        Deliberately unauthenticated: safety rests on structural
         limits (velocity, daily cap, escalation), not on hiding thresholds.
         Money is serialised as strings to avoid float rounding.
         """

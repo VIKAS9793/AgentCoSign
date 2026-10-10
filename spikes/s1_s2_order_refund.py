@@ -1,14 +1,14 @@
-"""Spikes S1 + S2: headless order capture and refund behaviour on the PayPal SANDBOX.
+"""Headless order capture and refund behaviour on the PayPal SANDBOX.
 
-Answers (design context: docs/ARCHITECTURE.md section 7b):
-  S1  Can we create *and capture* an order from a script (card payment_source)?
-  S2  Does create_refund work; does `PayPal-Request-Id` make refunds idempotent;
-      where do refunds show up on the order/capture; does PayPal itself reject an
-      over-refund (a second line of defence behind R4)?
+Answers:
+  * Can we create *and capture* an order from a script (card payment_source)?
+  * Does create_refund work; does `PayPal-Request-Id` make refunds idempotent;
+    where do refunds show up on the order and capture; does PayPal itself reject an
+    over-refund (a second line of defence behind the gateway's own cumulative cap)?
 
 Safe by construction: sandbox base URL is hard-coded, amounts are tiny, only IDs and
 status codes are printed (never secrets). Evidence JSON is written to spikes/out/
-(gitignored) and can later be sanitised into docs/evidence/.
+(gitignored) and can later be sanitised into the committed evidence folder.
 
 Run:  python spikes/s1_s2_order_refund.py
 """

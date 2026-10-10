@@ -37,6 +37,19 @@ else
   echo "pre-commit: WARNING: gitleaks not found; skipping secret scan (CI still enforces)." >&2
 fi
 
+# --- Project guardrails: fail-closed, Decimal money, secrets, layering, deploy ---
+# Deep, repo-specific rules ruff/mypy cannot express (see tools/guardrails.py).
+if [ -n "$PY" ] && [ -f tools/guardrails.py ]; then
+  echo "pre-commit: guardrails..."
+  if ! "$PY" tools/guardrails.py; then
+    echo "pre-commit: FAILED: fix the guardrail violations above." >&2
+    echo "            A reviewed exception: '# guardrail: allow <rule> -- <reason>' on the line." >&2
+    exit 1
+  fi
+else
+  echo "pre-commit: WARNING: python or tools/guardrails.py missing; skipped (CI still enforces)." >&2
+fi
+
 # --- Python lint, format, types ----------------------------------------------
 if [ -n "$staged_py" ] && [ -n "$PY" ] && "$PY" -m ruff --version >/dev/null 2>&1; then
   echo "pre-commit: ruff check..."

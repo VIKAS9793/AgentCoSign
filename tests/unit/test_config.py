@@ -36,7 +36,7 @@ def test_settings_load_from_yaml() -> None:
 
 
 def test_approval_window_is_ten_minutes_and_capped() -> None:
-    """ADR-015: approvals expire after 10 minutes; configuration cannot extend it."""
+    """Approvals expire after 10 minutes; configuration cannot extend it."""
     from agentcosign.core.config import ApprovalSettings
 
     assert get_settings().approval.ttl_seconds == 600

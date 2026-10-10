@@ -2,7 +2,7 @@
 
 Combines config.yaml (Single Source of Truth) with environment variables.
 
-Design rules (see docs/DECISIONS.md, ADR-006):
+Design rules:
   * Safety invariants are not configurable; only limits are.
   * Unknown keys, missing files and nonsensical limits abort startup.
   * Money is Decimal, never float.
@@ -53,12 +53,12 @@ class PolicySettings(BaseModel):
     model_config = _STRICT
 
     currency: Literal["USD"]
-    refund_auto_limit: Decimal  # R1 / R2 boundary
-    refund_max_limit: Decimal  # R2 / R3 boundary
-    velocity_max_refunds_24h: int = Field(ge=1, le=100)  # R5
-    payout_new_payee_action: Literal["escalate", "deny"]  # R8: never "allow"
-    payout_duplicate_window_days: int = Field(ge=1, le=365)  # R9
-    daily_outflow_cap: Decimal  # R10
+    refund_auto_limit: Decimal  # at or below: allowed without a human
+    refund_max_limit: Decimal  # above: denied; between the two: escalated
+    velocity_max_refunds_24h: int = Field(ge=1, le=100)  # per customer, rolling 24h
+    payout_new_payee_action: Literal["escalate", "deny"]  # never "allow"
+    payout_duplicate_window_days: int = Field(ge=1, le=365)  # repeat-payout window
+    daily_outflow_cap: Decimal  # executed plus reserved, rolling 24h
 
     @field_validator(
         "refund_auto_limit", "refund_max_limit", "daily_outflow_cap", mode="before"
@@ -83,14 +83,15 @@ class ApprovalSettings(BaseModel):
 
     model_config = _STRICT
 
-    # ADR-015: a stale approval is a risk (R14), expiry is harmless (nothing is sent),
-    # so the window is capped at 10 minutes and cannot be raised by configuration.
+    # A stale approval is a risk (the order, dispute or budget may have changed) while
+    # expiry is harmless (nothing is sent), so the window is capped at 10 minutes and
+    # cannot be raised by configuration.
     ttl_seconds: int = Field(ge=30, le=600)
     allowed_assurance: list[Literal["passkey", "session"]] = Field(min_length=1)
 
 
 class ScreeningSettings(BaseModel):
-    """Prompt-injection screening behaviour (R11)."""
+    """Prompt-injection screening behaviour."""
 
     model_config = _STRICT
 
@@ -106,6 +107,7 @@ class ModelRoleConfig(BaseModel):
     provider: Literal["groq", "nvidia_nim"]
     primary: str = Field(min_length=1)
     fallback: str = Field(min_length=1)
+    # guardrail: allow float-annotation -- sampling temperature, not money
     temperature: float = Field(ge=0.0, le=2.0)
     max_tokens: int = Field(ge=16, le=16_384)
     timeout_seconds: int = Field(ge=1, le=120)
@@ -149,7 +151,7 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65_535, alias="AGENTCOSIGN_PORT")
     debug: bool = Field(default=False, alias="AGENTCOSIGN_DEBUG")
 
-    # Degradation switches (docs/ARCHITECTURE.md, "Run modes").
+    # Degradation switches: how far a run depends on live services.
     #   replay_mode=True      LLM answers come from the recorded cache
     #   paypal_execution      "recorded" replays real sandbox evidence;
     #                         "sandbox" calls the live PayPal sandbox

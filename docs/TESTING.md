@@ -34,7 +34,29 @@ See [ARCHITECTURE §5](ARCHITECTURE.md). The default is **hermetic**: LLM answer
 
 ## Quality gates
 
-`ruff check .` · `ruff format --check .` · `mypy agentcosign/` · `bandit -r agentcosign/` · `pytest --cov=agentcosign` · `gitleaks detect`. CI runs the same on Python 3.12 and 3.13.
+`ruff check .` · `ruff format --check .` · `mypy agentcosign/ tools/guardrails.py` · `bandit -r agentcosign/` · `python tools/guardrails.py` · `pytest --cov=agentcosign --cov-fail-under=85` · `gitleaks detect`. CI runs the same on Python 3.12 and 3.13.
+
+### Guardrails
+
+`tools/guardrails.py` enforces the rules generic linters cannot express. It runs in the pre-commit and pre-push hooks and in CI, and each rule has a test that proves it still detects its violation.
+
+| Area | What it rejects |
+|---|---|
+| Fail closed | Bare or blanket `except`, swallowed exceptions, an `ALLOW` outcome on an error path |
+| Money | `float` annotations or conversions, `Decimal(float)` |
+| Secrets | Secrets compared with `==`, logged, typed as plain `str`, or unwrapped outside the edge layers |
+| Policy engine | Network, database, clock, randomness or environment access (it must stay a pure function) |
+| Layering | Imports that cross the layer boundaries; HTTP libraries outside `clients/`; web framework outside `api/` |
+| Network and data | HTTP calls without a timeout, disabled TLS verification, SQL built from strings, naive datetimes |
+| PayPal surface | Production endpoints, money-moving paths that bypass the gateway, writes without an idempotency header |
+| Web output | `innerHTML` and `eval`, inline handlers, external scripts, em dashes in UI copy |
+| Repo and deploy | Secrets or databases tracked, unbounded dependency ranges, a Render blueprint that auto-deploys, a container that runs as root, real values in `.env.example`, unsanitised evidence |
+| Comments | Citations of internal documents, rule or decision numbers, tickets, versions or project history |
+| Commits | Non-Conventional-Commit subjects, AI attribution, deploy or hook changes without a human sign-off tag |
+
+A reviewed exception is written on the line as `# guardrail: allow <rule> -- <reason>`; the reason is mandatory.
+
+The pre-push hook also refuses force-pushes to and deletion of `main` and `release`, scans exactly the commits being pushed for secrets and re-checks their messages, so a commit made with `--no-verify` is still caught before it leaves the machine.
 
 ## Methodology notes
 

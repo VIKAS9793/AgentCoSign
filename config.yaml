@@ -5,13 +5,13 @@
 # Core code reads from this config — NEVER hardcode limits in logic.
 #
 # Safety invariants are deliberately NOT knobs and cannot be configured away:
-#   R4  cumulative refunds never exceed the captured amount
-#   R6  refund on an order with an open dispute escalates
-#   R7  accept_dispute_claim always escalates
-#   R11 screening verdict "injection" denies
-#   R12 any gateway/policy error denies (fail closed)
-#   R13 currency/account mismatch denies
-#   R14 stale or mismatched evidence denies
+#   - cumulative refunds never exceed the captured amount
+#   - a refund on an order with an open dispute escalates
+#   - accept_dispute_claim always escalates
+#   - a screening verdict of "injection" denies
+#   - any gateway or policy error denies (fail closed)
+#   - a currency or account mismatch denies
+#   - stale or mismatched evidence denies
 # Money values are quoted strings so they parse as Decimal, never float.
 # Unknown keys are rejected at startup (typos must not silently use defaults).
 # ==============================================================================
@@ -24,20 +24,22 @@ version: "1.1.0"
 policy:
   currency: "USD"
 
-  # R1: refund <= this is auto-approved (when all other rules are clean)
+  # A refund up to this amount is auto-approved when all other checks are clean.
   refund_auto_limit: "25.00"
 
-  # R2/R3: refund > auto limit and <= max is escalated; > max is denied
+  # Above the auto limit and up to this amount a refund is escalated to a human;
+  # above it the refund is denied.
   refund_max_limit: "250.00"
 
-  # R5: more than this many refunds for one customer in a rolling 24h escalates
+  # More than this many refunds for one customer in a rolling 24 hours escalates.
   velocity_max_refunds_24h: 3
 
-  # R8/R9: contractor payouts (conditioned on spike S4)
+  # Contractor payouts: what happens for a new or changed payee, and how long a
+  # repeat of the same payee, amount and reference counts as a duplicate.
   payout_new_payee_action: "escalate" # escalate | deny  (never allow)
   payout_duplicate_window_days: 30
 
-  # R10: rolling-24h cap on executed + reserved outflow across all tools
+  # Rolling 24-hour cap on executed plus reserved outflow across all tools.
   daily_outflow_cap: "1000.00"
 
 # ------------------------------------------------------------------------------
@@ -45,7 +47,7 @@ policy:
 # ------------------------------------------------------------------------------
 approval:
   # Pending requests expire (and release their reserved budget) after this long.
-  # 10 minutes (ADR-015). Reference points: Monzo's in-app 3DS approval window is 10
+  # 10 minutes. Reference points: Monzo's in-app 3DS approval window is 10
   # minutes; out-of-band OTP lifetimes are commonly capped at 10 minutes (SMS/phone)
   # and 5 minutes (time-based devices). Capped at 600 in code: it cannot be raised here.
   ttl_seconds: 600
@@ -55,7 +57,7 @@ approval:
   allowed_assurance: ["passkey", "session"]
 
 # ------------------------------------------------------------------------------
-# Screening (R11)
+# Prompt-injection screening
 # ------------------------------------------------------------------------------
 screening:
   # Behaviour when the screening model is unreachable/rate-limited/garbled.
@@ -73,7 +75,7 @@ models:
     fallback: "qwen/qwen3.6-27b"
     temperature: 0.1
     # gpt-oss are reasoning models: reasoning tokens count against this budget.
-    # Verify in spike S7 that tool calls are not truncated.
+    # Check against the live model that tool calls are not truncated.
     max_tokens: 2048
     timeout_seconds: 20
 

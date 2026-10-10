@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
 # commit-msg — strip any Claude / Anthropic attribution from the commit message.
-# Owner convention: commits are authored as the owner alone — NO Claude
-# co-author trailer and NO "Generated with Claude Code" line. This hook removes
-# them before the commit finalizes. It never blocks the commit; it only cleans.
-# Human co-authors are preserved.
+# Commits are authored as the owner alone: no Claude co-author trailer and no
+# "Generated with Claude Code" line. This hook removes them before the commit
+# finalizes (human co-authors are preserved), then blocks the commit when the
+# subject is not a Conventional Commit or when a deploy, infrastructure or hook
+# change lacks the human sign-off tag.
 #
 # Tracked source of truth. Activate with: bash tools/hooks/install.sh
 # =============================================================================
@@ -24,5 +25,16 @@ sed -i -E \
 after="$(cat "$MSG_FILE")"
 if [ "$before" != "$after" ]; then
   echo "commit-msg: stripped a Claude/Anthropic attribution trailer (owner convention: no Claude co-author)." >&2
+fi
+
+# --- Validate what remains: Conventional Commit subject, and a sign-off tag for --
+# deploy and infrastructure changes. Fails the commit.
+PY=""
+for c in ".venv/Scripts/python.exe" ".venv/bin/python"; do
+  if [ -x "$c" ]; then PY="$c"; break; fi
+done
+[ -n "$PY" ] || PY="$(command -v python3 || command -v python || true)"
+if [ -n "$PY" ] && [ -f tools/guardrails.py ]; then
+  "$PY" tools/guardrails.py message "$MSG_FILE" || exit 1
 fi
 exit 0

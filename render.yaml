@@ -1,7 +1,8 @@
-# Render Blueprint. #requires-human-signoff before first deploy (account, GitHub access, billing).
+# Render Blueprint. Needs the owner's explicit sign-off before the first deploy
+# (account, GitHub access, billing).
 # Free web service: spins down after ~15 min idle (~1 min cold start) and loses
 # local files on restart. The demo is therefore stateless by design: audit data is
-# re-seeded on boot and committed evidence lives in the repo (docs/evidence).
+# re-seeded on boot and committed evidence lives in the repo.
 #
 # Least privilege: the hermetic demo needs NO PayPal or LLM credentials, so none are
 # declared here. Add PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET (sync: false) only when
@@ -11,7 +12,7 @@ services:
     name: agentcosign-demo
     runtime: docker
     plan: free
-    region: oregon # PayPal judges are US-based; also closest to the PayPal sandbox
+    region: oregon # US West: closest to the PayPal sandbox and to US reviewers
     branch: release # deploy from a frozen branch, never main, during judging
     autoDeploy: false # a push never redeploys; deploy is a deliberate manual action
     healthCheckPath: /health
@@ -21,7 +22,7 @@ services:
       - key: AGENTCOSIGN_REPLAY_MODE
         value: "true"
       - key: AGENTCOSIGN_PAYPAL_EXECUTION
-        value: recorded # spikes S1/S2 passed; "sandbox" also needs the live executor (not built yet)
+        value: recorded # "sandbox" also needs the live executor (not built yet)
       - key: AGENTCOSIGN_AGENT_KEY
         generateValue: true
       - key: AGENTCOSIGN_OPERATOR_KEY

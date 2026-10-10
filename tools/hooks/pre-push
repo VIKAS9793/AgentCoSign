@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
 # =============================================================================
-# pre-push — run the offline test suite before code leaves the machine.
-# CI enforces the same independently. Skips cleanly if the toolchain is missing.
+# pre-push: the full local gate before code leaves the machine. It is the
+# backstop for commits made with --no-verify and for anything the faster
+# pre-commit hook does not run. CI enforces the same independently.
+#
+#   1. Branch protection: no force-push to, or deletion of, main or release.
+#   2. Guardrails over the working tree (tools/guardrails.py).
+#   3. Every commit being pushed: Conventional Commit subject, no AI attribution,
+#      sign-off tag for deploy/infrastructure changes.
+#   4. Secrets: gitleaks over exactly the commits being pushed.
+#   5. Lint, format, types, security scan, offline tests with a coverage floor.
+#
 # Live checks (pytest -m integration) are deliberately NOT run here.
+# A missing optional tool is reported and skipped; CI still enforces it.
 #
 # Tracked source of truth. Activate with: bash tools/hooks/install.sh
 # =============================================================================
 set -uo pipefail
+
+ZERO="0000000000000000000000000000000000000000"
+PROTECTED='^refs/heads/(main|release)$'
+COVERAGE_FLOOR=85
 
 PY=""
 for c in ".venv/Scripts/python.exe" ".venv/bin/python"; do
@@ -14,14 +28,84 @@ for c in ".venv/Scripts/python.exe" ".venv/bin/python"; do
 done
 [ -n "$PY" ] || PY="$(command -v python3 || command -v python || true)"
 
-if [ -z "$PY" ] || ! "$PY" -m pytest --version >/dev/null 2>&1; then
-  echo "pre-push: WARNING: pytest not available; skipping tests (CI still enforces)." >&2
-  exit 0
+GITLEAKS="$(command -v gitleaks || true)"
+if [ -z "$GITLEAKS" ]; then
+  for g in "${LOCALAPPDATA:-}"/Microsoft/WinGet/Packages/Gitleaks*/gitleaks.exe; do
+    [ -x "$g" ] && GITLEAKS="$g" && break
+  done
 fi
 
-echo "pre-push: pytest (offline)..."
-if ! "$PY" -m pytest -q; then
-  echo "pre-push: FAILED: tests must pass before pushing." >&2
-  exit 1
+fail() { echo "pre-push: FAILED: $1" >&2; exit 1; }
+have_module() { "$PY" -c "import $1" >/dev/null 2>&1; }
+
+# --- 1. Branch protection and the commit ranges being pushed -------------------
+ranges=()
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  if [ "$local_sha" = "$ZERO" ]; then
+    [[ "$remote_ref" =~ $PROTECTED ]] && fail "deleting ${remote_ref#refs/heads/} is not allowed."
+    continue
+  fi
+  if [ "$remote_sha" = "$ZERO" ]; then
+    ranges+=("$local_sha --not --remotes")
+  else
+    if [[ "$remote_ref" =~ $PROTECTED ]] \
+       && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      fail "non-fast-forward push to ${remote_ref#refs/heads/} (no force-push; fetch and rebase)."
+    fi
+    ranges+=("$remote_sha..$local_sha")
+  fi
+done
+
+# --- 2 and 3. Guardrails and commit history ------------------------------------
+if [ -n "$PY" ] && [ -f tools/guardrails.py ]; then
+  echo "pre-push: guardrails..."
+  "$PY" tools/guardrails.py || fail "guardrail violations (see above)."
+  for r in "${ranges[@]:-}"; do
+    [ -n "$r" ] || continue
+    # shellcheck disable=SC2086
+    "$PY" tools/guardrails.py history $r || fail "a commit being pushed breaks the commit rules."
+  done
+else
+  echo "pre-push: WARNING: python or tools/guardrails.py missing; skipped (CI still enforces)." >&2
+fi
+
+# --- 4. Secrets in exactly the commits being pushed -----------------------------
+if [ -n "$GITLEAKS" ]; then
+  for r in "${ranges[@]:-}"; do
+    [ -n "$r" ] || continue
+    echo "pre-push: gitleaks ($r)..."
+    "$GITLEAKS" git --log-opts="$r" --redact --no-banner >/dev/null 2>&1 \
+      || fail "gitleaks found a possible secret in the commits being pushed (rotate the key if real)."
+  done
+else
+  echo "pre-push: WARNING: gitleaks not found; skipped (CI still enforces)." >&2
+fi
+
+# --- 5. Lint, format, types, security, tests --------------------------------------
+if [ -z "$PY" ]; then
+  echo "pre-push: WARNING: no python; skipping quality gates (CI still enforces)." >&2
+  exit 0
+fi
+if have_module ruff; then
+  echo "pre-push: ruff..."
+  "$PY" -m ruff check . || fail "ruff check."
+  "$PY" -m ruff format --check . || fail "ruff format --check (run ruff format)."
+fi
+if have_module mypy; then
+  echo "pre-push: mypy..."
+  "$PY" -m mypy agentcosign/ || fail "mypy."
+fi
+if have_module bandit; then
+  echo "pre-push: bandit..."
+  "$PY" -m bandit -q -r agentcosign/ || fail "bandit."
+fi
+if have_module pytest; then
+  echo "pre-push: pytest (offline, coverage floor ${COVERAGE_FLOOR}%)..."
+  cov_args=()
+  have_module pytest_cov && cov_args=(--cov=agentcosign "--cov-fail-under=${COVERAGE_FLOOR}")
+  "$PY" -m pytest -q "${cov_args[@]}" || fail "tests or coverage floor."
+else
+  echo "pre-push: WARNING: pytest not available; skipping tests (CI still enforces)." >&2
 fi
 exit 0
