@@ -124,6 +124,113 @@ class ModelsConfig(BaseModel):
     extraction: ModelRoleConfig
 
 
+class BucketSpec(BaseModel):
+    """A token bucket: holds ``capacity`` requests and gains one per interval."""
+
+    model_config = _STRICT
+
+    capacity: int = Field(ge=1, le=10_000)
+    refill_seconds: int = Field(ge=1, le=86_400)
+
+
+class TierLimits(BaseModel):
+    """Per-client buckets for one audience, by kind of work."""
+
+    model_config = _STRICT
+
+    general: BucketSpec  # every request
+    live_llm: BucketSpec  # asks for a live model call
+    live_execution: BucketSpec  # asks for a live sandbox execution
+
+
+class DailyPools(BaseModel):
+    """How many live calls per 24 hours each audience may use."""
+
+    model_config = _STRICT
+
+    public: int = Field(ge=0, le=100_000)
+    reviewer: int = Field(ge=0, le=100_000)
+
+
+class LlmBudget(DailyPools):
+    """Live model calls, bounded by what the provider's free tier allows."""
+
+    provider_daily_limit: int = Field(ge=1, le=1_000_000)
+
+    @model_validator(mode="after")
+    def _pools_fit_provider_limit(self) -> "LlmBudget":
+        if self.public + self.reviewer > self.provider_daily_limit:
+            raise ValueError("public + reviewer pools exceed the provider daily limit")
+        return self
+
+
+class PenaltySettings(BaseModel):
+    """Escalating cool-down for clients that keep hitting the limits."""
+
+    model_config = _STRICT
+
+    strikes: int = Field(ge=1, le=1_000)
+    strike_window_seconds: int = Field(ge=1, le=3_600)
+    block_seconds: int = Field(ge=1, le=3_600)
+    max_block_seconds: int = Field(ge=1, le=86_400)
+
+    @model_validator(mode="after")
+    def _block_ordering(self) -> "PenaltySettings":
+        if self.max_block_seconds < self.block_seconds:
+            raise ValueError("max_block_seconds must be >= block_seconds")
+        return self
+
+
+class LimitSettings(BaseModel):
+    """Traffic protection: the hard floor that keeps the service alive.
+
+    Per-client buckets are fairness. The global caps (in-flight requests, daily
+    pools, body size) are what hold when client identity cannot be trusted.
+    """
+
+    model_config = _STRICT
+
+    trusted_proxy_hops: int = Field(ge=0, le=5)
+    max_body_bytes: int = Field(ge=1_024, le=1_048_576)
+    max_concurrent_requests: int = Field(ge=1, le=256)
+    # In-flight slots only reviewers may use, so a public flood cannot lock them out.
+    reviewer_reserved_concurrency: int = Field(ge=0, le=255)
+    max_tracked_clients: int = Field(ge=100, le=100_000)
+    exempt_paths: list[str]
+    public: TierLimits
+    reviewer: TierLimits
+    live_llm_budget: LlmBudget
+    live_execution_budget: DailyPools
+    provider_low_percent: int = Field(ge=0, le=50)
+    penalty: PenaltySettings
+
+    @field_validator("exempt_paths")
+    @classmethod
+    def _paths_are_absolute(cls, value: list[str]) -> list[str]:
+        if any(not p.startswith("/") for p in value):
+            raise ValueError("exempt_paths must start with '/'")
+        return value
+
+    @model_validator(mode="after")
+    def _reserve_leaves_room_for_the_public(self) -> "LimitSettings":
+        if self.reviewer_reserved_concurrency >= self.max_concurrent_requests:
+            raise ValueError(
+                "reviewer_reserved_concurrency must be below max_concurrent_requests"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reviewers_are_never_stricter(self) -> "LimitSettings":
+        for name in ("general", "live_llm", "live_execution"):
+            public: BucketSpec = getattr(self.public, name)
+            reviewer: BucketSpec = getattr(self.reviewer, name)
+            if reviewer.capacity < public.capacity:
+                raise ValueError(f"reviewer {name} capacity is below public")
+            if reviewer.refill_seconds > public.refill_seconds:
+                raise ValueError(f"reviewer {name} refills slower than public")
+        return self
+
+
 class AuditConfig(BaseModel):
     """Configuration for audit logging and hash chaining."""
 
@@ -185,6 +292,12 @@ class Settings(BaseSettings):
         default=SecretStr(""), alias="AGENTCOSIGN_AUDIT_KEY"
     )
 
+    # Optional shared token that raises live-call quotas for reviewers. Without it
+    # everyone uses the public quotas; nothing is gated behind it.
+    reviewer_token: SecretStr = Field(
+        default=SecretStr(""), alias="AGENTCOSIGN_REVIEWER_TOKEN"
+    )
+
     # Database
     sqlite_db_path: str = Field(
         default="data/agentcosign_audit.db", alias="SQLITE_DB_PATH"
@@ -196,6 +309,16 @@ class Settings(BaseSettings):
     screening: ScreeningSettings
     models: ModelsConfig
     audit: AuditConfig
+    limits: LimitSettings
+
+    @model_validator(mode="after")
+    def _reviewer_token_is_strong_when_set(self) -> "Settings":
+        token = self.reviewer_token.get_secret_value()
+        if token and len(token) < MIN_SECRET_LENGTH:
+            raise ValueError(
+                f"reviewer_token must be >= {MIN_SECRET_LENGTH} characters when set"
+            )
+        return self
 
     @model_validator(mode="after")
     def _enforce_credential_hygiene(self) -> "Settings":
@@ -265,7 +388,7 @@ def get_settings() -> Settings:
         ConfigurationError: if config.yaml or the environment is invalid.
     """
     yaml_data = _load_yaml_config()
-    sections = ("policy", "approval", "screening", "models", "audit")
+    sections = ("policy", "approval", "screening", "models", "audit", "limits")
     missing = [s for s in sections if s not in yaml_data]
     if missing:
         raise ConfigurationError(f"config.yaml is missing sections: {missing}")

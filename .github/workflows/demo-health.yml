@@ -1,0 +1,29 @@
+name: demo-health
+# Daily check that the hosted demo wakes up and answers. An off-peak minute is used
+# because scheduled runs queue at the top of the hour. The workflow fails (and
+# GitHub emails the owner) when the demo is down or reports an unexpected state.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Wake the demo and verify it
+        run: |
+          URL="https://agentcosign-demo.onrender.com"
+          # A sleeping free instance needs about a minute to wake: retry for 2 minutes.
+          for i in $(seq 1 24); do
+            if curl -sf --max-time 10 "$URL/health" -o health.json; then break; fi
+            sleep 5
+          done
+          cat health.json
+          echo
+          grep -q '"status":"healthy"' health.json
+          curl -sf --max-time 10 "$URL/api/v1/config/policy" | grep -q '"refund_auto_limit"'
+          # The capacity field must be present; "normal" is expected in steady state.
+          grep -q '"capacity":"' health.json

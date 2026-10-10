@@ -102,6 +102,55 @@ models:
     timeout_seconds: 15
 
 # ------------------------------------------------------------------------------
+# Traffic protection (keeps the free-tier service alive and fair)
+# ------------------------------------------------------------------------------
+# Per-client buckets are fairness. The global caps below are the hard floor:
+# they hold even if a client hides or fakes its address.
+limits:
+  # How many proxies in front of the app append to X-Forwarded-For. The client
+  # address is read from that many entries from the right.
+  trusted_proxy_hops: 1
+  max_body_bytes: 65536
+  # In-flight requests across all clients; beyond this the answer is a fast 503.
+  max_concurrent_requests: 32
+  # Of those, slots only reviewers may use, so a public flood cannot lock them out.
+  reviewer_reserved_concurrency: 8
+  # Per-client state is bounded so an address-rotation flood cannot exhaust memory.
+  max_tracked_clients: 5000
+  exempt_paths: ["/health"]
+
+  # A bucket holds `capacity` requests and gains one every `refill_seconds`.
+  public:
+    general: { capacity: 60, refill_seconds: 1 }
+    live_llm: { capacity: 5, refill_seconds: 180 }
+    live_execution: { capacity: 2, refill_seconds: 1800 }
+  # Reviewers get roomier buckets and their own reserved daily pools.
+  reviewer:
+    general: { capacity: 240, refill_seconds: 1 }
+    live_llm: { capacity: 30, refill_seconds: 20 }
+    live_execution: { capacity: 10, refill_seconds: 300 }
+
+  # Live model calls per 24 hours. The model's free-tier limit is 1,000 requests
+  # per day; the rest is headroom for the operator and for retries.
+  live_llm_budget:
+    provider_daily_limit: 1000
+    public: 300
+    reviewer: 500
+  live_execution_budget:
+    public: 10
+    reviewer: 60
+  # When the provider reports less than this percent of its daily quota left,
+  # public traffic is served from recorded answers and only reviewers stay live.
+  provider_low_percent: 10
+
+  # Clients that keep being rejected are blocked for a while, doubling each time.
+  penalty:
+    strikes: 8
+    strike_window_seconds: 60
+    block_seconds: 60
+    max_block_seconds: 900
+
+# ------------------------------------------------------------------------------
 # Audit Log & Verification
 # ------------------------------------------------------------------------------
 audit:

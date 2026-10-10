@@ -123,6 +123,22 @@ Switches: `AGENTCOSIGN_REPLAY_MODE`, `AGENTCOSIGN_PAYPAL_EXECUTION` (see `.env.e
 3. Approver passkey unavailable on the device → `session` assurance (explicitly labelled lower assurance, recorded in the ledger).
 4. Hosted service cold or down → `docker compose up` or the committed demo video.
 
+### Staying available under public traffic
+
+The hosted demo is public and runs on free tiers, so protection is layered from the process outward. Nothing is gated behind a login or CAPTCHA: everyone gets the full scripted product. Only the scarce live resources (model calls, sandbox executions) are budgeted.
+
+| Layer | What it does | Holds if client identity is forged? |
+|---|---|---|
+| Body-size cap | Refuses oversized requests before any route runs | Yes |
+| Per-client token buckets | Fairness between callers, by kind of work (general, live model, live execution) | No (fairness only) |
+| Penalty box | Callers that keep being refused are blocked for a doubling interval | No |
+| In-flight cap with reviewer reserve | Fast 503 instead of queueing; some slots only reviewers may use | Yes |
+| Daily live pools, split public and reviewer | Public abuse can never spend the reviewers' share | Yes |
+| Provider quota feedback | The model provider's own remaining-quota headers move public traffic to recordings before the quota is gone | Yes |
+| Recorded replay | When a live pool is spent the request is served from recordings and the banner says so | Yes |
+
+`/health` is exempt from limits and also answers `HEAD`, so uptime monitors and the daily check can always reach it. It reports `capacity` as `normal`, `public_replay` or `replay_only`. Per-client state is bounded (least recently used eviction) so address rotation cannot exhaust memory. In-process limits cannot absorb a volumetric flood: that needs an edge in front (see the decision log).
+
 **Model availability is measured, not assumed.** A model that appears in a provider's catalogue can still return 404 for a given account, and free-tier limits differ per model (the screening classifier allows 3 requests per minute, the general models 1,000 requests per day). The startup probe therefore makes a real one-token request to each configured model, falls back along the configured chain, and treats HTTP 429 as "use the next model now", never as a reason to wait. A model chain that cannot answer at all degrades as in step 2.
 
 ## 6. Data model (SQLite, WAL)

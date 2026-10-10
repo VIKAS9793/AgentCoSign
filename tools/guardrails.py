@@ -172,7 +172,8 @@ META_REFERENCE = re.compile(
     re.IGNORECASE,
 )
 META_NARRATION = re.compile(
-    r"\b(previously|used to|no longer|changed from|as discussed|owner convention"
+    r"\b(previously|used to (?:be|do|have|work|return|call)|no longer|changed from"
+    r"|as discussed|owner convention"
     r"|per the (owner|spec|brief)|was changed|we changed)\b",
     re.IGNORECASE,
 )

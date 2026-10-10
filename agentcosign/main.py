@@ -11,7 +11,10 @@ from typing import Any
 from fastapi import FastAPI, Request, Response
 
 from agentcosign import __version__
+from agentcosign.api.protection import ProtectionMiddleware, monotonic_ms
+from agentcosign.api.traffic import router as traffic_router
 from agentcosign.core.config import Settings, get_settings
+from agentcosign.core.limits import TrafficGuard
 
 logger = logging.getLogger("agentcosign")
 
@@ -66,12 +69,36 @@ def _install_security_headers(app: FastAPI) -> None:
         return response
 
 
-def _register_system_routes(app: FastAPI, settings: Settings) -> None:
+def _install_traffic_protection(app: FastAPI, settings: Settings) -> TrafficGuard:
+    """Attach the guard, the protection middleware and its routes.
+
+    Added before the security-header middleware so that refusals also carry the
+    security headers.
+    """
+    guard = TrafficGuard(settings.limits)
+    app.state.guard = guard
+    app.state.settings = settings
+    app.add_middleware(
+        ProtectionMiddleware,
+        guard=guard,
+        limits=settings.limits,
+        reviewer_token=settings.reviewer_token.get_secret_value(),
+    )
+    app.include_router(traffic_router)
+    return guard
+
+
+def _register_system_routes(
+    app: FastAPI, settings: Settings, guard: TrafficGuard
+) -> None:
     """Register the liveness endpoint (also reports the active run modes)."""
 
-    @app.get("/health", tags=["System"])
+    @app.api_route("/health", methods=["GET", "HEAD"], tags=["System"])
     async def health_check() -> dict[str, Any]:
-        """Liveness + run-mode report for Render monitoring and the demo banner."""
+        """Liveness, run-mode and capacity report for monitors and the demo banner.
+
+        HEAD is answered too, because uptime monitors commonly probe with it.
+        """
         return {
             "status": "healthy",
             "service": "AgentCoSign",
@@ -80,6 +107,7 @@ def _register_system_routes(app: FastAPI, settings: Settings) -> None:
             "hermetic": settings.is_hermetic,
             "replay_mode": settings.replay_mode,
             "paypal_execution": settings.paypal_execution,
+            "capacity": guard.capacity_mode(monotonic_ms()).value,
         }
 
 
@@ -121,8 +149,9 @@ def create_app() -> FastAPI:
         redoc_url=None if is_prod else "/redoc",
         lifespan=lifespan,
     )
+    guard = _install_traffic_protection(app, settings)
     _install_security_headers(app)
-    _register_system_routes(app, settings)
+    _register_system_routes(app, settings, guard)
     _register_policy_routes(app, settings)
     return app
 

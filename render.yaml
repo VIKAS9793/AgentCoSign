@@ -29,3 +29,7 @@ services:
         generateValue: true
       - key: AGENTCOSIGN_AUDIT_KEY
         generateValue: true
+      # Shared token that raises live-call quotas for reviewers. Read the generated
+      # value from the Render dashboard; nothing is gated behind it.
+      - key: AGENTCOSIGN_REVIEWER_TOKEN
+        generateValue: true
