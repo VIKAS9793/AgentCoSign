@@ -54,6 +54,9 @@ class OrderEvidence:
     fetched_at: datetime
     dispute_id: str | None = None
     dispute_amount: Decimal | None = None
+    # Keyed digest identifying the paying customer across orders (card brand,
+    # last four and cardholder name for card payments). Never the raw values.
+    customer_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
