@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import FastAPI, Request, Response
 
 from agentcosign import __version__
-from agentcosign.core.config import get_settings
+from agentcosign.core.config import Settings, get_settings
 
 logger = logging.getLogger("agentcosign")
 
@@ -46,36 +46,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("AgentCoSign shutting down cleanly")
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-    settings = get_settings()
-    is_prod = settings.env == "production"
+def _install_security_headers(app: FastAPI) -> None:
+    """Add the strict response headers to every response (no CORS on purpose).
 
-    app = FastAPI(
-        title="AgentCoSign",
-        description=(
-            "Dual control for AI agents that move money on PayPal: "
-            "propose, decide, co-sign, prove"
-        ),
-        version=__version__,
-        docs_url=None if is_prod else "/docs",
-        redoc_url=None if is_prod else "/redoc",
-        lifespan=lifespan,
-    )
-
-    # No CORS middleware on purpose: the approver PWA is served same-origin and
-    # agents are server-side callers. Add an explicit allowlist only if needed.
+    The approver PWA is served same-origin and agents are server-side callers, so an
+    explicit allowlist is added only if a real need appears.
+    """
 
     @app.middleware("http")
     async def add_security_headers(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
+        """Set CSP and friends; mark API responses as non-cacheable."""
         response = await call_next(request)
         for header, value in _SECURITY_HEADERS.items():
             response.headers.setdefault(header, value)
         if request.url.path.startswith("/api"):
             response.headers["Cache-Control"] = "no-store"
         return response
+
+
+def _register_system_routes(app: FastAPI, settings: Settings) -> None:
+    """Register the liveness endpoint (also reports the active run modes)."""
 
     @app.get("/health", tags=["System"])
     async def health_check() -> dict[str, Any]:
@@ -89,6 +81,10 @@ def create_app() -> FastAPI:
             "replay_mode": settings.replay_mode,
             "paypal_execution": settings.paypal_execution,
         }
+
+
+def _register_policy_routes(app: FastAPI, settings: Settings) -> None:
+    """Register the public policy endpoint."""
 
     @app.get("/api/v1/config/policy", tags=["Policy"])
     async def get_active_policy() -> dict[str, Any]:
@@ -108,6 +104,26 @@ def create_app() -> FastAPI:
             "approval_ttl_seconds": settings.approval.ttl_seconds,
         }
 
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    settings = get_settings()
+    is_prod = settings.env == "production"
+
+    app = FastAPI(
+        title="AgentCoSign",
+        description=(
+            "Dual control for AI agents that move money on PayPal: "
+            "propose, decide, co-sign, prove"
+        ),
+        version=__version__,
+        docs_url=None if is_prod else "/docs",
+        redoc_url=None if is_prod else "/redoc",
+        lifespan=lifespan,
+    )
+    _install_security_headers(app)
+    _register_system_routes(app, settings)
+    _register_policy_routes(app, settings)
     return app
 
 
