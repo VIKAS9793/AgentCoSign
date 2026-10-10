@@ -1,14 +1,19 @@
-# Render Blueprint. #requires-human-signoff before first deploy (secrets, billing).
+# Render Blueprint. #requires-human-signoff before first deploy (account, GitHub access, billing).
 # Free web service: spins down after ~15 min idle (~1 min cold start) and loses
 # local files on restart. The demo is therefore stateless by design: audit data is
 # re-seeded on boot and committed evidence lives in the repo (docs/evidence).
+#
+# Least privilege: the hermetic demo needs NO PayPal or LLM credentials, so none are
+# declared here. Add PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET (sync: false) only when
+# the live executor exists and AGENTCOSIGN_PAYPAL_EXECUTION is switched to "sandbox".
 services:
   - type: web
     name: agentcosign-demo
     runtime: docker
     plan: free
-    branch: release # deploy from a frozen branch/tag, never main, during judging
-    autoDeploy: false
+    region: oregon # PayPal judges are US-based; also closest to the PayPal sandbox
+    branch: release # deploy from a frozen branch, never main, during judging
+    autoDeploy: false # a push never redeploys; deploy is a deliberate manual action
     healthCheckPath: /health
     envVars:
       - key: AGENTCOSIGN_ENV
@@ -16,14 +21,10 @@ services:
       - key: AGENTCOSIGN_REPLAY_MODE
         value: "true"
       - key: AGENTCOSIGN_PAYPAL_EXECUTION
-        value: recorded # flip to "sandbox" only after S1/S2 pass
+        value: recorded # spikes S1/S2 passed; "sandbox" also needs the live executor (not built yet)
       - key: AGENTCOSIGN_AGENT_KEY
         generateValue: true
       - key: AGENTCOSIGN_OPERATOR_KEY
         generateValue: true
       - key: AGENTCOSIGN_AUDIT_KEY
         generateValue: true
-      - key: PAYPAL_CLIENT_ID
-        sync: false
-      - key: PAYPAL_CLIENT_SECRET
-        sync: false

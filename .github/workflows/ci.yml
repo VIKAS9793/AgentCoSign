@@ -31,10 +31,14 @@ jobs:
       - run: docker build -t agentcosign:ci .
       - name: Smoke test the image (hermetic, no credentials)
         run: |
-          docker run -d --name ac -p 8000:8000 agentcosign:ci
+          # Render-like: the platform injects PORT (10000); the app must follow it.
+          docker run -d --name ac -e PORT=10000 -p 10000:10000 agentcosign:ci
+          for i in $(seq 1 20); do curl -sf http://127.0.0.1:10000/health && break || sleep 1; done
+          curl -sf http://127.0.0.1:10000/health | grep -q '"status":"healthy"'
+          curl -sf http://127.0.0.1:10000/api/v1/config/policy | grep -q '"refund_auto_limit":"25.00"'
+          # Plain Docker default (no PORT): falls back to 8000.
+          docker run -d --name ac2 -p 8000:8000 agentcosign:ci
           for i in $(seq 1 20); do curl -sf http://127.0.0.1:8000/health && break || sleep 1; done
-          curl -sf http://127.0.0.1:8000/health | grep -q '"status":"healthy"'
-          curl -sf http://127.0.0.1:8000/api/v1/config/policy | grep -q '"refund_auto_limit":"25.00"'
           docker logs ac
   secrets:
     runs-on: ubuntu-latest
