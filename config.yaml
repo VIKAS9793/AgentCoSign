@@ -115,8 +115,9 @@ limits:
   # try to send it themselves. Preferred over the chain, which is the fallback.
   client_ip_header: "cf-connecting-ip"
   # Calibration aid: /api/v1/diagnostics/client shows the forwarding chain as
-  # received. Switch off once the hop count is confirmed on the real host.
-  expose_client_diagnostics: true
+  # received. Confirmed on the real host, so it is off; switch on only to re-check
+  # after the hosting provider changes its proxy path.
+  expose_client_diagnostics: false
   max_body_bytes: 65536
   # In-flight requests across all clients; beyond this the answer is a fast 503.
   max_concurrent_requests: 32

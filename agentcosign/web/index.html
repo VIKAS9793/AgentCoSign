@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentCoSign</title>
+  <meta name="description" content="Dual control for AI agents that move money on PayPal: the agent proposes, rules decide, a person co-signs, a ledger proves it.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/assets/landing.css">
+</head>
+<body>
+  <main>
+    <h1>AgentCoSign</h1>
+    <p class="lead">When an AI assistant wants to refund a customer or pay someone, it has to ask first. Clear rules decide what is safe. You approve the rest with your passkey. Every step is written to a record that shows if anyone changed it.</p>
+
+    <section aria-labelledby="status-title" class="card">
+      <h2 id="status-title">Demo status</h2>
+      <p id="status" role="status">Checking the demo status...</p>
+      <p class="note">This is a hosted demo. It uses the PayPal sandbox and recorded results, so no real money moves.</p>
+    </section>
+
+    <section aria-labelledby="try-title">
+      <h2 id="try-title">What you can try now</h2>
+      <ul>
+        <li><a href="/api/v1/config/policy">The limits the demo enforces</a>: the amount that is approved automatically, the amount that needs a person, and the daily cap.</li>
+        <li><a href="/docs">The API reference</a>: read every call and try it from your browser.</li>
+        <li><a href="/health">Service health</a>: whether the demo is running and how it is serving requests.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="building-title">
+      <h2 id="building-title">Still being built</h2>
+      <p>The approval screen for your phone and the audit viewer are in progress. This page lists only what works today.</p>
+    </section>
+
+    <footer>
+      <p>Open source under the MIT licence. An independent project, not affiliated with PayPal. Source: <a href="https://github.com/VIKAS9793/AgentCoSign">github.com/VIKAS9793/AgentCoSign</a></p>
+    </footer>
+  </main>
+  <script src="/assets/landing.js" defer></script>
+</body>
+</html>

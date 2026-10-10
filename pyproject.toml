@@ -63,6 +63,11 @@ Issues = "https://github.com/VIKAS9793/AgentCoSign/issues"
 [tool.setuptools.packages.find]
 include = ["agentcosign*"]
 
+# The landing page and its assets ship inside the wheel (the container installs
+# the package, it does not run from the source tree).
+[tool.setuptools.package-data]
+agentcosign = ["web/*"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 88

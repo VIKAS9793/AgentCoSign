@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request, Response
 
 from agentcosign import __version__
 from agentcosign.api.protection import ProtectionMiddleware, monotonic_ms
+from agentcosign.api.site import register_site
 from agentcosign.api.traffic import router as traffic_router
 from agentcosign.core.config import Settings, get_settings
 from agentcosign.core.limits import TrafficGuard
@@ -145,12 +146,13 @@ def create_app() -> FastAPI:
             "propose, decide, co-sign, prove"
         ),
         version=__version__,
-        docs_url=None if is_prod else "/docs",
-        redoc_url=None if is_prod else "/redoc",
+        docs_url=None,  # served by register_site with a page-specific policy
+        redoc_url=None,
         lifespan=lifespan,
     )
     guard = _install_traffic_protection(app, settings)
     _install_security_headers(app)
+    register_site(app, docs_enabled=not is_prod)
     _register_system_routes(app, settings, guard)
     _register_policy_routes(app, settings)
     return app
