@@ -83,7 +83,9 @@ class ApprovalSettings(BaseModel):
 
     model_config = _STRICT
 
-    ttl_seconds: int = Field(ge=30, le=86_400)
+    # ADR-015: a stale approval is a risk (R14), expiry is harmless (nothing is sent),
+    # so the window is capped at 10 minutes and cannot be raised by configuration.
+    ttl_seconds: int = Field(ge=30, le=600)
     allowed_assurance: list[Literal["passkey", "session"]] = Field(min_length=1)
 
 

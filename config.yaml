@@ -45,7 +45,10 @@ policy:
 # ------------------------------------------------------------------------------
 approval:
   # Pending requests expire (and release their reserved budget) after this long.
-  ttl_seconds: 900
+  # 10 minutes (ADR-015). Reference points: Monzo's in-app 3DS approval window is 10
+  # minutes; out-of-band OTP lifetimes are commonly capped at 10 minutes (SMS/phone)
+  # and 5 minutes (time-based devices). Capped at 600 in code: it cannot be raised here.
+  ttl_seconds: 600
   # Preferred assurance: passkey (WebAuthn) signature over the action hash.
   # "session" is a weaker, clearly-flagged fallback for demo devices without a
   # platform authenticator; the assurance level is written to the audit log.
