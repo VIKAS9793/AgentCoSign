@@ -166,3 +166,19 @@ async def test_recorded_unknown_order_is_not_found() -> None:
     with pytest.raises(PayPalClientError) as caught:
         await client.get_order("ORD-404")
     assert caught.value.details["status"] == 404
+
+
+@pytest.mark.parametrize("bad", ["x" * 39, "req\r\nX-Evil: 1", "", "req id"])
+async def test_request_ids_that_break_the_header_are_refused_before_any_call(
+    bad: str,
+) -> None:
+    fake = FakePayPal()
+    client = client_for(fake)
+    with pytest.raises(PayPalClientError):
+        await client.refund_capture("CAP-1", Decimal("1.00"), "USD", bad)
+    with pytest.raises(PayPalClientError):
+        await client.accept_claim("DSP-1", bad)
+    recorded = RecordedPayPalClient({"ORD-1": order_json()})
+    with pytest.raises(PayPalClientError):
+        await recorded.refund_capture("CAP-1", Decimal("1.00"), "USD", bad)
+    assert fake.requests == []

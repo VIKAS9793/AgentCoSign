@@ -357,3 +357,13 @@ def _fields(proposal: Proposal) -> dict[str, object]:
 
 def replace_time(ev: OrderEvidence, moment) -> OrderEvidence:  # noqa: ANN001
     return OrderEvidence(**{**_fields(ev), "fetched_at": moment - timedelta(seconds=5)})
+
+
+@pytest.mark.parametrize("bad", ["x" * 39, "req\nid", "req id", "../r"])
+def test_request_ids_paypal_would_reject_are_never_stored(
+    ledger: Ledger, bad: str
+) -> None:
+    recorded = decide(ledger, refund(bad, "10.00"))
+    assert recorded.result.decision is Decision.DENY
+    assert recorded.state is None
+    assert ledger.verify_chain() == 0

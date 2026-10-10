@@ -21,6 +21,7 @@ from decimal import Decimal, InvalidOperation
 from agentcosign.core.config import PolicySettings, ScreeningSettings
 from agentcosign.models.domain import Decision, PolicyResult, ToolAction
 from agentcosign.models.policy import (
+    REQUEST_ID_PATTERN,
     LedgerContext,
     OrderEvidence,
     Proposal,
@@ -30,7 +31,6 @@ from agentcosign.models.policy import (
 
 CENT = Decimal("0.01")
 MAX_AMOUNT = Decimal("1000000000")
-MAX_REQUEST_ID_LENGTH = 128
 CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
 
 # Rule identifiers as recorded in the ledger and shown to approvers.
@@ -154,7 +154,7 @@ def _check_envelope(case: _Case) -> list[RuleHit]:
     if proposal.tool not in {tool.value for tool in ToolAction}:
         hits.append(_invalid("unknown_tool", "The requested tool is not allowed."))
     request_id = proposal.request_id
-    if not request_id or len(request_id) > MAX_REQUEST_ID_LENGTH:
+    if not REQUEST_ID_PATTERN.fullmatch(request_id or ""):
         hits.append(
             _invalid("bad_request_id", "The request id is missing or too long.")
         )

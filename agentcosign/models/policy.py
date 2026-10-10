@@ -11,10 +11,16 @@ Trust differs by type:
   can only make a decision stricter, never authorise anything.
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+
+# The request id is sent to PayPal as its idempotency header, which accepts at
+# most 38 single-byte characters. The character set also keeps an id supplied
+# by the agent from breaking an HTTP header.
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,38}$")
 
 
 class ScreeningVerdict(StrEnum):

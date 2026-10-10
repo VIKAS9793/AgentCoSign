@@ -809,6 +809,38 @@ SCENARIOS: tuple[Scenario, ...] = (
         proposal={"amount": D("300.00")},
         evidence={"captured_amount": D("200.00")},
     ),
+    # --- request id must be usable as PayPal's idempotency header -----------------
+    Scenario(
+        "S79",
+        "A 38-character request id is accepted",
+        A,
+        "R1",
+        proposal={"request_id": "a" * 38},
+    ),
+    Scenario(
+        "S80",
+        "A 39-character request id is denied (PayPal accepts at most 38)",
+        X,
+        "R12",
+        ("R12",),
+        proposal={"request_id": "a" * 39},
+    ),
+    Scenario(
+        "S81",
+        "A request id that could break an HTTP header is denied",
+        X,
+        "R12",
+        ("R12",),
+        proposal={"request_id": "req-1\r\nX-Injected: 1"},
+    ),
+    Scenario(
+        "S82",
+        "A request id with a trailing newline is denied",
+        X,
+        "R12",
+        ("R12",),
+        proposal={"request_id": "req-1\n"},
+    ),
 )
 
 # Evidence drift between approval and execution: (id, change, expected, rule).

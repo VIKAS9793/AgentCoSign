@@ -32,13 +32,18 @@ from typing import Any
 from agentcosign.core.config import PolicySettings, ScreeningSettings
 from agentcosign.core.exceptions import AuditIntegrityError, FailClosedError
 from agentcosign.models.domain import Decision, PolicyResult, ToolAction
-from agentcosign.models.policy import LedgerContext, OrderEvidence, Proposal, Signals
+from agentcosign.models.policy import (
+    REQUEST_ID_PATTERN,
+    LedgerContext,
+    OrderEvidence,
+    Proposal,
+    Signals,
+)
 from agentcosign.services.identity import payee_key
 from agentcosign.services.policy_engine import evaluate
 
 GENESIS_HASH = "0" * 64
 BUSY_TIMEOUT_SECONDS = 5
-MAX_REQUEST_ID_LENGTH = 128
 CENT = Decimal("0.01")
 
 
@@ -266,7 +271,7 @@ class Ledger:
         """Decide and record atomically, or replay the outcome of a repeated id."""
         now = _utc(now)
         digest = _payload_hash(proposal)
-        storable = 0 < len(proposal.request_id or "") <= MAX_REQUEST_ID_LENGTH
+        storable = REQUEST_ID_PATTERN.fullmatch(proposal.request_id or "") is not None
         with self._transaction() as conn:
             if storable:
                 row = conn.execute(_Q_GET, (proposal.request_id,)).fetchone()

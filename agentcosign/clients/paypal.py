@@ -23,6 +23,7 @@ import httpx
 from pydantic import SecretStr
 
 from agentcosign.core.exceptions import PayPalClientError
+from agentcosign.models.policy import REQUEST_ID_PATTERN
 
 SANDBOX_BASE = "https://api-m.sandbox.paypal.com"  # sandbox only; not configurable
 REQUEST_ID_HEADER = "PayPal-Request-Id"
@@ -42,6 +43,13 @@ def checked_id(value: str | None, kind: str) -> str:
     """Return a PayPal id that is safe to place in a URL path, or refuse it."""
     if value is None or not PAYPAL_ID.match(value):
         raise PayPalClientError(f"invalid PayPal {kind} id", {"kind": kind})
+    return value
+
+
+def checked_request_id(value: str) -> str:
+    """Return a request id that PayPal accepts as its idempotency header."""
+    if not REQUEST_ID_PATTERN.fullmatch(value or ""):
+        raise PayPalClientError("invalid request id", {"retryable": False})
     return value
 
 
@@ -195,6 +203,7 @@ class LivePayPalClient:
     ) -> JsonObject:
         """Refund part or all of a capture, idempotently."""
         capture = checked_id(capture_id, "capture")
+        request_id = checked_request_id(request_id)
         result: JsonObject = await self._send(
             "POST",
             f"/v2/payments/captures/{capture}/refund",
@@ -206,6 +215,7 @@ class LivePayPalClient:
     async def accept_claim(self, dispute_id: str, request_id: str) -> JsonObject:
         """Accept a dispute claim, conceding the disputed amount."""
         dispute = checked_id(dispute_id, "dispute")
+        request_id = checked_request_id(request_id)
         result: JsonObject = await self._send(
             "POST",
             f"/v1/customer/disputes/{dispute}/accept-claim",
@@ -265,6 +275,7 @@ class RecordedPayPalClient:
     ) -> JsonObject:
         """Simulate an idempotent refund against a recorded capture."""
         capture = checked_id(capture_id, "capture")
+        request_id = checked_request_id(request_id)
         if request_id in self._writes:
             return dict(self._writes[request_id])
         purchase = self._purchase_with_capture(capture)
@@ -280,6 +291,7 @@ class RecordedPayPalClient:
     async def accept_claim(self, dispute_id: str, request_id: str) -> JsonObject:
         """Simulate accepting a recorded dispute claim."""
         checked_id(dispute_id, "dispute")
+        request_id = checked_request_id(request_id)
         result = self._writes.setdefault(
             request_id, {"id": dispute_id, "status": "RESOLVED"}
         )
