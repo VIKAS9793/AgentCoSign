@@ -72,7 +72,7 @@ models:
   agent:
     provider: "groq"
     primary: "openai/gpt-oss-120b"
-    fallback: "qwen/qwen3.6-27b"
+    fallback: "qwen/qwen3.8-27b"
     temperature: 0.1
     # gpt-oss are reasoning models: reasoning tokens count against this budget.
     # Check against the live model that tool calls are not truncated.
@@ -81,6 +81,8 @@ models:
 
   screening:
     provider: "groq"
+    # Free-tier limit on the safeguard model is 3 requests per minute, so a burst
+    # gets HTTP 429. Treat 429 as "use the fallback now", never as a reason to wait.
     primary: "openai/gpt-oss-safeguard-20b"
     fallback: "openai/gpt-oss-20b"
     temperature: 0.0
@@ -90,8 +92,11 @@ models:
   extraction:
     provider: "nvidia_nim"
     base_url: "https://integrate.api.nvidia.com/v1"
-    primary: "writer/palmyra-fin-70b-32k"
-    fallback: "openai/gpt-oss-120b"
+    # A different model family from the agent keeps this an independent second
+    # reading. A model appearing in the provider's catalogue does not mean this
+    # account can call it: always confirm with a real one-token request.
+    primary: "google/diffusiongemma-26b-a4b-it"
+    fallback: "openai/gpt-oss-20b"
     temperature: 0.0
     max_tokens: 512
     timeout_seconds: 15

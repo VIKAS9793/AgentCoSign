@@ -124,7 +124,9 @@ BRANCH_NODES = (
 )
 
 # Text patterns
-MODEL_ID = re.compile(r"gpt-oss|palmyra|qwen|llama|safeguard", re.IGNORECASE)
+MODEL_ID = re.compile(
+    r"gpt-oss|palmyra|qwen|llama|safeguard|gemma|kimi|deepseek", re.IGNORECASE
+)
 PROD_PAYPAL = re.compile(r"api(-m)?\.paypal\.com|www\.paypal\.com/(v1|v2|cgi)")
 BANNED_PAYPAL = re.compile(
     r"record_refund_for_invoice|record_payment_for_invoice|\bpay_order\b"

@@ -123,6 +123,8 @@ Switches: `AGENTCOSIGN_REPLAY_MODE`, `AGENTCOSIGN_PAYPAL_EXECUTION` (see `.env.e
 3. Approver passkey unavailable on the device → `session` assurance (explicitly labelled lower assurance, recorded in the ledger).
 4. Hosted service cold or down → `docker compose up` or the committed demo video.
 
+**Model availability is measured, not assumed.** A model that appears in a provider's catalogue can still return 404 for a given account, and free-tier limits differ per model (the screening classifier allows 3 requests per minute, the general models 1,000 requests per day). The startup probe therefore makes a real one-token request to each configured model, falls back along the configured chain, and treats HTTP 429 as "use the next model now", never as a reason to wait. A model chain that cannot answer at all degrades as in step 2.
+
 ## 6. Data model (SQLite, WAL)
 
 | Table | Purpose |

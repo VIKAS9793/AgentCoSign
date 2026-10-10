@@ -57,7 +57,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 
 ### Four verifiable AI roles
 1. **Acting agent** (Groq `openai/gpt-oss-120b`) parses requests and calls tools.
-2. **Extraction** (NVIDIA NIM `writer/palmyra-fin-70b-32k`) gives an independent second reading of amounts, payees and references.
+2. **Extraction** (NVIDIA NIM `google/diffusiongemma-26b-a4b-it`, a different model family from the agent) gives an independent second reading of amounts, payees and references.
 3. **Screening** (Groq `openai/gpt-oss-safeguard-20b`) classifies injection and social engineering, after a deterministic pre-screen.
 4. **Approval summary** gives the approver a plain-language explanation, always shown *after* deterministic facts and labelled advisory.
 
@@ -91,7 +91,7 @@ ruff check . && ruff format --check . && mypy agentcosign/ && bandit -r agentcos
 
 ## Legal
 
-Independent open-source project, not affiliated with, sponsored by or endorsed by PayPal Holdings, Inc., Groq, Inc., NVIDIA Corporation or Writer, Inc. PayPal, Groq, NVIDIA and NVIDIA NIM are trademarks of their respective owners. `writer/palmyra-fin-70b-32k` is accessed through NVIDIA's hosted API under its model licence (non-commercial research terms); weights are not redistributed. A commercial deployment needs a licence check.
+Independent open-source project, not affiliated with, sponsored by or endorsed by PayPal Holdings, Inc., Groq, Inc., NVIDIA Corporation or Google LLC. PayPal, Groq, NVIDIA, NVIDIA NIM and Gemma are trademarks of their respective owners. Models are accessed through the providers' hosted APIs under their own model licences; weights are not redistributed. A commercial deployment needs a licence check.
 
 ## Author and licence
 
