@@ -89,6 +89,8 @@ CREATE TABLE IF NOT EXISTS proposals (
     explanation TEXT NOT NULL,
     triggered TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
+    proposal_json TEXT,
+    evidence_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -126,8 +128,8 @@ _Q_DUPLICATE = (
 _Q_INSERT = (
     "INSERT INTO proposals (request_id, payload_hash, tool, order_id, customer_key, "
     "payee_key, reference, amount, currency, state, decision, rule_id, explanation, "
-    "triggered, created_at, updated_at) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "triggered, proposal_json, evidence_json, created_at, updated_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 _Q_SET_STATE = "UPDATE proposals SET state = ?, updated_at = ? WHERE request_id = ?"
 _Q_DUE = "SELECT request_id FROM proposals WHERE state = ? AND created_at < ?"
@@ -135,7 +137,15 @@ _Q_ATTEMPT = (
     "UPDATE proposals SET attempts = attempts + 1, updated_at = ? WHERE request_id = ?"
 )
 _Q_COLUMNS = "PRAGMA table_info(proposals)"
-_Q_ADD_ATTEMPTS = "ALTER TABLE proposals ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+_MIGRATIONS = {
+    "attempts": "ALTER TABLE proposals ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+    "proposal_json": "ALTER TABLE proposals ADD COLUMN proposal_json TEXT",
+    "evidence_json": "ALTER TABLE proposals ADD COLUMN evidence_json TEXT",
+}
+_Q_PENDING = (
+    "SELECT request_id, tool, amount, currency, order_id, rule_id, explanation, "
+    "created_at FROM proposals WHERE state = ? ORDER BY created_at"
+)
 _Q_ALL_PROPOSALS = "SELECT request_id, tool, amount, decision, state FROM proposals"
 _Q_LAST_HASH = "SELECT entry_hash FROM audit ORDER BY seq DESC LIMIT 1"
 _Q_APPEND = (
@@ -239,8 +249,9 @@ class Ledger:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
             columns = {row["name"] for row in conn.execute(_Q_COLUMNS)}
-            if "attempts" not in columns:
-                conn.execute(_Q_ADD_ATTEMPTS)
+            for column, statement in _MIGRATIONS.items():
+                if column not in columns:
+                    conn.execute(statement)
 
     # ------------------------------------------------------------ connections
 
@@ -404,6 +415,8 @@ class Ledger:
                 result.rule_id,
                 result.explanation,
                 json.dumps(list(result.triggered_rules)),
+                canonical_json(proposal_to_dict(proposal, self._secret)),
+                canonical_json(evidence_to_dict(evidence)) if evidence else None,
                 stamp,
                 stamp,
             ),
@@ -473,6 +486,44 @@ class Ledger:
                 self._append(conn, request_id, "state_changed", body, now)
                 expired.append(request_id)
         return expired
+
+    def load(self, request_id: str) -> tuple[Proposal, OrderEvidence | None] | None:
+        """The proposal exactly as decided, and the evidence the decision used."""
+        with self._connection() as conn:
+            row = conn.execute(_Q_GET, (request_id,)).fetchone()
+        if row is None or row["proposal_json"] is None:
+            return None
+        proposal = proposal_from_dict(json.loads(row["proposal_json"]))
+        evidence_text = row["evidence_json"]
+        evidence = (
+            evidence_from_dict(json.loads(evidence_text)) if evidence_text else None
+        )
+        return proposal, evidence
+
+    def pending_approvals(self) -> list[dict[str, str]]:
+        """Proposals waiting for a person, oldest first, as plain text fields."""
+        with self._connection() as conn:
+            rows = conn.execute(_Q_PENDING, (S.PENDING_APPROVAL.value,)).fetchall()
+        return [
+            {key: str(value or "") for key, value in dict(row).items()} for row in rows
+        ]
+
+    def action_digest(self, request_id: str) -> str | None:
+        """Digest of the exact recorded action, for binding an approval to it."""
+        with self._connection() as conn:
+            row = conn.execute(_Q_GET, (request_id,)).fetchone()
+        if row is None:
+            return None
+        facts = {
+            "request_id": row["request_id"],
+            "payload_hash": row["payload_hash"],
+            "tool": row["tool"],
+            "amount": row["amount"],
+            "currency": row["currency"],
+            "order_id": row["order_id"],
+            "state": row["state"],
+        }
+        return hashlib.sha256(canonical_json(facts).encode("utf-8")).hexdigest()
 
     def state_of(self, request_id: str) -> ProposalState | None:
         """Current state of a proposal, or None if unknown."""
@@ -588,6 +639,58 @@ def _replayed_facts(rows: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
         elif row["event"] == "state_changed" and request_id in facts:
             facts[request_id]["state"] = str(body["to"])
     return facts
+
+
+def proposal_to_dict(proposal: Proposal, secret: bytes) -> dict[str, Any]:
+    """Serialise a proposal with money as text and the payee only as a digest.
+
+    Payee details are personal data and are never stored in clear. A reloaded
+    payout then does not match its recorded content, so it cannot execute until
+    encrypted payee storage exists.
+    """
+    out: dict[str, Any] = {}
+    for name in proposal.__slots__:
+        value = getattr(proposal, name)
+        out[name] = str(value) if isinstance(value, Decimal) else value
+    if proposal.payee_id:
+        out["payee_id"] = payee_key(secret, proposal.payee_id)
+    return out
+
+
+def proposal_from_dict(data: dict[str, Any]) -> Proposal:
+    """Rebuild a proposal serialised by ``proposal_to_dict``."""
+    money = ("amount", "claimed_captured", "claimed_refunded")
+    values: dict[str, Any] = {
+        key: (Decimal(value) if key in money and value is not None else value)
+        for key, value in data.items()
+    }
+    return Proposal(**values)
+
+
+def evidence_to_dict(evidence: OrderEvidence) -> dict[str, Any]:
+    """Serialise evidence with money as text and the time in ISO format."""
+    out: dict[str, Any] = {}
+    for name in evidence.__slots__:
+        value = getattr(evidence, name)
+        if isinstance(value, Decimal):
+            value = str(value)
+        elif isinstance(value, datetime):
+            value = value.isoformat()
+        out[name] = value
+    return out
+
+
+def evidence_from_dict(data: dict[str, Any]) -> OrderEvidence:
+    """Rebuild evidence serialised by ``evidence_to_dict``."""
+    money = ("captured_amount", "refunded_amount", "dispute_amount")
+    values: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in money and value is not None:
+            value = Decimal(value)
+        elif key == "fetched_at":
+            value = datetime.fromisoformat(value)
+        values[key] = value
+    return OrderEvidence(**values)
 
 
 def _audit_body(
