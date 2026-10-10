@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     rule_id TEXT NOT NULL,
     explanation TEXT NOT NULL,
     triggered TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -109,7 +110,8 @@ CREATE TABLE IF NOT EXISTS audit (
 
 _Q_GET = "SELECT * FROM proposals WHERE request_id = ?"
 _Q_ORDER_RESERVED = (
-    "SELECT amount FROM proposals WHERE order_id = ? AND tool = ? AND state IN (?, ?)"
+    "SELECT amount FROM proposals WHERE order_id = ? AND tool IN (?, ?) "
+    "AND state IN (?, ?)"
 )
 _Q_OUTFLOW = "SELECT amount FROM proposals WHERE created_at >= ? AND state IN (?, ?, ?)"
 _Q_CUSTOMER = (
@@ -129,6 +131,12 @@ _Q_INSERT = (
 )
 _Q_SET_STATE = "UPDATE proposals SET state = ?, updated_at = ? WHERE request_id = ?"
 _Q_DUE = "SELECT request_id FROM proposals WHERE state = ? AND created_at < ?"
+_Q_ATTEMPT = (
+    "UPDATE proposals SET attempts = attempts + 1, updated_at = ? WHERE request_id = ?"
+)
+_Q_COLUMNS = "PRAGMA table_info(proposals)"
+_Q_ADD_ATTEMPTS = "ALTER TABLE proposals ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+_Q_ALL_PROPOSALS = "SELECT request_id, tool, amount, decision, state FROM proposals"
 _Q_LAST_HASH = "SELECT entry_hash FROM audit ORDER BY seq DESC LIMIT 1"
 _Q_APPEND = (
     "INSERT INTO audit (created_at, request_id, event, body, prev_hash, entry_hash, "
@@ -230,6 +238,9 @@ class Ledger:
         with self._connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
+            columns = {row["name"] for row in conn.execute(_Q_COLUMNS)}
+            if "attempts" not in columns:
+                conn.execute(_Q_ADD_ATTEMPTS)
 
     # ------------------------------------------------------------ connections
 
@@ -318,7 +329,15 @@ class Ledger:
         day_ago = _iso(now - timedelta(hours=24))
         refund = ToolAction.CREATE_REFUND.value
         reserved = _sum(
-            conn.execute(_Q_ORDER_RESERVED, (proposal.order_id, refund, *RESERVING))
+            conn.execute(
+                _Q_ORDER_RESERVED,
+                (
+                    proposal.order_id,
+                    refund,
+                    ToolAction.ACCEPT_DISPUTE_CLAIM.value,
+                    *RESERVING,
+                ),
+            )
         )
         outflow = _sum(conn.execute(_Q_OUTFLOW, (day_ago, *OUTFLOW)))
         customer = evidence.customer_key if evidence is not None else None
@@ -389,6 +408,32 @@ class Ledger:
                 stamp,
             ),
         )
+
+    # --------------------------------------------------------------- execution
+
+    def begin_execution(self, proposal: Proposal, now: datetime) -> int:
+        """Claim a proposal for execution; return how many attempts came before.
+
+        Only a proposal that was allowed or approved (state executing) and whose
+        content matches the recorded decision exactly may move money. Anything
+        else is refused, so a caller cannot execute a pending or denied request
+        or change the amount, order or recipient after the decision.
+        """
+        now = _utc(now)
+        digest = _payload_hash(proposal)
+        with self._transaction() as conn:
+            row = conn.execute(_Q_GET, (proposal.request_id,)).fetchone()
+            if row is None or not hmac.compare_digest(row["payload_hash"], digest):
+                raise FailClosedError("proposal does not match the recorded decision")
+            if ProposalState(row["state"]) is not S.EXECUTING:
+                raise FailClosedError(
+                    "proposal is not approved for execution", {"state": row["state"]}
+                )
+            previous = int(row["attempts"])
+            conn.execute(_Q_ATTEMPT, (_iso(now), proposal.request_id))
+            body = {"attempt": str(previous + 1)}
+            self._append(conn, proposal.request_id, "execution_attempt", body, now)
+        return previous
 
     # ------------------------------------------------------------- transitions
 
@@ -483,11 +528,66 @@ class Ledger:
         if not hmac.compare_digest(row["mac"], mac.hexdigest()):
             raise AuditIntegrityError("audit entry is not authentic", {"seq": seq})
 
+    def verify_records(self) -> int:
+        """Check every proposal row against what the authenticated audit says.
+
+        Detects a decision, amount or state edited directly in the proposals
+        table. Returns the number of proposals checked.
+
+        Raises:
+            AuditIntegrityError: when the chain is broken or a row disagrees
+                with the audit trail.
+        """
+        self.verify_chain()
+        with self._connection() as conn:
+            audit = conn.execute(_Q_CHAIN).fetchall()
+            proposals = conn.execute(_Q_ALL_PROPOSALS).fetchall()
+        facts = _replayed_facts(audit)
+        for row in proposals:
+            expected = facts.get(row["request_id"])
+            actual = {
+                "tool": row["tool"],
+                "amount": _normal_amount(row["amount"]),
+                "decision": row["decision"],
+                "state": row["state"],
+            }
+            if expected is None or expected != actual:
+                raise AuditIntegrityError(
+                    "a recorded decision differs from the audit trail",
+                    {"request_id": row["request_id"]},
+                )
+        return len(proposals)
+
     def head_hash(self) -> str:
         """Hash of the latest audit entry, for publishing the chain head."""
         with self._connection() as conn:
             last = conn.execute(_Q_LAST_HASH).fetchone()
         return last["entry_hash"] if last is not None else GENESIS_HASH
+
+
+def _normal_amount(value: str) -> str:
+    try:
+        return str(Decimal(value).quantize(CENT))
+    except InvalidOperation:
+        return value
+
+
+def _replayed_facts(rows: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
+    """Rebuild each proposal's recorded facts and latest state from the audit."""
+    facts: dict[str, dict[str, str]] = {}
+    for row in rows:
+        body = json.loads(row["body"])
+        request_id = row["request_id"]
+        if row["event"] == "decided":
+            facts[request_id] = {
+                "tool": str(body["tool"]),
+                "amount": _normal_amount(str(body["amount"])),
+                "decision": str(body["decision"]),
+                "state": str(body["state"]),
+            }
+        elif row["event"] == "state_changed" and request_id in facts:
+            facts[request_id]["state"] = str(body["to"])
+    return facts
 
 
 def _audit_body(

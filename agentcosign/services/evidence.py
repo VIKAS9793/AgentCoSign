@@ -17,7 +17,7 @@ from typing import Any
 from agentcosign.clients.paypal import PayPalClient
 from agentcosign.core.exceptions import PayPalClientError
 from agentcosign.models.policy import OrderEvidence
-from agentcosign.services.identity import card_fingerprint
+from agentcosign.services.identity import card_fingerprint, payer_key
 
 COUNTED_REFUND_STATUSES = frozenset({"COMPLETED", "PENDING"})
 CLOSED_DISPUTE_STATUSES = frozenset({"RESOLVED"})
@@ -63,21 +63,28 @@ def _refunded(payments: Mapping[str, Any], currency: str) -> Decimal:
 
 def _open_dispute(
     disputes: Sequence[Mapping[str, Any]],
-) -> tuple[str | None, Decimal | None]:
+) -> tuple[bool, str | None, Decimal | None]:
+    """First dispute that is not closed.
+
+    A record without an id still counts as open: missing data must never read
+    as "no dispute".
+    """
     for dispute in disputes:
         if dispute.get("status") in CLOSED_DISPUTE_STATUSES:
             continue
         dispute_id = dispute.get("dispute_id")
         amount = dispute.get("dispute_amount")
         value = _money(amount)[0] if amount is not None else None
-        return (str(dispute_id) if dispute_id else None), value
-    return None, None
+        return True, (str(dispute_id) if dispute_id else None), value
+    return False, None, None
 
 
 def _customer_key(order: Mapping[str, Any], secret: bytes) -> str | None:
+    """Card payments: card fingerprint. Wallet payments: PayPal's payer id."""
     card = (order.get("payment_source") or {}).get("card") or {}
-    if not isinstance(card, Mapping):
-        return None
+    if not isinstance(card, Mapping) or not card:
+        payer = (order.get("payer") or {}).get("payer_id")
+        return payer_key(secret, str(payer)) if payer else None
     return card_fingerprint(
         secret,
         str(card.get("brand", "")),
@@ -101,14 +108,14 @@ def order_evidence_from(
     merchant = (unit.get("payee") or {}).get("merchant_id")
     if not order.get("id") or not capture.get("id") or not merchant:
         raise PayPalClientError("PayPal order is missing an id or merchant")
-    dispute_id, dispute_amount = _open_dispute(disputes)
+    disputed, dispute_id, dispute_amount = _open_dispute(disputes)
     return OrderEvidence(
         order_id=str(order["id"]),
         currency=currency,
         captured_amount=captured,
         refunded_amount=_refunded(payments, currency),
         account_id=str(merchant),
-        has_open_dispute=dispute_id is not None,
+        has_open_dispute=disputed,
         fetched_at=fetched_at,
         dispute_id=dispute_id,
         dispute_amount=dispute_amount,

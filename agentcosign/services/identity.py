@@ -13,6 +13,7 @@ import unicodedata
 
 KEY_PREFIX_CARD = "card:"
 KEY_PREFIX_PAYEE = "payee:"
+KEY_PREFIX_PAYER = "payer:"
 DIGEST_CHARS = 32
 
 
@@ -40,3 +41,8 @@ def card_fingerprint(
 def payee_key(secret: bytes, payee_id: str) -> str:
     """Key for a payout recipient, so payee details are not stored in clear."""
     return KEY_PREFIX_PAYEE + keyed_digest(secret, payee_id)
+
+
+def payer_key(secret: bytes, payer_id: str) -> str:
+    """Customer key for a PayPal wallet payment, from PayPal's payer id."""
+    return KEY_PREFIX_PAYER + keyed_digest(secret, payer_id)

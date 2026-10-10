@@ -52,7 +52,8 @@ async def test_allowed_refund_executes_and_paypal_sees_it(ledger: Ledger) -> Non
     assert outcome.paypal_id and outcome.paypal_id.startswith("RF-")
     after = await fetch_evidence(client, "ORD-1", now=NOW, secret=SECRET)
     assert after.refunded_amount == Decimal("10.00")
-    assert ledger.verify_chain() == 2
+    assert ledger.verify_chain() == 3  # decided, execution attempt, executed
+    assert ledger.verify_records() == 1
 
 
 async def test_executed_refunds_count_through_paypal_not_twice(ledger: Ledger) -> None:

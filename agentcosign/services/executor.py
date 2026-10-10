@@ -11,11 +11,11 @@ the same money be spent twice. Only a definite refusal releases it.
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from agentcosign.clients.paypal import JsonObject, PayPalClient
-from agentcosign.core.exceptions import PayPalClientError
+from agentcosign.core.exceptions import FailClosedError, PayPalClientError
 from agentcosign.models.domain import Decision, ToolAction
 from agentcosign.models.policy import OrderEvidence, Proposal
 from agentcosign.services.evidence import fetch_evidence
@@ -28,7 +28,7 @@ class Execution:
     """What happened when the gateway tried to execute a proposal."""
 
     request_id: str
-    state: ProposalState
+    state: ProposalState | None
     reason: str
     paypal_id: str | None = None
 
@@ -59,6 +59,31 @@ async def _call_paypal(
     )
 
 
+async def _stop_on_drift(
+    ledger: Ledger,
+    request_id: str,
+    decided: OrderEvidence,
+    current: OrderEvidence,
+    previous_attempts: int,
+    now: datetime,
+) -> Execution | None:
+    """Stop or send back for approval when the order changed since the decision."""
+    compared = current
+    if previous_attempts > 0:
+        # An earlier attempt may already have landed at PayPal. Its refund is not
+        # an outside change: resending the same request id returns that result.
+        compared = replace(current, refunded_amount=decided.refunded_amount)
+    drift = check_execution_drift(decided, compared)
+    if drift is None:
+        return None
+    if drift.decision is Decision.DENY:
+        state, reason = ProposalState.FAILED, "evidence_changed"
+    else:
+        state, reason = ProposalState.PENDING_APPROVAL, "state_drift"
+    await _move(ledger, request_id, state, now, {"reason": reason})
+    return Execution(request_id, state, reason)
+
+
 async def execute(
     proposal: Proposal,
     decided: OrderEvidence,
@@ -71,28 +96,17 @@ async def execute(
     """Re-check the evidence, then execute idempotently and record the outcome."""
     request_id = proposal.request_id
     try:
+        previous = await asyncio.to_thread(ledger.begin_execution, proposal, now)
+    except FailClosedError:
+        state = await asyncio.to_thread(ledger.state_of, request_id)
+        return Execution(request_id, state, "not_executable")
+    try:
         current = await fetch_evidence(client, decided.order_id, now=now, secret=secret)
     except PayPalClientError:
         return Execution(request_id, ProposalState.EXECUTING, "evidence_unavailable")
-    drift = check_execution_drift(decided, current)
-    if drift is not None and drift.decision is Decision.DENY:
-        await _move(
-            ledger,
-            request_id,
-            ProposalState.FAILED,
-            now,
-            {"reason": "evidence_changed"},
-        )
-        return Execution(request_id, ProposalState.FAILED, "evidence_changed")
-    if drift is not None:
-        await _move(
-            ledger,
-            request_id,
-            ProposalState.PENDING_APPROVAL,
-            now,
-            {"reason": "state_drift"},
-        )
-        return Execution(request_id, ProposalState.PENDING_APPROVAL, "state_drift")
+    stopped = await _stop_on_drift(ledger, request_id, decided, current, previous, now)
+    if stopped is not None:
+        return stopped
     try:
         response = await _call_paypal(client, proposal, current)
     except PayPalClientError as exc:

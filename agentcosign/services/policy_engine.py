@@ -338,9 +338,13 @@ def _rule_screening_down(case: _Case) -> RuleHit | None:
 
 
 def _rule_cumulative(case: _Case) -> RuleHit | None:
-    """Refunds already made plus reserved plus this one must not exceed captured."""
+    """Money returned on an order must not exceed what was captured.
+
+    Counts refunds and conceded disputes, made or reserved, plus this one.
+    """
     evidence = case.evidence
-    if case.tool is not ToolAction.CREATE_REFUND or evidence is None:
+    returns_money = (ToolAction.CREATE_REFUND, ToolAction.ACCEPT_DISPUTE_CLAIM)
+    if case.tool not in returns_money or evidence is None:
         return None
     committed = evidence.refunded_amount + case.ledger.reserved_for_order
     if committed + case.proposal.amount <= evidence.captured_amount:

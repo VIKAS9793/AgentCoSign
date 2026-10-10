@@ -841,6 +841,19 @@ SCENARIOS: tuple[Scenario, ...] = (
         ("R12",),
         proposal={"request_id": "req-1\n"},
     ),
+    Scenario(
+        "S83",
+        "Conceding a dispute past the money left on the order is denied",
+        X,
+        "R4",
+        ("R4", "R7"),
+        proposal=CLAIM,
+        evidence={
+            **DISPUTE,
+            "captured_amount": D("100.00"),
+            "refunded_amount": D("80.00"),
+        },
+    ),
 )
 
 # Evidence drift between approval and execution: (id, change, expected, rule).
