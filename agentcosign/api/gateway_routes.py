@@ -158,7 +158,7 @@ async def open_session(body: CredentialIn, request: Request) -> dict[str, str]:
 
 
 @router.get("/v1/approvals", dependencies=[Depends(require_approver_session)])
-async def pending_approvals(request: Request) -> list[dict[str, str]]:
+async def pending_approvals(request: Request) -> list[dict[str, str | list[str]]]:
     """Requests waiting for a person, oldest first."""
     return await _gateway(request).pending()
 

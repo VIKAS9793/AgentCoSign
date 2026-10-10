@@ -6,6 +6,7 @@
 
   function say(text) {
     statusBox.textContent = text;
+    statusBox.hidden = !text;
   }
 
   function show(id, visible) {
@@ -88,7 +89,9 @@
     }).then(function (response) {
       return response.json().then(function (data) {
         if (!response.ok) {
-          throw new Error(data.detail || "The request was not accepted.");
+          var failure = new Error(data.detail || "The request was not accepted.");
+          failure.status = response.status;
+          throw failure;
         }
         return data;
       });
@@ -298,7 +301,9 @@
       return;
     }
     setButtons(card, false);
-    setProgress(card, "Confirm it's you with your fingerprint or screen lock.", false);
+    setProgress(card, intent === "approve"
+      ? "Your fingerprint confirms this exact refund: " + money(item.amount) + " to " + item.customer + " for order " + item.order_id + "."
+      : "Confirm it's you with your fingerprint or screen lock.", false);
     var path = "/v1/approvals/" + encodeURIComponent(item.request_id);
     var signedAndSent = false;
     post(path + "/options", { intent: intent }, sessionHeaders())
@@ -315,7 +320,20 @@
         showResult(card, message[0], message[1], message[2]);
       })
       .catch(function (error) {
-        if (signedAndSent) {
+        var status = error && error.status;
+        if (status === 409) {
+          showResult(card, "check", "This request was already handled.",
+            "It was decided or ran out of time. Nothing more will be sent from this screen.");
+          return;
+        }
+        if (status === 401) {
+          session = null;
+          show("queue", false);
+          show("signin", true);
+          say("Your sign-in ran out. Nothing was sent. Please sign in again.");
+          return;
+        }
+        if (signedAndSent && (!status || status >= 500)) {
           setProgress(card, "Checking what happened. Please wait.", false);
           recheckAfterLostAnswer(item, card);
           return;
@@ -323,6 +341,8 @@
         setButtons(card, true);
         if (error && error.name === "NotAllowedError") {
           setProgress(card, "You closed the fingerprint prompt. Nothing was sent.", true);
+        } else if (signedAndSent) {
+          setProgress(card, "Your fingerprint could not be confirmed. Nothing was sent. Please try again.", true);
         } else {
           setProgress(card, "We could not start this. Nothing was sent. Please try again.", true);
         }
@@ -333,28 +353,67 @@
     var card = el("section", "", "card");
     var amount = money(item.amount);
     var who = item.customer;
-    card.appendChild(el("p", "Your AI assistant needs your OK", "eyebrow"));
     card.appendChild(el("h3", "Send " + who + " a " + amount + " refund?", "question"));
     var paidWith = item.paid_with ? " (" + item.paid_with + ")" : "";
     card.appendChild(el("p", "Order " + item.order_id + ". " + who + paidWith + ".", "order-line"));
-    card.appendChild(el("p", item.reason, "why"));
+    item.reasons.forEach(function (reason) {
+      card.appendChild(el("p", reason, "why"));
+    });
+
+    // A safety check that did not run is never shown as passed, and the
+    // screen does not nudge toward sending while it is missing.
+    var checkMissing = item.safety_check !== "passed";
+    if (checkMissing) {
+      var box = el("div", "", "safety missing");
+      box.appendChild(el("p", "! Our safety check did not run", "safety-title"));
+      box.appendChild(el("p", "We could not scan the customer's messages for tricks aimed at your assistant. PayPal did confirm the order and payment."));
+      box.appendChild(el("p", "Before you send, check: is this your customer, and is " + amount + " right for this order?", "safety-ask"));
+      card.appendChild(box);
+    } else {
+      card.appendChild(el("p", "\u2713 Safety check passed. No attempt to trick your assistant was found.", "safety passed"));
+    }
 
     if (item.paid) {
       var details = el("details", "", "details");
+      details.open = checkMissing;
       details.appendChild(el("summary", "Details from PayPal"));
       details.appendChild(fact("Customer paid", money(item.paid)));
-      details.appendChild(fact("Already refunded", money(item.already_refunded)));
+      details.appendChild(fact("Already refunded on this order", money(item.already_refunded)));
+      details.appendChild(fact("Can still be refunded now", money(item.refundable_now)));
+      if (item.fits === "yes") {
+        details.appendChild(fact("Left after this refund", money(item.left_after)));
+      }
       details.appendChild(fact("Asked", ago(item.asked_at)));
       card.appendChild(details);
     } else {
       card.appendChild(el("p", "We could not load the details from PayPal right now.", "note"));
     }
 
+    // The refund is larger than what can still be refunded on the order:
+    // offer no Send button. The server would refuse it anyway.
+    if (item.fits === "no") {
+      var blocked = el("div", "", "safety missing");
+      blocked.appendChild(el("p", "! This refund can't be sent", "safety-title"));
+      blocked.appendChild(el("p", "Only " + money(item.refundable_now) + " can still be refunded on this order, less than " + amount + ". It may have been refunded in PayPal directly."));
+      card.appendChild(blocked);
+      var close = el("button", "Tell my assistant no", "primary");
+      close.type = "button";
+      card.appendChild(el("p", "", "progress")).hidden = true;
+      var closeArea = el("div", "", "decision");
+      close.addEventListener("click", function () {
+        decide(item, "reject", card);
+      });
+      closeArea.appendChild(close);
+      closeArea.appendChild(el("p", "Nothing is sent. Your assistant is told no.", "consequence"));
+      card.appendChild(closeArea);
+      return card;
+    }
+
     var progress = el("p", "", "progress");
     progress.hidden = true;
     card.appendChild(progress);
     var decision = el("div", "", "decision");
-    var send = el("button", "Send " + amount + " refund", "primary");
+    var send = el("button", "Send " + amount + " refund", checkMissing ? "secondary" : "primary");
     send.type = "button";
     send.addEventListener("click", function () {
       decide(item, "approve", card);

@@ -348,8 +348,13 @@ def test_the_approver_sees_owner_words_and_live_paypal_facts(env: Env) -> None:
     assert item["paid_with"] == "card ending 4242"
     assert item["paid"] == "500.00"
     assert item["already_refunded"] == "0.00"
-    assert item["reason"] == (
-        "We could not run our safety check. Please look at this one yourself."
-    )
+    assert item["safety_check"] == "unavailable"  # missing is never "passed"
+    assert item["reasons"] == [
+        "Your assistant could usually send this on its own. It needs your OK "
+        "because our safety check did not run."
+    ]
+    assert item["left_after"] == "490.00"
+    assert item["refundable_now"] == "500.00"
+    assert item["fits"] == "yes"
     assert "R15" not in json.dumps(item)
     assert item["decide_by"] > item["asked_at"]

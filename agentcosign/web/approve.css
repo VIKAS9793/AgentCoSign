@@ -119,6 +119,14 @@ button.secondary {
   border: 1px solid var(--border);
 }
 
+button.link {
+  background: transparent;
+  border: none;
+  color: var(--primary);
+  text-decoration: underline;
+  font-weight: 600;
+}
+
 button:disabled {
   opacity: 0.6;
   cursor: default;
@@ -243,4 +251,29 @@ input:focus-visible {
   color: var(--danger-text);
   background: var(--danger-bg);
   border-color: var(--danger-text);
+}
+
+.safety {
+  margin: 10px 0;
+}
+
+.safety.passed {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.safety.missing {
+  padding: 4px 12px;
+  border: 2px solid var(--warn);
+  border-radius: 8px;
+  background: var(--warn-bg);
+}
+
+.safety-title {
+  font-weight: 700;
+  color: var(--warn);
+}
+
+.safety-ask {
+  font-weight: 600;
 }

@@ -21,6 +21,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,9 +34,11 @@ from agentcosign.core.exceptions import FailClosedError, PayPalClientError
 from agentcosign.models.domain import Decision, ToolAction
 from agentcosign.models.policy import OrderEvidence, Proposal, ScreeningVerdict, Signals
 from agentcosign.services.approval_view import (
+    business_reasons,
     decide_by,
+    money_view,
     order_facts,
-    plain_reason,
+    safety_check,
     unavailable_facts,
 )
 from agentcosign.services.evidence import fetch_evidence
@@ -233,11 +236,11 @@ class Gateway:
     def _token_is_valid(self, purpose: str, token: str) -> bool:
         return token_is_valid(self._secret, purpose, token, self._clock())
 
-    async def pending(self) -> list[dict[str, str]]:
+    async def pending(self) -> list[dict[str, str | list[str]]]:
         """Requests waiting for a person, with live facts from PayPal and a plain
         reason. The customer's name is read now and never stored."""
         items = await asyncio.to_thread(self._ledger.pending_approvals)
-        views: list[dict[str, str]] = []
+        views: list[dict[str, str | list[str]]] = []
         for item in items:
             facts = unavailable_facts()
             if item.get("order_id"):
@@ -245,6 +248,7 @@ class Gateway:
                     facts = order_facts(await self._paypal.get_order(item["order_id"]))
                 except PayPalClientError:
                     facts = unavailable_facts()
+            triggered = json.loads(item["triggered"] or "[]")
             views.append(
                 {
                     "request_id": item["request_id"],
@@ -252,7 +256,9 @@ class Gateway:
                     "amount": item["amount"],
                     "currency": item["currency"],
                     "order_id": item["order_id"],
-                    "reason": plain_reason(item["rule_id"], self._policy),
+                    "reasons": business_reasons(triggered, self._policy),
+                    "safety_check": safety_check(triggered),
+                    **money_view(facts, item["amount"]),
                     "asked_at": item["created_at"],
                     "decide_by": decide_by(item["created_at"], self._ttl),
                     **facts,

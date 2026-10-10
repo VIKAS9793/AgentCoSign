@@ -12,7 +12,7 @@
 <body>
   <main>
     <h1>Refund requests</h1>
-    <p id="status" role="status" class="status"></p>
+    <p id="status" role="status" class="status" hidden></p>
 
     <section id="enrol" class="card" hidden>
       <h2>Set up this phone to approve refunds</h2>
@@ -32,7 +32,7 @@
       <h2 id="queue-title">Waiting for you</h2>
       <p id="empty" class="note" hidden>Your assistant has not asked for anything. You can close this page.</p>
       <div id="requests"></div>
-      <button id="refresh-button" type="button" class="secondary">Check for new requests</button>
+      <button id="refresh-button" type="button" class="link">Check for new requests</button>
     </section>
   </main>
   <script src="/assets/approve.js" defer></script>

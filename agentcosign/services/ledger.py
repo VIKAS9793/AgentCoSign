@@ -144,7 +144,7 @@ _MIGRATIONS = {
 }
 _Q_PENDING = (
     "SELECT request_id, tool, amount, currency, order_id, rule_id, explanation, "
-    "created_at FROM proposals WHERE state = ? ORDER BY created_at"
+    "triggered, created_at FROM proposals WHERE state = ? ORDER BY created_at"
 )
 _Q_ALL_PROPOSALS = "SELECT request_id, tool, amount, decision, state FROM proposals"
 _Q_LAST_HASH = "SELECT entry_hash FROM audit ORDER BY seq DESC LIMIT 1"
