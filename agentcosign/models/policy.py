@@ -1,0 +1,77 @@
+"""Inputs to the policy engine.
+
+Everything the engine decides on is a frozen value object, so a decision is a
+pure function of its inputs and can be replayed exactly from the audit record.
+Trust differs by type:
+
+* ``Proposal``: claims made by the agent. Untrusted.
+* ``OrderEvidence``: facts read from PayPal by the gateway. Trusted.
+* ``LedgerContext``: counters computed from the gateway's own ledger. Trusted.
+* ``Signals``: outputs of screening and extraction models. Advisory inputs that
+  can only make a decision stricter, never authorise anything.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+from enum import StrEnum
+
+
+class ScreeningVerdict(StrEnum):
+    """Result of the prompt-injection screening layer."""
+
+    CLEAN = "clean"
+    INJECTION = "injection"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class Proposal:
+    """What the agent asks to do. Every field is a claim, not a fact."""
+
+    request_id: str
+    tool: str
+    amount: Decimal
+    currency: str
+    order_id: str | None = None
+    dispute_id: str | None = None
+    payee_id: str | None = None
+    reference: str | None = None
+    claimed_captured: Decimal | None = None
+    claimed_refunded: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OrderEvidence:
+    """Facts about an order as read from PayPal, never supplied by the agent."""
+
+    order_id: str
+    currency: str
+    captured_amount: Decimal
+    refunded_amount: Decimal
+    account_id: str
+    has_open_dispute: bool
+    fetched_at: datetime
+    dispute_id: str | None = None
+    dispute_amount: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerContext:
+    """Counters from the gateway's own ledger, reservations included."""
+
+    expected_account_id: str
+    reserved_for_order: Decimal = Decimal("0")
+    refunds_24h_for_customer: int = 0
+    outflow_24h: Decimal = Decimal("0")
+    known_payee: bool = False
+    duplicate_payout_in_window: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Signals:
+    """Screening and extraction outputs. They can only tighten a decision."""
+
+    screening: ScreeningVerdict = ScreeningVerdict.CLEAN
+    prescreen_hit: bool = False
+    extracted_amount: Decimal | None = None

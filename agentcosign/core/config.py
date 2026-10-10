@@ -59,6 +59,8 @@ class PolicySettings(BaseModel):
     payout_new_payee_action: Literal["escalate", "deny"]  # never "allow"
     payout_duplicate_window_days: int = Field(ge=1, le=365)  # repeat-payout window
     daily_outflow_cap: Decimal  # executed plus reserved, rolling 24h
+    # Evidence older than this is not trusted for a decision; it is re-read first.
+    evidence_max_age_seconds: int = Field(ge=1, le=3_600)
 
     @field_validator(
         "refund_auto_limit", "refund_max_limit", "daily_outflow_cap", mode="before"

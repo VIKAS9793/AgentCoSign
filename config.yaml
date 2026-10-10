@@ -42,6 +42,9 @@ policy:
   # Rolling 24-hour cap on executed plus reserved outflow across all tools.
   daily_outflow_cap: "1000.00"
 
+  # Facts read from PayPal are trusted for this long; older ones are re-read.
+  evidence_max_age_seconds: 60
+
 # ------------------------------------------------------------------------------
 # Human approval (co-sign)
 # ------------------------------------------------------------------------------

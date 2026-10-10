@@ -24,6 +24,7 @@ VALID_POLICY: dict[str, Any] = {
     "payout_new_payee_action": "escalate",
     "payout_duplicate_window_days": 30,
     "daily_outflow_cap": "1000.00",
+    "evidence_max_age_seconds": 60,
 }
 
 
