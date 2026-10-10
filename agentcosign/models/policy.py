@@ -57,6 +57,8 @@ class OrderEvidence:
     # Keyed digest identifying the paying customer across orders (card brand,
     # last four and cardholder name for card payments). Never the raw values.
     customer_key: str | None = None
+    # The capture a refund is issued against.
+    capture_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

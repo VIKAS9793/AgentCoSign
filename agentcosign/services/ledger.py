@@ -58,7 +58,8 @@ RESERVING = (S.PENDING_APPROVAL, S.EXECUTING)
 OUTFLOW = (S.PENDING_APPROVAL, S.EXECUTING, S.EXECUTED)
 ALLOWED_TRANSITIONS: dict[ProposalState, frozenset[ProposalState]] = {
     S.PENDING_APPROVAL: frozenset({S.EXECUTING, S.DENIED, S.EXPIRED}),
-    S.EXECUTING: frozenset({S.EXECUTED, S.FAILED}),
+    # Back to approval when the order's state moved between decision and execution.
+    S.EXECUTING: frozenset({S.EXECUTED, S.FAILED, S.PENDING_APPROVAL}),
 }
 STATE_FOR_DECISION = {
     Decision.ALLOW: S.EXECUTING,
