@@ -58,6 +58,10 @@ A reviewed exception is written on the line as `# guardrail: allow <rule> -- <re
 
 The pre-push hook also refuses force-pushes to and deletion of `main` and `release`, scans exactly the commits being pushed for secrets and re-checks their messages, so a commit made with `--no-verify` is still caught before it leaves the machine.
 
+## Acceptance review
+
+What the first quality and acceptance (UAT) review found, how each problem was fixed and proven, and why acceptance testing matters for money-moving software, in plain language: [UAT-FINDINGS](UAT-FINDINGS.md).
+
 ## Methodology notes
 
 - Injection attacks are **synthetic**; they are split into a development set (used for prompt tuning) and a held-out set (never used for tuning). Reports include the policy-only (screening disabled) result.
