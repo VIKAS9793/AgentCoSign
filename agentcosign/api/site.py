@@ -30,28 +30,33 @@ def _docs_policy(nonce: str) -> str:
     )
 
 
-def register_site(app: FastAPI, *, docs_enabled: bool) -> None:
-    """Serve the landing page and static assets, and the API reference if enabled."""
+def _page(name: str, cache: str) -> FileResponse:
+    return FileResponse(
+        WEB_DIR / name,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": cache},
+    )
 
-    @app.get("/favicon.ico", include_in_schema=False)
-    async def favicon() -> Response:
-        """Browsers ask for this on every site; answer quietly instead of a 404."""
-        return Response(status_code=204, headers={"Cache-Control": ASSET_CACHE})
 
-    if (WEB_DIR / "index.html").is_file():
-        app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
-
-        @app.get("/", include_in_schema=False)
-        async def landing_page() -> FileResponse:
-            """Landing page: what this is, the live status and where to go next."""
-            return FileResponse(
-                WEB_DIR / "index.html",
-                media_type="text/html; charset=utf-8",
-                headers={"Cache-Control": "no-cache"},
-            )
-
-    if not docs_enabled:
+def _register_pages(app: FastAPI) -> None:
+    """Static assets, the landing page and the approver page."""
+    if not (WEB_DIR / "index.html").is_file():
         return
+    app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    async def landing_page() -> FileResponse:
+        """Landing page: what this is, the live status and where to go next."""
+        return _page("index.html", "no-cache")
+
+    @app.get("/approve", include_in_schema=False)
+    async def approver_page() -> FileResponse:
+        """The approver's page: enrol a passkey, sign in, approve or decline."""
+        return _page("approve.html", "no-store")
+
+
+def _register_docs(app: FastAPI) -> None:
+    """The API reference, with its own content policy."""
 
     @app.get("/docs", include_in_schema=False)
     async def api_reference() -> Response:
@@ -73,3 +78,16 @@ def register_site(app: FastAPI, *, docs_enabled: bool) -> None:
                 "Cache-Control": "no-store",
             },
         )
+
+
+def register_site(app: FastAPI, *, docs_enabled: bool) -> None:
+    """Serve the pages and assets, and the API reference if enabled."""
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> Response:
+        """Browsers ask for this on every site; answer quietly instead of a 404."""
+        return Response(status_code=204, headers={"Cache-Control": ASSET_CACHE})
+
+    _register_pages(app)
+    if docs_enabled:
+        _register_docs(app)

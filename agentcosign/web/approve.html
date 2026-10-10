@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentCoSign approvals</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/assets/approve.css">
+</head>
+<body>
+  <main>
+    <h1>Approvals</h1>
+    <p id="status" role="status" class="status"></p>
+
+    <section id="enrol" class="card" hidden>
+      <h2>Set up this phone to approve refunds</h2>
+      <p>Your fingerprint or screen lock becomes the key that approves money leaving your PayPal account. It never leaves this phone.</p>
+      <label for="enrol-name">Your name</label>
+      <input id="enrol-name" type="text" autocomplete="name" maxlength="64" value="">
+      <button id="enrol-button" type="button" class="primary">Set up with fingerprint or screen lock</button>
+    </section>
+
+    <section id="signin" class="card" hidden>
+      <h2>Sign in to see what is waiting</h2>
+      <button id="signin-button" type="button" class="primary">Sign in with your passkey</button>
+    </section>
+
+    <section id="queue" hidden>
+      <h2 id="queue-title">Waiting for you</h2>
+      <p id="empty" class="note" hidden>Nothing is waiting for you.</p>
+      <div id="requests"></div>
+      <button id="refresh-button" type="button" class="secondary">Check again</button>
+    </section>
+  </main>
+  <script src="/assets/approve.js" defer></script>
+</body>
+</html>

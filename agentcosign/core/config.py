@@ -24,6 +24,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     SecretStr,
     ValidationError,
     field_validator,
@@ -327,6 +328,8 @@ class Settings(BaseSettings):
     audit: AuditConfig
     limits: LimitSettings
 
+    _ephemeral: set[str] = PrivateAttr(default_factory=set)
+
     @model_validator(mode="after")
     def _reviewer_token_is_strong_when_set(self) -> "Settings":
         token = self.reviewer_token.get_secret_value()
@@ -354,6 +357,7 @@ class Settings(BaseSettings):
                     f"when AGENTCOSIGN_ENV={self.env}"
                 )
             setattr(self, name, SecretStr(secrets.token_urlsafe(MIN_SECRET_LENGTH)))
+            self._ephemeral.add(name)
             logger.warning("%s not set: using an ephemeral per-process secret", name)
         return self
 
@@ -367,6 +371,11 @@ class Settings(BaseSettings):
         if secure and parsed.path in ("", "/") and parsed.hostname:
             return value.rstrip("/")
         raise ValueError("public_origin must be an https origin or http://localhost")
+
+    @property
+    def ephemeral_secrets(self) -> tuple[str, ...]:
+        """Gateway secrets generated for this process only (not set in the env)."""
+        return tuple(sorted(self._ephemeral))
 
     @property
     def passkey_rp_id(self) -> str:

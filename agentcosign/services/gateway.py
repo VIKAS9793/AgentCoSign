@@ -21,6 +21,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,7 @@ from agentcosign.services.ledger import Ledger, ProposalState
 from agentcosign.services.passkeys import PasskeyRegistry
 
 SESSION_SECONDS = 600
+ENROLMENT_LINK_SECONDS = 600
 VIEW_REQUEST = "approver-session"
 VIEW_DIGEST = hashlib.sha256(b"view pending approvals").hexdigest()
 
@@ -58,6 +60,30 @@ class Outcome:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _sign(secret: bytes, purpose: str, body: str) -> str:
+    mac = hmac.new(secret, f"{purpose}|{body}".encode(), hashlib.sha256)
+    return base64.urlsafe_b64encode(mac.digest()).decode().rstrip("=")
+
+
+def issue_token(
+    secret: bytes, purpose: str, subject: str, lifetime: int, now: datetime
+) -> str:
+    """A signed, expiring token for one purpose (session or enrolment link)."""
+    expires = int((now + timedelta(seconds=lifetime)).timestamp())
+    body = f"{subject}.{expires}"
+    return f"{body}.{_sign(secret, purpose, body)}"
+
+
+def token_is_valid(secret: bytes, purpose: str, token: str, now: datetime) -> bool:
+    """True for an unexpired token signed for this purpose with this secret."""
+    parts = token.split(".")
+    if len(parts) != 3 or not parts[1].isdigit():
+        return False
+    body = f"{parts[0]}.{parts[1]}"
+    fresh = int(parts[1]) > int(now.timestamp())
+    return fresh and hmac.compare_digest(parts[2], _sign(secret, purpose, body))
 
 
 class Gateway:
@@ -173,24 +199,31 @@ class Gateway:
         approver = self._passkeys.verify_approval(
             VIEW_REQUEST, "view", VIEW_DIGEST, credential, now
         )
-        expires = int((now + timedelta(seconds=SESSION_SECONDS)).timestamp())
-        body = f"{approver.credential_digest}.{expires}"
-        return f"{body}.{self._sign(body)}"
+        return self._token(
+            "approver-session", approver.credential_digest, SESSION_SECONDS
+        )
 
     def session_is_valid(self, token: str) -> bool:
         """True for an unexpired, untampered approver session token."""
-        parts = token.split(".")
-        if len(parts) != 3 or not parts[1].isdigit():
-            return False
-        body = f"{parts[0]}.{parts[1]}"
-        fresh = int(parts[1]) > int(self._clock().timestamp())
-        return fresh and hmac.compare_digest(parts[2], self._sign(body))
+        return self._token_is_valid("approver-session", token)
 
-    def _sign(self, body: str) -> str:
-        mac = hmac.new(
-            self._secret, b"approver-session|" + body.encode(), hashlib.sha256
-        )
-        return base64.urlsafe_b64encode(mac.digest()).decode().rstrip("=")
+    def enrolment_link_token(self) -> str:
+        """A short-lived token that lets one phone enrol an approver passkey.
+
+        Issued on the operator's own machine, so the operator key never has to be
+        typed into the phone.
+        """
+        return self._token("enrolment", secrets.token_hex(8), ENROLMENT_LINK_SECONDS)
+
+    def enrolment_token_is_valid(self, token: str) -> bool:
+        """True for an unexpired, untampered enrolment link token."""
+        return self._token_is_valid("enrolment", token)
+
+    def _token(self, purpose: str, subject: str, lifetime: int) -> str:
+        return issue_token(self._secret, purpose, subject, lifetime, self._clock())
+
+    def _token_is_valid(self, purpose: str, token: str) -> bool:
+        return token_is_valid(self._secret, purpose, token, self._clock())
 
     def pending(self) -> list[dict[str, str]]:
         """Requests waiting for a person, facts first."""

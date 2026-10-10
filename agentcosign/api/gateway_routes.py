@@ -57,7 +57,10 @@ def require_agent(request: Request) -> None:
 
 
 def require_operator(request: Request) -> None:
-    """Only the operator key may enrol approver passkeys."""
+    """Enrolment needs the operator key or a one-time link the operator issued."""
+    link = request.headers.get("x-enrolment-token", "")
+    if link and _gateway(request).enrolment_token_is_valid(link):
+        return
     settings: Settings = request.app.state.settings
     _check_key(request, settings.operator_api_key.get_secret_value())
 

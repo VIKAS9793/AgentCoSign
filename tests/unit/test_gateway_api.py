@@ -286,3 +286,54 @@ def test_options_are_valid_webauthn_requests(env: Env) -> None:
     assert options["rpId"] == "localhost"
     assert options["userVerification"] == "required"
     assert options["allowCredentials"][0]["id"] == env.phone.id
+
+
+# --- one-time enrolment link and the approver page ----------
+def test_a_one_time_link_enrols_without_the_operator_key(env: Env) -> None:
+    from datetime import UTC, datetime
+
+    from agentcosign.services.gateway import issue_token
+
+    secret = env.settings.audit_hmac_key.get_secret_value().encode()
+    link = issue_token(secret, "enrolment", "x", 600, datetime.now(UTC))
+    headers = {"X-Enrolment-Token": link}
+    options = env.client.post(
+        "/v1/approver/enrolment/options", json={"approver": "Vikas"}, headers=headers
+    ).text
+    response = env.client.post(
+        "/v1/approver/enrolment",
+        json={"approver": "Vikas", "credential": env.phone.register(options)},
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("purpose", ["approver-session", "enrolment"])
+def test_forged_or_expired_links_are_refused(env: Env, purpose: str) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from agentcosign.services.gateway import issue_token
+
+    secret = env.settings.audit_hmac_key.get_secret_value().encode()
+    expired = issue_token(
+        secret, "enrolment", "x", 600, datetime.now(UTC) - timedelta(hours=1)
+    )
+    wrong_purpose = issue_token(secret, "approver-session", "x", 600, datetime.now(UTC))
+    other_key = issue_token(b"k" * 32, "enrolment", "x", 600, datetime.now(UTC))
+    for token in (expired, wrong_purpose, other_key, "garbage"):
+        response = env.client.post(
+            "/v1/approver/enrolment/options",
+            json={"approver": "Mallory"},
+            headers={"X-Enrolment-Token": token},
+        )
+        assert response.status_code == 401
+
+
+def test_the_approver_page_is_served_with_the_strict_policy(env: Env) -> None:
+    page = env.client.get("/approve")
+    assert page.status_code == 200
+    assert "Approvals" in page.text
+    assert "script-src 'self'" in page.headers["content-security-policy"]
+    script = env.client.get("/assets/approve.js").text
+    assert "innerHTML" not in script
+    assert "textContent" in script
