@@ -191,6 +191,8 @@ class LimitSettings(BaseModel):
     model_config = _STRICT
 
     trusted_proxy_hops: int = Field(ge=0, le=5)
+    # Calibration aid: shows the forwarding chain as received. Turn off when done.
+    expose_client_diagnostics: bool
     max_body_bytes: int = Field(ge=1_024, le=1_048_576)
     max_concurrent_requests: int = Field(ge=1, le=256)
     # In-flight slots only reviewers may use, so a public flood cannot lock them out.

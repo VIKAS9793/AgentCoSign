@@ -110,6 +110,9 @@ limits:
   # How many proxies in front of the app append to X-Forwarded-For. The client
   # address is read from that many entries from the right.
   trusted_proxy_hops: 1
+  # Calibration aid: /api/v1/diagnostics/client shows the forwarding chain as
+  # received. Switch off once the hop count is confirmed on the real host.
+  expose_client_diagnostics: true
   max_body_bytes: 65536
   # In-flight requests across all clients; beyond this the answer is a fast 503.
   max_concurrent_requests: 32

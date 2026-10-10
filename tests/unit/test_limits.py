@@ -17,6 +17,7 @@ T0 = 1_000_000  # milliseconds; never 0 so "unset" sentinels cannot hide bugs
 def make_limits(**overrides: object) -> LimitSettings:
     base: dict[str, object] = {
         "trusted_proxy_hops": 1,
+        "expose_client_diagnostics": True,
         "max_body_bytes": 65_536,
         "max_concurrent_requests": 50,
         "reviewer_reserved_concurrency": 0,

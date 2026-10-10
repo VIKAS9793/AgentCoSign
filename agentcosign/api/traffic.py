@@ -33,18 +33,25 @@ def _settings(request: Request) -> Settings:
 async def client_diagnostics(request: Request) -> dict[str, Any]:
     """Show how the service identifies the caller, for proxy calibration.
 
-    Returns only the caller's own resolved address group and how many forwarding
-    entries arrived, so the operator can confirm the trusted hop count against the
-    real network path.
+    Returns the caller's own resolved address group and the forwarding chain as it
+    arrived, so the operator can confirm the trusted hop count against the real
+    network path. Switched off by configuration once calibrated.
     """
+    settings = _settings(request)
+    if not settings.limits.expose_client_diagnostics:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
     context: ClientContext = request.state.client
     forwarded = request.headers.get("x-forwarded-for", "")
-    entries = [e for e in forwarded.split(",") if e.strip()]
+    entries = [e.strip() for e in forwarded.split(",") if e.strip()]
     return {
         "client_key": context.key,
         "tier": context.tier.value,
         "forwarded_for_entries": len(entries),
-        "trusted_proxy_hops": _settings(request).limits.trusted_proxy_hops,
+        "forwarded_for": entries,
+        "connecting_ip_header": request.headers.get("cf-connecting-ip"),
+        "true_client_ip_header": request.headers.get("true-client-ip"),
+        "peer": request.client.host if request.client else None,
+        "trusted_proxy_hops": settings.limits.trusted_proxy_hops,
     }
 
 
