@@ -42,7 +42,7 @@ from agentcosign.core.exceptions import FailClosedError
 CHALLENGE_TTL_SECONDS = 120
 BUSY_TIMEOUT_SECONDS = 5
 APPROVER_NAME_MAX = 64
-INTENTS = frozenset({"approve", "reject"})
+INTENTS = frozenset({"approve", "reject", "view"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS passkeys (

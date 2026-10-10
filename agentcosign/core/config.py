@@ -17,6 +17,7 @@ from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import (
@@ -281,6 +282,14 @@ class Settings(BaseSettings):
         default=SecretStr(""), alias="PAYPAL_CLIENT_SECRET"
     )
     paypal_webhook_id: str = Field(default="", alias="PAYPAL_WEBHOOK_ID")
+    # The merchant account orders must belong to; empty means every order is
+    # refused as belonging to an unknown account.
+    paypal_merchant_id: str = Field(default="", alias="PAYPAL_MERCHANT_ID")
+
+    # The address approvers use; passkeys are bound to its host name.
+    public_origin: str = Field(
+        default="http://localhost:8000", alias="AGENTCOSIGN_PUBLIC_ORIGIN"
+    )
 
     # LLM providers
     groq_api_key: SecretStr = Field(default=SecretStr(""), alias="GROQ_API_KEY")
@@ -347,6 +356,22 @@ class Settings(BaseSettings):
             setattr(self, name, SecretStr(secrets.token_urlsafe(MIN_SECRET_LENGTH)))
             logger.warning("%s not set: using an ephemeral per-process secret", name)
         return self
+
+    @field_validator("public_origin")
+    @classmethod
+    def _origin_is_secure(cls, value: str) -> str:
+        """Passkeys work only over HTTPS, or plain HTTP on the local machine."""
+        parsed = urlparse(value)
+        local = parsed.hostname in ("localhost", "127.0.0.1")
+        secure = parsed.scheme == "https" or (parsed.scheme == "http" and local)
+        if secure and parsed.path in ("", "/") and parsed.hostname:
+            return value.rstrip("/")
+        raise ValueError("public_origin must be an https origin or http://localhost")
+
+    @property
+    def passkey_rp_id(self) -> str:
+        """The host name passkeys are bound to."""
+        return urlparse(self.public_origin).hostname or "localhost"
 
     @property
     def is_hermetic(self) -> bool:

@@ -3,21 +3,39 @@
 FastAPI application factory for the policy gateway.
 """
 
+import asyncio
 import logging
+import sqlite3
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
 
 from agentcosign import __version__
+from agentcosign.api.gateway_routes import router as gateway_router
 from agentcosign.api.protection import ProtectionMiddleware, monotonic_ms
 from agentcosign.api.site import register_site
 from agentcosign.api.traffic import router as traffic_router
+from agentcosign.clients.paypal import (
+    LivePayPalClient,
+    PayPalClient,
+    RecordedPayPalClient,
+)
 from agentcosign.core.config import Settings, get_settings
+from agentcosign.core.exceptions import AgentCoSignError
 from agentcosign.core.limits import TrafficGuard
+from agentcosign.services.gateway import Gateway
+from agentcosign.services.ledger import Ledger
+from agentcosign.services.passkeys import PasskeyRegistry
 
 logger = logging.getLogger("agentcosign")
+
+EXPIRY_INTERVAL_SECONDS = 30
+RECORDINGS_DIR = (
+    Path(__file__).resolve().parent.parent / "docs" / "evidence" / "recordings"
+)
 
 # The approver UI is same-origin and script-light, so a strict CSP is cheap.
 # LLM-generated text is untrusted and must only ever be rendered as text.
@@ -34,10 +52,21 @@ _SECURITY_HEADERS = {
 }
 
 
+async def _expire_forever(gateway: Gateway) -> None:
+    """Expire approvals left waiting past the window, releasing reservations."""
+    while True:
+        await asyncio.sleep(EXPIRY_INTERVAL_SECONDS)
+        try:
+            await asyncio.to_thread(gateway.expire)
+        except (AgentCoSignError, sqlite3.Error):
+            logger.exception("approval expiry failed; will retry")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Fail fast on bad configuration; log the active run mode."""
-    settings = get_settings()  # raises ConfigurationError -> process does not start
+    """Log the active run mode and run approval expiry in the background."""
+    settings: Settings = app.state.settings
+    expiry = asyncio.create_task(_expire_forever(app.state.gateway))
     logger.info(
         "AgentCoSign v%s env=%s hermetic=%s replay_mode=%s paypal_execution=%s",
         __version__,
@@ -46,7 +75,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.replay_mode,
         settings.paypal_execution,
     )
+    if not settings.paypal_merchant_id:
+        logger.warning("PAYPAL_MERCHANT_ID is not set: every order will be refused")
     yield
+    expiry.cancel()
     logger.info("AgentCoSign shutting down cleanly")
 
 
@@ -134,9 +166,41 @@ def _register_policy_routes(app: FastAPI, settings: Settings) -> None:
         }
 
 
-def create_app() -> FastAPI:
+def _paypal_client(settings: Settings) -> PayPalClient:
+    """Live sandbox calls when configured, otherwise recorded sandbox responses."""
+    if settings.paypal_execution == "sandbox":
+        return LivePayPalClient(
+            settings.paypal_client_id, settings.paypal_client_secret
+        )
+    return RecordedPayPalClient.from_directory(RECORDINGS_DIR)
+
+
+def _install_gateway(
+    app: FastAPI, settings: Settings, paypal: PayPalClient | None
+) -> None:
+    """Build the ledger, passkey registry and gateway, and add their routes."""
+    database = Path(settings.sqlite_db_path)
+    database.parent.mkdir(parents=True, exist_ok=True)
+    secret = settings.audit_hmac_key.get_secret_value().encode("utf-8")
+    ledger = Ledger(database, secret, settings.policy, settings.paypal_merchant_id)
+    passkeys = PasskeyRegistry(database, settings.passkey_rp_id, settings.public_origin)
+    app.state.gateway = Gateway(
+        ledger=ledger,
+        passkeys=passkeys,
+        paypal=paypal or _paypal_client(settings),
+        policy=settings.policy,
+        screening=settings.screening,
+        secret=secret,
+        approval_ttl_seconds=settings.approval.ttl_seconds,
+    )
+    app.include_router(gateway_router)
+
+
+def create_app(
+    settings: Settings | None = None, paypal: PayPalClient | None = None
+) -> FastAPI:
     """Create and configure the FastAPI application."""
-    settings = get_settings()
+    settings = settings or get_settings()
     is_prod = settings.env == "production"
 
     app = FastAPI(
@@ -151,6 +215,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     guard = _install_traffic_protection(app, settings)
+    _install_gateway(app, settings, paypal)
     _install_security_headers(app)
     register_site(app, docs_enabled=not is_prod)
     _register_system_routes(app, settings, guard)
