@@ -132,8 +132,12 @@ class ProtectionMiddleware:
             return
         headers = _headers(scope)
         peer = (scope.get("client") or (None, 0))[0]
+        edge_header = self._limits.client_ip_header
         key = resolve_client_key(
-            peer, headers.get("x-forwarded-for"), self._limits.trusted_proxy_hops
+            peer,
+            headers.get("x-forwarded-for"),
+            self._limits.trusted_proxy_hops,
+            headers.get(edge_header) if edge_header else None,
         )
         presented = headers.get(REVIEWER_HEADER) or _cookie_value(
             headers.get("cookie"), REVIEWER_COOKIE

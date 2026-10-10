@@ -75,7 +75,8 @@ def clock() -> Clock:
 @pytest.fixture
 def client(clock: Clock) -> Iterator[TestClient]:
     app, _ = build_app(make_limits(), clock)
-    with TestClient(app) as test_client:
+    # A caller behind one trusted proxy; individual tests override the header.
+    with TestClient(app, headers={"x-forwarded-for": "203.0.113.7"}) as test_client:
         yield test_client
 
 
@@ -209,7 +210,8 @@ def test_real_app_answers_head_on_health_for_uptime_monitors() -> None:
 
 def test_real_app_refusals_carry_security_headers() -> None:
     limits = get_settings().limits
-    with TestClient(real_app) as c:
+    edge = {limits.client_ip_header: "203.0.113.50"}
+    with TestClient(real_app, headers=edge) as c:
         refused = None
         for _ in range(limits.public.general.capacity + 5):
             response = c.get("/api/v1/config/policy")

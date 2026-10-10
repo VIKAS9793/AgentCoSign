@@ -91,24 +91,61 @@ class _Pool:
     window_start_ms: int | None = None
 
 
+_INTERNAL_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
+)
+
+
+def _external_address(
+    value: str | None,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse an address, returning None when invalid or on an internal network."""
+    try:
+        address = ipaddress.ip_address((value or "").strip())
+    except ValueError:
+        return None
+    for network in _INTERNAL_NETWORKS:
+        if network.version == address.version and address in network:
+            return None
+    return address
+
+
 def resolve_client_key(
-    peer: str | None, forwarded_for: str | None, trusted_hops: int
+    peer: str | None,
+    forwarded_for: str | None,
+    trusted_hops: int,
+    connecting_ip: str | None = None,
 ) -> str:
     """Return a stable key for the caller, or ``unknown``.
 
-    The address is taken ``trusted_hops`` entries from the right of
-    X-Forwarded-For, because only the proxies we control append there; entries a
-    caller supplies sit further left and are ignored. IPv6 callers are grouped by
-    /64 so rotating inside their own range does not mint new identities.
+    Order of trust: an address header set by the edge (the edge rejects requests
+    that try to send it themselves), then the X-Forwarded-For entry
+    ``trusted_hops`` from the right (only proxies we control append there, so
+    entries a caller supplies sit further left and are ignored), then the direct
+    peer. Internal-network addresses are never used as identities, because they
+    are shared proxy hops that would put unrelated callers in one bucket.
+    IPv6 callers are grouped by /64 so rotating inside their own range does not
+    mint new identities.
     """
-    candidate = peer
-    if forwarded_for and trusted_hops > 0:
+    address = _external_address(connecting_ip)
+    if address is None and forwarded_for and trusted_hops > 0:
         parts = [p.strip() for p in forwarded_for.split(",") if p.strip()]
         if len(parts) >= trusted_hops:
-            candidate = parts[-trusted_hops]
-    try:
-        address = ipaddress.ip_address(candidate or "")
-    except ValueError:
+            address = _external_address(parts[-trusted_hops])
+    if address is None and not forwarded_for:
+        address = _external_address(peer)
+    if address is None:
         return UNKNOWN_CLIENT
     if address.version == 6:
         return str(ipaddress.ip_network(f"{address}/{IPV6_PREFIX}", strict=False))
@@ -162,6 +199,8 @@ class TrafficGuard:
         """Decide whether a request may run. Call release() if ``counted``."""
         if path in self._limits.exempt_paths:
             return Admission(allowed=True)
+        if client_key == UNKNOWN_CLIENT:
+            return self._admit_unidentified()
         client = self._client(client_key)
         if client.blocked_until_ms > now_ms:
             wait = client.blocked_until_ms - now_ms
@@ -188,13 +227,28 @@ class TrafficGuard:
         self._inflight += 1
         return Admission(allowed=True, counted=True)
 
+    def _admit_unidentified(self) -> Admission:
+        """Admit a caller whose address could not be resolved.
+
+        Unrelated callers would share one per-client bucket and one penalty, so
+        a single abuser could block everybody. Only the global in-flight cap
+        applies instead; the daily pools still bound the expensive work.
+        """
+        if self._inflight >= self._limits.max_concurrent_requests - (
+            self._limits.reviewer_reserved_concurrency
+        ):
+            return Admission(False, status=503, reason="busy", retry_after_seconds=2)
+        self._inflight += 1
+        return Admission(allowed=True, counted=True)
+
     def release(self) -> None:
         """Mark one admitted request as finished."""
         self._inflight = max(0, self._inflight - 1)
 
     def penalize(self, client_key: str, now_ms: int) -> None:
         """Count a misbehaving request (for example a wrong token) as a strike."""
-        self._strike(self._client(client_key), now_ms)
+        if client_key != UNKNOWN_CLIENT:
+            self._strike(self._client(client_key), now_ms)
 
     @property
     def inflight(self) -> int:
@@ -213,9 +267,10 @@ class TrafficGuard:
         """
         if kind is WorkKind.GENERAL:
             return LiveDecision(live=False, reason="not_a_live_kind")
-        client = self._client(client_key)
-        if self._spend(client, tier, kind, now_ms) is not None:
-            return LiveDecision(live=False, reason="client_quota")
+        if client_key != UNKNOWN_CLIENT:
+            client = self._client(client_key)
+            if self._spend(client, tier, kind, now_ms) is not None:
+                return LiveDecision(live=False, reason="client_quota")
         if kind is WorkKind.LIVE_LLM and self._provider_exhausted:
             return LiveDecision(live=False, reason="provider_exhausted")
         if self._try_pool(kind, tier, now_ms):

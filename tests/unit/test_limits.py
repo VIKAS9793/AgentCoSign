@@ -17,6 +17,7 @@ T0 = 1_000_000  # milliseconds; never 0 so "unset" sentinels cannot hide bugs
 def make_limits(**overrides: object) -> LimitSettings:
     base: dict[str, object] = {
         "trusted_proxy_hops": 1,
+        "client_ip_header": "",
         "expose_client_diagnostics": True,
         "max_body_bytes": 65_536,
         "max_concurrent_requests": 50,
@@ -59,10 +60,17 @@ def admit(guard: TrafficGuard, now_ms: int, key: str = "1.1.1.1"):  # noqa: ANN2
         # a caller-supplied leading entry is ignored; the proxy-appended one wins
         ("10.0.0.1", "6.6.6.6, 203.0.113.5", 1, "203.0.113.5"),
         ("10.0.0.1", "203.0.113.5, 10.1.1.1", 2, "203.0.113.5"),
-        ("10.0.0.1", None, 1, "10.0.0.1"),
-        ("10.0.0.1", "203.0.113.5", 0, "10.0.0.1"),
+        # the hosted chain: client, edge, internal hop (three trusted hops)
+        ("10.24.1.1", "203.0.113.5, 172.68.1.1, 10.24.1.1", 3, "203.0.113.5"),
+        ("10.24.1.1", "6.6.6.6, 203.0.113.5, 172.68.1.1, 10.24.1.1", 3, "203.0.113.5"),
+        # internal addresses are shared hops, never identities
+        ("10.0.0.1", None, 1, "unknown"),
+        ("10.0.0.1", "10.2.3.4", 1, "unknown"),
+        ("10.0.0.1", "203.0.113.5", 0, "unknown"),
         ("10.0.0.1", "garbage", 1, "unknown"),
         (None, None, 1, "unknown"),
+        # a direct caller with no proxy in front is identified by its own address
+        ("198.51.100.9", None, 1, "198.51.100.9"),
         ("10.0.0.1", "2001:db8:1:2:aaaa:bbbb:cccc:dddd", 1, "2001:db8:1:2::/64"),
         ("10.0.0.1", "2001:db8:1:2:1:1:1:1", 1, "2001:db8:1:2::/64"),
     ],
@@ -71,6 +79,46 @@ def test_resolve_client_key(
     peer: str | None, forwarded: str | None, hops: int, expected: str
 ) -> None:
     assert resolve_client_key(peer, forwarded, hops) == expected
+
+
+@pytest.mark.parametrize(
+    ("connecting", "forwarded", "hops", "expected"),
+    [
+        # the edge header wins and does not depend on the hop count
+        ("203.0.113.5", "1.1.1.1, 2.2.2.2, 10.1.1.1", 1, "203.0.113.5"),
+        ("203.0.113.5", None, 0, "203.0.113.5"),
+        # an unusable header falls back to the forwarding chain
+        (None, "203.0.113.9, 172.68.1.1, 10.1.1.1", 3, "203.0.113.9"),
+        ("10.9.9.9", "203.0.113.9, 172.68.1.1, 10.1.1.1", 3, "203.0.113.9"),
+        ("not-an-ip", None, 3, "unknown"),
+    ],
+)
+def test_edge_header_is_preferred_then_chain_then_unknown(
+    connecting: str | None, forwarded: str | None, hops: int, expected: str
+) -> None:
+    assert resolve_client_key("10.0.0.1", forwarded, hops, connecting) == expected
+
+
+def test_unidentified_callers_are_not_limited_per_client_or_penalised() -> None:
+    guard = TrafficGuard(make_limits())
+    for _ in range(200):
+        result = guard.admit("unknown", Tier.PUBLIC, "/api/x", T0)
+        assert result.allowed
+        guard.release()
+    guard.penalize("unknown", T0)  # must not create a shared penalty
+    assert guard.admit("unknown", Tier.PUBLIC, "/api/x", T0).allowed
+
+
+def test_unidentified_callers_still_hit_the_global_cap_and_pools() -> None:
+    guard = TrafficGuard(make_limits(max_concurrent_requests=2))
+    assert guard.admit("unknown", Tier.PUBLIC, "/api/x", T0).allowed
+    assert guard.admit("unknown", Tier.PUBLIC, "/api/x", T0).allowed
+    assert guard.admit("unknown", Tier.PUBLIC, "/api/x", T0).status == 503
+    pool = [
+        guard.request_live("unknown", Tier.PUBLIC, WorkKind.LIVE_LLM, T0).live
+        for _ in range(5)
+    ]
+    assert pool == [True, True, True, False, False]  # the public pool holds 3
 
 
 # --- buckets and penalty box ----------------------------------------------------

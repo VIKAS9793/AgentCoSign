@@ -191,6 +191,9 @@ class LimitSettings(BaseModel):
     model_config = _STRICT
 
     trusted_proxy_hops: int = Field(ge=0, le=5)
+    # Header the edge sets to the connecting address ("" to disable). Preferred over
+    # the forwarding chain because it does not depend on the hop count.
+    client_ip_header: str = Field(pattern=r"^[a-z0-9-]*$", max_length=64)
     # Calibration aid: shows the forwarding chain as received. Turn off when done.
     expose_client_diagnostics: bool
     max_body_bytes: int = Field(ge=1_024, le=1_048_576)
