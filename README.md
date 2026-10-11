@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/banner.png" alt="AgentCoSign, dual control for AI payments. Agent proposes, rules decide, you co-sign, the record proves it. Sandbox only." width="100%">
+</p>
+
 # AgentCoSign
 
 **Dual control for AI agents that move money on PayPal.** The agent proposes. Deterministic policy decides. A human co-signs risky actions on their phone. Every step lands in a tamper-evident ledger.
