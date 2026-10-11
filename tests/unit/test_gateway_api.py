@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -11,8 +12,10 @@ from fastapi.testclient import TestClient
 
 from agentcosign.clients.paypal import RecordedPayPalClient
 from agentcosign.core.config import Settings, get_settings
+from agentcosign.core.exceptions import PayPalClientError
 from agentcosign.main import create_app
 from agentcosign.services.evidence import fetch_evidence
+from agentcosign.services.gateway import RETRY_QUIET_SECONDS
 from tests.scenarios.policy_scenarios import NOW
 from tests.unit.paypal_fixtures import ACCOUNT, order_json
 from tests.unit.soft_authenticator import SoftAuthenticator
@@ -375,3 +378,41 @@ async def test_a_refund_made_in_paypal_while_waiting_cannot_overspend(env: Env) 
     # approving again cannot return more than was paid
     assert second.json()["state"] == "failed"
     assert await env.refunded() == Decimal("400.00")
+
+
+class LosesFirstRefundReply(RecordedPayPalClient):
+    """PayPal applies the refund but the first reply never arrives."""
+
+    def __init__(self) -> None:
+        super().__init__({"ORD-1": order_json(captured="500.00")})
+        self.calls = 0
+
+    async def refund_capture(self, capture_id, amount, currency, request_id):  # type: ignore[no-untyped-def,override] -- test double
+        self.calls += 1
+        result = await super().refund_capture(capture_id, amount, currency, request_id)
+        if self.calls == 1:
+            raise PayPalClientError("timed out", {"retryable": True})
+        return result
+
+
+async def test_a_lost_paypal_answer_is_shown_as_sending_then_finished_once(
+    tmp_path: Path,
+) -> None:
+    env = Env(tmp_path)
+    env.paypal = LosesFirstRefundReply()
+    env.client = TestClient(create_app(env.settings, env.paypal))
+    with env.client:
+        env.propose("r1", "100.00")
+        env.enrol()
+        session = env.session()
+        response, _ = env.decide("r1", "approve", session)
+        assert response.json()["state"] == "executing"  # never claimed as sent
+        listed = env.client.get("/v1/approvals", headers=session).json()
+        assert [i["status"] for i in listed] == ["sending"]
+        gateway = env.client.app.state.gateway  # type: ignore[attr-defined]
+        assert await gateway.finish_unfinished() == []  # too soon: no overlap
+        later = datetime.now(UTC) + timedelta(seconds=RETRY_QUIET_SECONDS + 1)
+        gateway._clock = lambda: later
+        assert await gateway.finish_unfinished() == ["r1"]
+        assert await env.refunded() == Decimal("100.00")  # once, not twice
+        assert env.client.get("/v1/approvals", headers=session).json() == []

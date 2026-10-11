@@ -53,13 +53,18 @@ _SECURITY_HEADERS = {
 
 
 async def _expire_forever(gateway: Gateway) -> None:
-    """Expire approvals left waiting past the window, releasing reservations."""
+    """Expire approvals left waiting past the window, releasing reservations, and
+    finish executions whose PayPal answer was lost."""
     while True:
         await asyncio.sleep(EXPIRY_INTERVAL_SECONDS)
         try:
             await asyncio.to_thread(gateway.expire)
         except (AgentCoSignError, sqlite3.Error):
             logger.exception("approval expiry failed; will retry")
+        try:
+            await gateway.finish_unfinished()
+        except (AgentCoSignError, sqlite3.Error):
+            logger.exception("finishing unanswered executions failed; will retry")
 
 
 @asynccontextmanager

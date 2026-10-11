@@ -137,6 +137,14 @@ _Q_REBASE = (
     "updated_at = ? WHERE request_id = ?"
 )
 _Q_DUE = "SELECT request_id FROM proposals WHERE state = ? AND created_at < ?"
+_Q_STALE = (
+    "SELECT request_id FROM proposals WHERE state = ? AND updated_at < ? "
+    "ORDER BY updated_at"
+)
+_Q_SENDING = (
+    "SELECT request_id, tool, amount, currency, order_id, updated_at "
+    "FROM proposals WHERE state = ? ORDER BY updated_at"
+)
 _Q_ATTEMPT = (
     "UPDATE proposals SET attempts = attempts + 1, updated_at = ? WHERE request_id = ?"
 )
@@ -528,6 +536,24 @@ class Ledger:
             evidence_from_dict(json.loads(evidence_text)) if evidence_text else None
         )
         return proposal, evidence
+
+    def unfinished_executions(self, now: datetime, quiet_seconds: int) -> list[str]:
+        """Executing proposals with no attempt for a while: PayPal's answer was lost.
+
+        The quiet period keeps a retry from racing an attempt still in flight.
+        """
+        cutoff = _iso(_utc(now) - timedelta(seconds=quiet_seconds))
+        with self._connection() as conn:
+            rows = conn.execute(_Q_STALE, (S.EXECUTING.value, cutoff)).fetchall()
+        return [str(row["request_id"]) for row in rows]
+
+    def sending(self) -> list[dict[str, str]]:
+        """Proposals approved or allowed and still waiting for PayPal's answer."""
+        with self._connection() as conn:
+            rows = conn.execute(_Q_SENDING, (S.EXECUTING.value,)).fetchall()
+        return [
+            {key: str(value or "") for key, value in dict(row).items()} for row in rows
+        ]
 
     def pending_approvals(self) -> list[dict[str, str]]:
         """Proposals waiting for a person, oldest first, as plain text fields."""

@@ -235,7 +235,7 @@
     }
     if (outcome.state === "executing") {
       return ["check", "PayPal has not answered yet. It will not be sent twice.",
-        "We finish it with the same request. Check again in a minute."];
+        "We keep trying with the same request, so it cannot be sent twice. It stays on this page until PayPal answers."];
     }
     return ["stopped", "We could not send it. Nothing was sent.", "You can ask your assistant to try again."];
   }
@@ -349,6 +349,15 @@
       });
   }
 
+  // Approved but PayPal has not answered: no buttons, nothing to decide.
+  function sendingCard(item) {
+    var card = el("section", "", "card result-card check");
+    card.appendChild(el("p", "Still sending", "result-badge"));
+    card.appendChild(el("h3", "Waiting for PayPal to confirm a " + money(item.amount) + " refund.", "result-title"));
+    card.appendChild(el("p", "Order " + item.order_id + ". It cannot be sent twice. Do not send it again another way. Last try " + ago(item.last_try) + ".", "result-detail"));
+    return card;
+  }
+
   function requestCard(item) {
     var card = el("section", "", "card");
     var amount = money(item.amount);
@@ -448,7 +457,7 @@
         var list = document.getElementById("requests");
         list.replaceChildren();
         items.forEach(function (item) {
-          list.appendChild(requestCard(item));
+          list.appendChild(item.status === "sending" ? sendingCard(item) : requestCard(item));
         });
         show("empty", items.length === 0);
         updateTitle();

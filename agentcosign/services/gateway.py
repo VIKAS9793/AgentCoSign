@@ -48,6 +48,8 @@ from agentcosign.services.passkeys import PasskeyRegistry
 
 SESSION_SECONDS = 600
 ENROLMENT_LINK_SECONDS = 600
+# longer than one PayPal call can take, so a retry never overlaps a live attempt
+RETRY_QUIET_SECONDS = 60
 VIEW_REQUEST = "approver-session"
 VIEW_DIGEST = hashlib.sha256(b"view pending approvals").hexdigest()
 
@@ -251,6 +253,7 @@ class Gateway:
             triggered = json.loads(item["triggered"] or "[]")
             views.append(
                 {
+                    "status": "waiting",
                     "request_id": item["request_id"],
                     "tool": item["tool"],
                     "amount": item["amount"],
@@ -264,7 +267,45 @@ class Gateway:
                     **facts,
                 }
             )
+        for item in await asyncio.to_thread(self._ledger.sending):
+            views.append(
+                {
+                    "status": "sending",
+                    "request_id": item["request_id"],
+                    "tool": item["tool"],
+                    "amount": item["amount"],
+                    "currency": item["currency"],
+                    "order_id": item["order_id"],
+                    "last_try": item["updated_at"],
+                }
+            )
         return views
+
+    async def finish_unfinished(self) -> list[str]:
+        """Retry executions whose PayPal answer never arrived, with the same id.
+
+        PayPal returns the original result for a repeated request id, and the
+        executor re-reads the order first, so a retry cannot refund twice.
+        """
+        finished: list[str] = []
+        stale = await asyncio.to_thread(
+            self._ledger.unfinished_executions, self._clock(), RETRY_QUIET_SECONDS
+        )
+        for request_id in stale:
+            loaded = await asyncio.to_thread(self._ledger.load, request_id)
+            if loaded is None or loaded[1] is None:
+                continue
+            execution = await execute(
+                loaded[0],
+                loaded[1],
+                self._paypal,
+                self._ledger,
+                now=self._clock(),
+                secret=self._secret,
+            )
+            if execution.state is not ProposalState.EXECUTING:
+                finished.append(request_id)
+        return finished
 
     def expire(self) -> list[str]:
         """Expire approvals that waited longer than the approval window."""
