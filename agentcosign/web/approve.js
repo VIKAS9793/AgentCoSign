@@ -366,9 +366,9 @@
     var card = el("section", "", "card result-card paused");
     card.appendChild(el("p", "Paused for now", "result-badge"));
     card.appendChild(el("h3", item.customer + ", " + money(item.amount) + ", order " + item.order_id + ".", "result-title"));
-    card.appendChild(el("p", "This would be this customer's " + ordinal(Number(item.count_today)) + " refund today. We check it again at " + clock(item.release_at) + " and follow your usual settings then. Your assistant has told the customer when to expect an update.", "result-detail"));
+    card.appendChild(el("p", "This would be this customer's " + ordinal(Number(item.count_in_window)) + " refund in 24 hours. We check it again at " + clock(item.release_at) + " and follow your usual settings then. Your assistant has told the customer when to expect an update.", "result-detail"));
     if (item.many_requests === "yes") {
-      card.appendChild(el("p", "This customer has asked for many refunds today. You may want to contact them.", "why"));
+      card.appendChild(el("p", "This customer has asked for many refunds in the last 24 hours. You may want to contact them.", "why"));
     }
     var progress = el("p", "", "progress");
     progress.hidden = true;

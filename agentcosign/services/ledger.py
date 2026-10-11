@@ -131,6 +131,10 @@ _Q_CUSTOMER = (
     "SELECT decided_at FROM proposals WHERE customer_key = ? AND tool = ? "
     "AND decided_at >= ? AND state IN (?, ?, ?) AND request_id != ?"
 )
+_Q_CUSTOMER_REFUND_COUNT = (
+    "SELECT COUNT(*) FROM proposals WHERE customer_key = ? AND tool = ? "
+    "AND decided_at >= ? AND state IN (?, ?, ?)"
+)
 _Q_CUSTOMER_ASKS = (
     "SELECT COUNT(*) FROM proposals WHERE customer_key = ? AND tool = ? "
     "AND created_at >= ?"
@@ -631,19 +635,25 @@ class Ledger:
         return Recorded(request_id, state, result)
 
     def paused(self, now: datetime) -> list[dict[str, str]]:
-        """Paused requests for the merchant, with how often the customer asked today."""
+        """Paused requests for the merchant, with the customer's refunds and asks in
+        the last 24 hours."""
         day_ago = _iso(_utc(now) - timedelta(hours=24))
         refund = ToolAction.CREATE_REFUND.value
         items: list[dict[str, str]] = []
         with self._connection() as conn:
             for row in conn.execute(_Q_PAUSED, (S.PAUSED.value,)).fetchall():
-                asks = 0
+                asks = refunds = 0
                 if row["customer_key"]:
                     params = (row["customer_key"], refund, day_ago)
                     asks = int(conn.execute(_Q_CUSTOMER_ASKS, params).fetchone()[0])
+                    counted = (*params, *CUSTOMER_REFUNDS)
+                    refunds = int(
+                        conn.execute(_Q_CUSTOMER_REFUND_COUNT, counted).fetchone()[0]
+                    )
                 item = {k: str(v or "") for k, v in dict(row).items()}
                 item.pop("customer_key")
-                item["requests_today"] = str(asks)
+                item["requests_24h"] = str(asks)
+                item["refunds_24h"] = str(refunds)
                 items.append(item)
         return items
 

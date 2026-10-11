@@ -1,6 +1,7 @@
 """The gateway API end to end: propose, enrol, sign in, approve, execute, audit."""
 
 import json
+import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -442,7 +443,7 @@ def test_nobody_can_send_a_paused_refund_but_declining_works(env: Env) -> None:
     session = env.session()
     listed = env.client.get("/v1/approvals", headers=session).json()
     paused = [i for i in listed if i["status"] == "paused"]
-    assert paused and paused[0]["count_today"] == "4"
+    assert paused and paused[0]["count_in_window"] == "4"
     approve = env.client.post(
         "/v1/approvals/r4/options", json={"intent": "approve"}, headers=session
     )
@@ -483,3 +484,25 @@ async def test_an_unreachable_paypal_keeps_a_pause_paused(env: Env) -> None:
     assert await gateway.release_due() == []
     status = env.client.get("/v1/proposals/r4", headers=env.key("agent_api_key"))
     assert status.json()["state"] == "paused"
+
+
+@pytest.mark.parametrize("earlier", [3, 4])
+def test_the_paused_card_counts_the_real_refunds_in_the_window(
+    env: Env, earlier: int
+) -> None:
+    # found on the phone: the card said "4th" when the customer already had four
+    # refunds, made before the pause existed (or before the limit was lowered)
+    for n in range(1, earlier + 1):
+        env.propose(f"r{n}", f"{n}.00")
+    if earlier > 3:
+        with sqlite3.connect(env.settings.sqlite_db_path) as db:
+            db.execute(
+                "UPDATE proposals SET state = 'executed' WHERE request_id = 'r4'"
+            )
+    env.propose("next", "9.00")
+    env.enrol()
+    listed = env.client.get("/v1/approvals", headers=env.session()).json()
+    paused = [
+        i for i in listed if i["status"] == "paused" and i["request_id"] == "next"
+    ]
+    assert paused[0]["count_in_window"] == str(earlier + 1)

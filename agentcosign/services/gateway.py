@@ -408,13 +408,14 @@ class Gateway:
         views: list[dict[str, str | list[str]]] = []
         for item in await asyncio.to_thread(self._ledger.paused, self._clock()):
             facts = await self._live_facts(item["order_id"])
-            many = int(item["requests_today"]) >= 2 * limit
+            many = int(item["requests_24h"]) >= 2 * limit
             views.append(
                 {
                     **self._basics(item, "paused"),
                     "customer": facts["customer"],
                     "release_at": item["release_at"],
-                    "count_today": str(limit + 1),
+                    # this request would be the next refund after those counted
+                    "count_in_window": str(int(item["refunds_24h"]) + 1),
                     "many_requests": "yes" if many else "no",
                 }
             )
