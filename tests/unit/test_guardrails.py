@@ -471,3 +471,101 @@ def test_confirmed_success_and_owner_words_pass(tmp_path: Path) -> None:
         "}\n"
     )
     assert _merchant(tmp_path, js) == {}
+
+
+# --- traceability: product changes name their rules, proof and README check -------
+SOURCE = {"tests/unit/test_x.py": "def test_real_one() -> None:\n    assert True\n"}
+GOOD = (
+    "fix(policy): x\n\n"
+    "Constraints: R4, H1\n"
+    "Evidence: tests/unit/test_x.py::test_real_one\n"
+    "README: checked\n"
+)
+
+
+def _trace(message: str, files: list[str], fresh: bool = True) -> list[str]:
+    problems: list[str] = guardrails.check_traceability(
+        message, files, SOURCE.get, lambda _spec: fresh
+    )
+    return problems
+
+
+def test_a_traced_product_commit_passes() -> None:
+    assert _trace(GOOD, ["agentcosign/services/x.py"]) == []
+
+
+def test_non_product_commits_need_no_trace() -> None:
+    assert _trace("docs(readme): x\n", ["README.md"]) == []
+
+
+@pytest.mark.parametrize(
+    ("message", "files", "needle"),
+    [
+        (
+            GOOD.replace("Constraints: R4, H1\n", ""),
+            ["agentcosign/a.py"],
+            "Constraints",
+        ),
+        (GOOD.replace("R4, H1", "R99"), ["agentcosign/a.py"], "unknown id"),
+        (
+            GOOD.replace("test_real_one", "test_made_up"),
+            ["agentcosign/a.py"],
+            "does not exist",
+        ),
+        (
+            GOOD.replace("Evidence: tests/unit/test_x.py::test_real_one\n", ""),
+            ["agentcosign/a.py"],
+            "Evidence",
+        ),
+        (GOOD.replace("README: checked\n", ""), ["agentcosign/a.py"], "README"),
+        (
+            GOOD.replace("checked", "updated"),
+            ["agentcosign/a.py"],
+            "README.md is not in",
+        ),
+        (GOOD, ["agentcosign/web/approve.js"], "Spec"),
+    ],
+)
+def test_untraced_product_commits_are_refused(
+    message: str, files: list[str], needle: str
+) -> None:
+    assert any(needle in p for p in _trace(message, files))
+
+
+def test_a_screen_change_needs_a_spec_updated_since_the_last_commit() -> None:
+    message = GOOD + "Spec: docs/pm/ux/REFUND-APPROVAL-FLOW-SPEC.md\n"
+    files = ["agentcosign/web/approve.js"]
+    assert _trace(message, files, fresh=True) == []
+    assert any("not updated" in p for p in _trace(message, files, fresh=False))
+
+
+def test_the_guardrails_themselves_need_human_signoff() -> None:
+    problems = guardrails.check_message(
+        "fix(tools): loosen a check\n", ["tools/guardrails.py"]
+    )
+    assert any("#requires-human-signoff" in p for p in problems)
+
+
+# --- README facts must match the code --------------------------------------------
+def test_stale_readme_numbers_are_caught(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "README.md",
+        "An 80-row scenario table. Limits (defaults $25 / $1,000).\n",
+    )
+    _write(
+        tmp_path,
+        "tests/scenarios/policy_scenarios.py",
+        "    Scenario(1)\n    Scenario(2)\n",
+    )
+    _write(
+        tmp_path,
+        "config.yaml",
+        'refund_auto_limit: "25.00"\ndaily_outflow_cap: "500.00"\n',
+    )
+    report = guardrails.Report()
+    guardrails.check_readme_facts(tmp_path, report)
+    found = report.violations.get("readme-stale-fact", [])
+    assert any("scenario table" in f for f in found)
+    assert any("daily_outflow_cap" in f for f in found)
+    assert not any("refund_auto_limit" in f for f in found)

@@ -4,8 +4,13 @@
 # Commits are authored as the owner alone: no Claude co-author trailer and no
 # "Generated with Claude Code" line. This hook removes them before the commit
 # finalizes (human co-authors are preserved), then blocks the commit when the
-# subject is not a Conventional Commit or when a deploy, infrastructure or hook
-# change lacks the human sign-off tag.
+# subject is not a Conventional Commit or when a deploy, infrastructure, hook or
+# guardrail change lacks the human sign-off tag. Commits that change product code
+# (agentcosign/) must also carry these lines, checked by tools/guardrails.py:
+#   Constraints: <rule ids>      the rules this change touches (or: none)
+#   Evidence: tests/...py::test_name   tests that exist in the commit and prove it
+#   Spec: <screen spec file>     when the merchant screen changes (spec updated)
+#   README: updated | checked    README.md in the commit, or checked for stale facts
 #
 # Tracked source of truth. Activate with: bash tools/hooks/install.sh
 # =============================================================================

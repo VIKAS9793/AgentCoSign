@@ -216,8 +216,22 @@ SIGNOFF_PATHS = (
     ".dockerignore",
     ".github/workflows/",
     "tools/hooks/",
+    "tools/guardrails.py",
     ".env.example",
 )
+# Every product code change names the rules it touches and the tests that prove
+# them, links the screen spec when the merchant screen changes, and says whether
+# the README was updated or checked for stale facts.
+PRODUCT_PATHS = ("agentcosign/",)
+SCREEN_PATHS = ("agentcosign/web/",)
+SPEC_PREFIX = "docs/pm/ux/"
+TRAILER = re.compile(r"^(Constraints|Evidence|Spec|README):[ \t]*(.*)$", re.MULTILINE)
+CONSTRAINT_ID = re.compile(
+    r"^(?:I(?:1[01]|[1-9])|R(?:1[0-5]|[1-9])|H(?:10|[1-9])|G(?:10|[1-9])"
+    r"|G-P[1-8]|F-\d{2}|none)$"
+)
+EVIDENCE_NODE = re.compile(r"^(tests/[\w/]+\.py)::(test_\w+)$")
+README_VALUES = ("updated", "checked")
 
 
 @dataclass
@@ -905,6 +919,58 @@ def check_merchant_screen(root: Path, report: Report) -> None:
     _check_merchant_style(root, report)
 
 
+README_SCENARIOS = re.compile(r"(\d+)-row scenario table")
+README_LIMITS = re.compile(r"defaults \$([\d,]+) / \$([\d,]+)")
+README_PYTHON = re.compile(r"Python-(\d+\.\d+)%2B")
+SCENARIO_ROW = re.compile(r"^    Scenario\(", re.MULTILINE)
+
+
+def _yaml_money(config: str, key: str) -> str | None:
+    match = re.search(rf'^\s*{key}:\s*"?([\d.]+)"?', config, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def check_readme_facts(root: Path, report: Report) -> None:
+    """Numbers the README states must match the code they describe."""
+    readme_path = root / "README.md"
+    if not readme_path.is_file():
+        return
+    readme = readme_path.read_text(encoding="utf-8")
+    table = root / "tests" / "scenarios" / "policy_scenarios.py"
+    stated = README_SCENARIOS.search(readme)
+    if stated and table.is_file():
+        actual = len(SCENARIO_ROW.findall(table.read_text(encoding="utf-8")))
+        if int(stated.group(1)) != actual:
+            report.add(
+                "readme-stale-fact",
+                f"scenario table: README {stated.group(1)}, code {actual}",
+            )
+    config_path = root / "config.yaml"
+    limits = README_LIMITS.search(readme)
+    if limits and config_path.is_file():
+        config = config_path.read_text(encoding="utf-8")
+        pairs = zip(
+            limits.groups(), ("refund_auto_limit", "daily_outflow_cap"), strict=True
+        )
+        for said, key in pairs:
+            value = _yaml_money(config, key)
+            if value is None or float(said.replace(",", "")) != float(value):
+                report.add(
+                    "readme-stale-fact", f"{key}: README ${said}, config {value}"
+                )
+    pyproject = root / "pyproject.toml"
+    badge = README_PYTHON.search(readme)
+    if badge and pyproject.is_file():
+        wanted = re.search(
+            r'requires-python\s*=\s*">=(\d+\.\d+)"',
+            pyproject.read_text(encoding="utf-8"),
+        )
+        if wanted is None or wanted.group(1) != badge.group(1):
+            report.add(
+                "readme-stale-fact", "Python version badge differs from pyproject"
+            )
+
+
 def check_public_docs(root: Path, report: Report) -> None:
     """Public docs never point at gitignored internal material."""
     docs = [root / "README.md", *sorted((root / "docs").glob("*.md"))]
@@ -1078,6 +1144,7 @@ REPO_CHECKS: tuple[Callable[[Path, Report], None], ...] = (
     check_config_pins,
     check_web_assets,
     check_merchant_screen,
+    check_readme_facts,
     check_public_docs,
     check_dependency_ranges,
     check_wiring,
@@ -1121,10 +1188,88 @@ def check_message(message: str, files: Sequence[str]) -> list[str]:
     return problems
 
 
+def _evidence_problems(value: str, read: Callable[[str], str | None]) -> list[str]:
+    """Each named test must exist in the committed code, by file and name."""
+    nodes = [n for n in re.split(r"[,\s]+", value) if n]
+    if not nodes:
+        return ["Evidence: name at least one test as tests/...py::test_name"]
+    problems: list[str] = []
+    for node in nodes:
+        match = EVIDENCE_NODE.match(node)
+        if match is None:
+            problems.append(f"Evidence: {node!r} is not tests/...py::test_name")
+            continue
+        source = read(match.group(1))
+        defined = re.compile(rf"^\s*(?:async\s+)?def {match.group(2)}\(", re.M)
+        if source is None or not defined.search(source):
+            problems.append(f"Evidence: {node} does not exist in the commit")
+    return problems
+
+
+def check_traceability(
+    message: str,
+    files: Sequence[str],
+    read: Callable[[str], str | None],
+    spec_is_fresh: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """Product changes must name their rules, their proof and the README check.
+
+    ``read`` returns a file's text as committed (None if absent). ``spec_is_fresh``
+    is only available locally, because screen specs are internal and not tracked.
+    """
+    subject = next((ln for ln in message.splitlines() if ln.strip()), "")
+    if subject.startswith(EXEMPT_SUBJECTS):
+        return []
+    if not any(f.startswith(PRODUCT_PATHS) for f in files):
+        return []
+    found = {key: value.strip() for key, value in TRAILER.findall(message)}
+    problems: list[str] = []
+    ids = [i for i in re.split(r"[,\s]+", found.get("Constraints", "")) if i]
+    if not ids:
+        problems.append("add 'Constraints: <ids>' naming the rules this change touches")
+    problems += [
+        f"Constraints: unknown id {i!r}" for i in ids if not CONSTRAINT_ID.match(i)
+    ]
+    problems += _evidence_problems(found.get("Evidence", ""), read)
+    if any(f.startswith(SCREEN_PATHS) for f in files):
+        spec = found.get("Spec", "")
+        if not (spec.startswith(SPEC_PREFIX) and spec.endswith(".md")):
+            problems.append(f"screen change: add 'Spec: {SPEC_PREFIX}<file>.md'")
+        elif spec_is_fresh is not None and not spec_is_fresh(spec):
+            problems.append(
+                f"Spec: {spec} is missing or not updated since the last commit"
+            )
+    readme = found.get("README", "")
+    if not readme.startswith(README_VALUES):
+        problems.append("add 'README: updated' or 'README: checked' (stale facts)")
+    elif readme.startswith("updated") and "README.md" not in files:
+        problems.append("README: updated, but README.md is not in this commit")
+    return problems
+
+
+def _local_spec_is_fresh(root: Path) -> Callable[[str], bool]:
+    head = _git(root, "log", "-1", "--format=%ct")
+    since = float(head[0]) if head else 0.0
+
+    def fresh(rel: str) -> bool:
+        path = root / rel
+        return path.is_file() and path.stat().st_mtime > since
+
+    return fresh
+
+
 def run_message(path: Path, root: Path) -> int:
     """commit-msg hook entry: check the pending message against staged files."""
     staged = _git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMRD")
-    problems = check_message(path.read_text(encoding="utf-8"), staged)
+    message = path.read_text(encoding="utf-8")
+
+    def read(rel: str) -> str | None:
+        lines = _git(root, "show", f":{rel}")
+        return "\n".join(lines) if lines else None
+
+    problems = check_message(message, staged) + check_traceability(
+        message, staged, read, _local_spec_is_fresh(root)
+    )
     for problem in problems:
         sys.stderr.write(f"commit-msg: {problem}\n")
     return 1 if problems else 0
@@ -1136,7 +1281,15 @@ def run_history(revs: Sequence[str], root: Path) -> int:
     for sha in _git(root, "rev-list", *revs):
         message = "\n".join(_git(root, "show", "-s", "--format=%B", sha))
         files = _git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", sha)
-        for problem in check_message(message, files):
+
+        def read(rel: str, sha: str = sha) -> str | None:
+            lines = _git(root, "show", f"{sha}:{rel}")
+            return "\n".join(lines) if lines else None
+
+        problems = check_message(message, files) + check_traceability(
+            message, files, read
+        )
+        for problem in problems:
             sys.stderr.write(f"pre-push: commit {sha[:7]}: {problem}\n")
             failed = 1
     return failed

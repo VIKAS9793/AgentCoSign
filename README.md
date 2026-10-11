@@ -22,7 +22,7 @@
 | Use my own PayPal sandbox | [Testing guide](docs/TESTING.md) and `.env.example` |
 | Review the exact submitted code | Tag `v1.0-submission` (created at freeze) |
 
-**Honesty note on "hermetic" mode:** by default the policy engine, approval flow and ledger run as real code, while LLM answers and PayPal execution come from *recorded real-sandbox evidence* (clearly labelled in the UI and `/health`). Provide sandbox keys to run against PayPal live.
+**Honesty note on "hermetic" mode:** by default the policy engine, approval flow and ledger run as real code, while PayPal execution comes from *recorded real-sandbox evidence* (stated on the landing page and in `/health`). Set sandbox keys and `AGENTCOSIGN_PAYPAL_EXECUTION=sandbox` to send refunds to the PayPal sandbox.
 
 ## The problem
 
@@ -32,7 +32,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 
 | Role | Who | Can do | Cannot do |
 |---|---|---|---|
-| **Maker** | AI agent (no PayPal credentials) | Propose actions via 4 allowlisted tools | Approve, read raw audit, call PayPal directly |
+| **Maker** | AI agent (no PayPal credentials) | Propose allowlisted money actions (refund, dispute acceptance, payout) | Approve, read raw audit, call PayPal directly |
 | **Policy** | Deterministic engine, rules R1–R15 | Allow / escalate / deny; strictest wins | Be overridden by an LLM |
 | **Checker** | Human on a mobile PWA, passkey co-sign | Approve or reject escalations | Propose on the agent's behalf |
 | **Auditor** | Read-only key | Verify the ledger | Mutate anything |
@@ -56,7 +56,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 | R11 | Prompt injection detected | DENY + log |
 | R12 | Any error, schema mismatch or unknown tool | DENY (fail closed) |
 | R13 | Currency or account mismatch | DENY |
-| R14 | Agent claims differ from PayPal evidence, or evidence changed before execution | DENY |
+| R14 | Agent claims differ from PayPal evidence, or evidence changed before execution | DENY (asks the person again when only refunds or dispute state changed) |
 | R15 | Screening unavailable | ESCALATE |
 
 ### Four AI roles (designed; model availability verified live, roles not yet wired into the request path)
@@ -71,10 +71,11 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 |---|---|
 | Strict fail-closed config, security headers, domain types, offline test suite, CI, container | ✅ Built (CI and the container image verified green) |
 | Hosted demo on Render with traffic protection (per-client limits, penalty box, reserved reviewer capacity, daily live-call pools), landing page, API reference | ✅ Built and verified on the live host |
-| Policy engine R1–R15 plus execution-drift check: 78-row scenario table, property tests for bounded exposure | ✅ Built (pure function; not yet called by an API route) |
-| Ledger (hash chain + HMAC, atomic reservations), PayPal evidence fetcher, idempotent executor, propose and approve API | 🚧 In progress |
-| Screening and extraction in the request path | 🚧 Planned (models verified live with single samples; accuracy not yet measured) |
-| Mobile PWA approver with WebAuthn passkey co-sign, AG Grid audit viewer | 🚧 Planned |
+| Policy engine R1–R15 plus execution-drift check: 83-row scenario table, property tests for bounded exposure | ✅ Built and called by the propose route |
+| Ledger (hash chain + HMAC, atomic reservations), PayPal evidence fetcher, idempotent executor with a hard cap just before each PayPal call, retry of unanswered refunds with the same request id, propose and approve API | ✅ Built; sandbox refunds executed end to end from a real phone |
+| Screening and extraction in the request path | 🚧 Planned (models verified live with single samples; accuracy not yet measured). Until then every request says the safety check did not run and asks a person |
+| Mobile PWA approver with WebAuthn passkey co-sign (approval bound to the exact refund) | ✅ Built; tested on a real Android phone against the PayPal sandbox. Not yet on the hosted demo |
+| Audit viewer | 🚧 Planned |
 | Payouts adapter, PayPal webhooks, native Android approver | ⏳ Optional |
 
 ## Results
