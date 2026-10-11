@@ -385,6 +385,15 @@
     return card;
   }
 
+  // PayPal accepted a refund, then could not complete it: no money moved.
+  function failedLateCard(item) {
+    var card = el("section", "", "card result-card problem");
+    card.appendChild(el("p", "Check this", "result-badge"));
+    card.appendChild(el("h3", "PayPal could not complete a " + money(item.amount) + " refund to " + item.customer + ".", "result-title"));
+    card.appendChild(el("p", "Order " + item.order_id + ". No money reached the customer. Your assistant has told them. You may want to contact them before asking for a new refund.", "result-detail"));
+    return card;
+  }
+
   // Approved but PayPal has not answered: no buttons, nothing to decide.
   function sendingCard(item) {
     var card = el("section", "", "card result-card check");
@@ -495,6 +504,7 @@
         items.forEach(function (item) {
           var card = item.status === "sending" ? sendingCard(item)
             : item.status === "paused" ? pausedCard(item)
+            : item.status === "failed_late" ? failedLateCard(item)
             : requestCard(item);
           list.appendChild(card);
         });

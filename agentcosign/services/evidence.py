@@ -61,6 +61,21 @@ def _refunded(payments: Mapping[str, Any], currency: str) -> Decimal:
     return total
 
 
+def _tagged(payments: Mapping[str, Any]) -> tuple[tuple[str, str, str], ...]:
+    """Refunds stamped with one of our request ids, as PayPal reports them now."""
+    found: list[tuple[str, str, str]] = []
+    for refund in payments.get("refunds", []) or []:
+        if isinstance(refund, Mapping) and isinstance(refund.get("custom_id"), str):
+            found.append(
+                (
+                    refund["custom_id"],
+                    str(refund.get("id", "")),
+                    str(refund.get("status", "")),
+                )
+            )
+    return tuple(found)
+
+
 def _open_dispute(
     disputes: Sequence[Mapping[str, Any]],
 ) -> tuple[bool, str | None, Decimal | None]:
@@ -121,6 +136,7 @@ def order_evidence_from(
         dispute_amount=dispute_amount,
         customer_key=_customer_key(order, secret),
         capture_id=str(capture["id"]),
+        tagged_refunds=_tagged(payments),
     )
 
 

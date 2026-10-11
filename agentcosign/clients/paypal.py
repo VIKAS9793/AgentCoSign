@@ -207,7 +207,7 @@ class LivePayPalClient:
         result: JsonObject = await self._send(
             "POST",
             f"/v2/payments/captures/{capture}/refund",
-            body={"amount": {"value": str(amount), "currency_code": currency}},
+            body=_refund_body(amount, currency, request_id),
             request_id=request_id,
         )
         return result
@@ -225,6 +225,23 @@ class LivePayPalClient:
         return result
 
 
+# Shown in the customer's PayPal history and emails with the refund.
+REFUND_NOTE_TO_PAYER = (
+    "Your refund is on its way to your original payment method. "
+    "Thank you for your patience."
+)
+
+
+def _refund_body(amount: Decimal, currency: str, request_id: str) -> JsonObject:
+    """Refund request stamped with our request id so we can recognise it later."""
+    return {
+        "amount": {"value": str(amount), "currency_code": currency},
+        "custom_id": request_id,
+        "invoice_id": request_id,
+        "note_to_payer": REFUND_NOTE_TO_PAYER,
+    }
+
+
 class RecordedPayPalClient:
     """Replays recorded PayPal responses; writes are simulated in memory.
 
@@ -237,7 +254,9 @@ class RecordedPayPalClient:
         self,
         orders: Mapping[str, JsonObject],
         disputes: Mapping[str, list[JsonObject]] | None = None,
+        refund_status: str = "COMPLETED",
     ) -> None:
+        self._refund_status = refund_status
         self._orders = {
             key: json.loads(json.dumps(value)) for key, value in orders.items()
         }
@@ -280,9 +299,9 @@ class RecordedPayPalClient:
             return dict(self._writes[request_id])
         purchase = self._purchase_with_capture(capture)
         refund = {
+            **_refund_body(amount, currency, request_id),
             "id": "RF-" + _short_id(request_id),
-            "status": "COMPLETED",
-            "amount": {"value": str(amount), "currency_code": currency},
+            "status": self._refund_status,
         }
         purchase.setdefault("payments", {}).setdefault("refunds", []).append(refund)
         self._writes[request_id] = refund
@@ -296,6 +315,16 @@ class RecordedPayPalClient:
             request_id, {"id": dispute_id, "status": "RESOLVED"}
         )
         return dict(result)
+
+    def set_refund_status(self, request_id: str, status: str) -> None:
+        """Simulate PayPal changing a refund's status later (for example FAILED)."""
+        refund = self._writes[request_id]
+        refund["status"] = status
+        for order in self._orders.values():
+            for unit in order.get("purchase_units", []):
+                for item in unit.get("payments", {}).get("refunds", []):
+                    if item.get("custom_id") == request_id:
+                        item["status"] = status
 
     def _purchase_with_capture(self, capture_id: str) -> JsonObject:
         for order in self._orders.values():

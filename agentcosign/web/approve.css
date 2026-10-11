@@ -295,6 +295,16 @@ summary:focus-visible {
   border-style: dashed;
 }
 
+.result-card.problem {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.problem .result-badge {
+  background: var(--danger);
+  color: var(--on-ink);
+}
+
 .result-card.check {
   border-color: var(--caution-line);
   background: var(--caution-bg);

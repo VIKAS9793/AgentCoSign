@@ -66,6 +66,10 @@ async def _expire_forever(gateway: Gateway) -> None:
         except (AgentCoSignError, sqlite3.Error):
             logger.exception("releasing paused refunds failed; will retry")
         try:
+            await gateway.settle_pending()
+        except (AgentCoSignError, sqlite3.Error):
+            logger.exception("re-reading pending refunds failed; will retry")
+        try:
             await gateway.finish_unfinished()
         except (AgentCoSignError, sqlite3.Error):
             logger.exception("finishing unanswered executions failed; will retry")

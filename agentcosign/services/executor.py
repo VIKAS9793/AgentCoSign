@@ -60,21 +60,22 @@ async def _call_paypal(
     )
 
 
-def _own_refund_may_have_landed(
-    proposal: Proposal,
-    decided: OrderEvidence,
-    current: OrderEvidence,
-    previous_attempts: int,
-) -> bool:
-    """True when the only new refund on the order could be this request's own.
+LANDED_STATUSES = ("COMPLETED", "PENDING")
 
-    An earlier attempt may have reached PayPal without us seeing the reply.
-    Resending the same request id returns that refund instead of a new one, so
-    it is not an outside change. Any other difference is someone else's refund.
+
+def _our_refund(proposal: Proposal, current: OrderEvidence) -> tuple[str, str] | None:
+    """Our own refund already on the order, found by the stamp we put on it.
+
+    An earlier attempt may have reached PayPal without us seeing the reply. The
+    stamp is our request id, so an outside refund of the same amount can never
+    be mistaken for ours, and we record ours instead of sending it again.
     """
-    if previous_attempts == 0 or proposal.tool != ToolAction.CREATE_REFUND.value:
-        return False
-    return current.refunded_amount == decided.refunded_amount + proposal.amount
+    if proposal.tool != ToolAction.CREATE_REFUND.value:
+        return None
+    for tag, refund_id, status in current.tagged_refunds:
+        if tag == proposal.request_id and status in LANDED_STATUSES:
+            return refund_id, status
+    return None
 
 
 async def _stop_on_drift(
@@ -89,7 +90,9 @@ async def _stop_on_drift(
     request_id = proposal.request_id
     compared = current
     if own_landed:
-        compared = replace(current, refunded_amount=decided.refunded_amount)
+        # take out only our own refund; any other new refund is a real change
+        others = current.refunded_amount - proposal.amount
+        compared = replace(current, refunded_amount=others)
     drift = check_execution_drift(decided, compared)
     if drift is None:
         return None
@@ -146,7 +149,7 @@ async def execute(
     """Re-check the evidence, then execute idempotently and record the outcome."""
     request_id = proposal.request_id
     try:
-        previous = await asyncio.to_thread(ledger.begin_execution, proposal, now)
+        await asyncio.to_thread(ledger.begin_execution, proposal, now)
     except FailClosedError:
         state = await asyncio.to_thread(ledger.state_of, request_id)
         return Execution(request_id, state, "not_executable")
@@ -154,12 +157,15 @@ async def execute(
         current = await fetch_evidence(client, decided.order_id, now=now, secret=secret)
     except PayPalClientError:
         return Execution(request_id, ProposalState.EXECUTING, "evidence_unavailable")
-    own_landed = _own_refund_may_have_landed(proposal, decided, current, previous)
+    landed = _our_refund(proposal, current)
+    own_landed = landed is not None
     stopped = await _stop_on_drift(
         ledger, proposal, decided, current, own_landed, now
     ) or await _stop_if_over_refundable(ledger, proposal, current, own_landed, now)
     if stopped is not None:
         return stopped
+    if landed is not None:
+        return await _record_success(ledger, request_id, now, *landed)
     try:
         response = await _call_paypal(client, proposal, current)
     except PayPalClientError as exc:
@@ -169,13 +175,17 @@ async def execute(
         detail = {"reason": "paypal_refused", "paypal_status": status}
         await _move(ledger, request_id, ProposalState.FAILED, now, detail)
         return Execution(request_id, ProposalState.FAILED, "paypal_refused")
-    paypal_id = str(response.get("id", ""))
-    detail = {"paypal_id": paypal_id, "paypal_status": str(response.get("status", ""))}
-    await _move(ledger, request_id, ProposalState.EXECUTED, now, detail)
-    return Execution(
+    return await _record_success(
+        ledger,
         request_id,
-        ProposalState.EXECUTED,
-        "executed",
-        paypal_id,
-        detail["paypal_status"],
+        now,
+        str(response.get("id", "")),
+        str(response.get("status", "")),
     )
+
+
+async def _record_success(
+    ledger: Ledger, request_id: str, now: datetime, paypal_id: str, status: str
+) -> Execution:
+    await asyncio.to_thread(ledger.mark_executed, request_id, now, paypal_id, status)
+    return Execution(request_id, ProposalState.EXECUTED, "executed", paypal_id, status)

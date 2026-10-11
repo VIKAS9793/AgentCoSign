@@ -62,6 +62,11 @@ async def test_refund_sends_the_request_id_and_exact_amount() -> None:
         "currency_code": "USD",
     }
     assert request.url.path == "/v2/payments/captures/CAP-1/refund"
+    body = json.loads(request.content)
+    # stamped with our request id so we can recognise our own refund later
+    assert body["custom_id"] == "req-123"
+    assert body["invoice_id"] == "req-123"
+    assert body["note_to_payer"]
 
 
 async def test_token_is_cached_and_refreshed_before_expiry() -> None:

@@ -72,7 +72,12 @@ ALLOWED_TRANSITIONS: dict[ProposalState, frozenset[ProposalState]] = {
     S.PAUSED: frozenset({S.DENIED}),
     # Back to approval when the order's state moved between decision and execution.
     S.EXECUTING: frozenset({S.EXECUTED, S.FAILED, S.PENDING_APPROVAL}),
+    # PayPal can report a pending refund as failed or cancelled later.
+    S.EXECUTED: frozenset({S.FAILED}),
 }
+SETTLED_STATUSES = ("COMPLETED",)
+UNSETTLED_STATUSES = ("PENDING",)
+LATE_FAILURE_STATUSES = ("FAILED", "CANCELLED")
 STATE_FOR_DECISION = {
     Decision.ALLOW: S.EXECUTING,
     Decision.ESCALATE: S.PENDING_APPROVAL,
@@ -194,7 +199,22 @@ _MIGRATIONS = {
     "evidence_json": "ALTER TABLE proposals ADD COLUMN evidence_json TEXT",
     "decided_at": "ALTER TABLE proposals ADD COLUMN decided_at TEXT",
     "release_at": "ALTER TABLE proposals ADD COLUMN release_at TEXT",
+    "paypal_id": "ALTER TABLE proposals ADD COLUMN paypal_id TEXT",
+    "paypal_status": "ALTER TABLE proposals ADD COLUMN paypal_status TEXT",
 }
+_Q_PAYPAL = (
+    "UPDATE proposals SET paypal_id = ?, paypal_status = ?, updated_at = ? "
+    "WHERE request_id = ?"
+)
+_Q_UNSETTLED = (
+    "SELECT request_id FROM proposals WHERE state = ? AND paypal_status = ? "
+    "ORDER BY updated_at"
+)
+_Q_LATE_FAILURES = (
+    "SELECT request_id, tool, amount, currency, order_id, updated_at FROM proposals "
+    "WHERE state = ? AND paypal_status IN (?, ?) AND updated_at >= ? "
+    "ORDER BY updated_at"
+)
 _Q_BACKFILL = "UPDATE proposals SET decided_at = created_at WHERE decided_at IS NULL"
 _Q_PENDING = (
     "SELECT request_id, tool, amount, currency, order_id, rule_id, explanation, "
@@ -581,6 +601,62 @@ class Ledger:
             return None
         return ProposalState(row["state"]), row["release_at"] or "", row["updated_at"]
 
+    def mark_executed(
+        self, request_id: str, now: datetime, paypal_id: str, paypal_status: str
+    ) -> None:
+        """Record PayPal's refund id and status with the move to executed."""
+        detail = {"paypal_id": paypal_id, "paypal_status": paypal_status}
+        self.transition(request_id, S.EXECUTED, now, detail)
+        with self._transaction() as conn:
+            conn.execute(
+                _Q_PAYPAL, (paypal_id, paypal_status, _iso(_utc(now)), request_id)
+            )
+
+    def unsettled(self) -> list[str]:
+        """Executed refunds PayPal still reports as pending."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                _Q_UNSETTLED, (S.EXECUTED.value, UNSETTLED_STATUSES[0])
+            ).fetchall()
+        return [str(row["request_id"]) for row in rows]
+
+    def record_paypal_status(
+        self, request_id: str, paypal_id: str, status: str, now: datetime
+    ) -> ProposalState:
+        """Store PayPal's latest status for an executed refund.
+
+        A late failure or cancellation moves the request to failed: no money
+        reached the customer, so nobody may be told it did.
+        """
+        now = _utc(now)
+        if status in LATE_FAILURE_STATUSES:
+            self.transition(
+                request_id,
+                S.FAILED,
+                now,
+                {"reason": "paypal_failed_later", "paypal_status": status},
+            )
+        with self._transaction() as conn:
+            conn.execute(_Q_PAYPAL, (paypal_id, status, _iso(now), request_id))
+            if status not in LATE_FAILURE_STATUSES:
+                body = {"paypal_id": paypal_id, "paypal_status": status}
+                self._append(conn, request_id, "paypal_status", body, now)
+        return S.FAILED if status in LATE_FAILURE_STATUSES else S.EXECUTED
+
+    def paypal_status(self, request_id: str) -> str:
+        """PayPal's last reported status for this request's refund, or blank."""
+        with self._connection() as conn:
+            row = conn.execute(_Q_GET, (request_id,)).fetchone()
+        return str(row["paypal_status"] or "") if row else ""
+
+    def late_failures(self, now: datetime) -> list[dict[str, str]]:
+        """Refunds PayPal failed or cancelled after accepting them, last 24 hours."""
+        day_ago = _iso(_utc(now) - timedelta(hours=24))
+        params = (S.FAILED.value, *LATE_FAILURE_STATUSES, day_ago)
+        with self._connection() as conn:
+            rows = conn.execute(_Q_LATE_FAILURES, params).fetchall()
+        return [{k: str(v or "") for k, v in dict(row).items()} for row in rows]
+
     def releases_due(self, now: datetime) -> list[str]:
         """Paused requests whose release time has come, oldest pause first."""
         with self._connection() as conn:
@@ -905,6 +981,8 @@ def evidence_from_dict(data: dict[str, Any]) -> OrderEvidence:
             value = Decimal(value)
         elif key == "fetched_at":
             value = datetime.fromisoformat(value)
+        elif key == "tagged_refunds":
+            value = tuple(tuple(item) for item in value or ())
         values[key] = value
     return OrderEvidence(**values)
 

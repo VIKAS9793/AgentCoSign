@@ -248,9 +248,36 @@ class Gateway:
             released.append(request_id)
         return released
 
+    async def settle_pending(self) -> list[str]:
+        """Re-read refunds PayPal reported as pending and record how they ended.
+
+        Uses the order read, which lists every refund with our stamp and its
+        current status. A refund that failed or was cancelled later is marked
+        failed, so neither the merchant nor the customer is told money moved.
+        """
+        now = self._clock()
+        changed: list[str] = []
+        for request_id in await asyncio.to_thread(self._ledger.unsettled):
+            loaded = await asyncio.to_thread(self._ledger.load, request_id)
+            if loaded is None:
+                continue
+            evidence = await self._evidence(loaded[0], now)
+            if evidence is None:
+                continue  # PayPal unreachable: try again on the next pass
+            for tag, refund_id, status in evidence.tagged_refunds:
+                if tag == request_id and status != "PENDING":
+                    await asyncio.to_thread(
+                        self._ledger.record_paypal_status,
+                        request_id,
+                        refund_id,
+                        status,
+                        now,
+                    )
+                    changed.append(request_id)
+        return changed
+
     async def status_view(self, request_id: str) -> dict[str, str] | None:
         """The state of a proposal and the exact line to tell the customer."""
-        now = self._clock()
         timing = await asyncio.to_thread(self._ledger.timing, request_id)
         loaded = await asyncio.to_thread(self._ledger.load, request_id)
         if timing is None:
@@ -260,25 +287,47 @@ class Gateway:
         order = (proposal.order_id if proposal else None) or ""
         amount = f"{proposal.amount:.2f}" if proposal else "0.00"
         view = {"request_id": request_id, "state": state.value}
+        moment = self._update_moment(state, release, changed)
+        if moment is not None:
+            view["update_by"] = moment.isoformat()
+        view["customer_message"] = await self._customer_line(
+            state, request_id, order, amount, moment
+        )
+        return view
+
+    def _update_moment(
+        self, state: ProposalState, release: str, changed: str
+    ) -> datetime | None:
+        """When the customer will next hear something, if a time was promised."""
+        if state is ProposalState.PAUSED:
+            return datetime.fromisoformat(release) if release else self._clock()
+        if state is ProposalState.PENDING_APPROVAL:
+            return datetime.fromisoformat(decide_by(changed, self._ttl))
+        return None
+
+    async def _customer_line(
+        self,
+        state: ProposalState,
+        request_id: str,
+        order: str,
+        amount: str,
+        moment: datetime | None,
+    ) -> str:
+        hours = customer_copy.hours_until(moment, self._clock()) if moment else 1
         match state:
             case ProposalState.PAUSED:
-                moment = datetime.fromisoformat(release) if release else now
-                view["update_by"] = moment.isoformat()
-                hours = customer_copy.hours_until(moment, now)
-                view["customer_message"] = customer_copy.still_paused(order, hours)
+                return customer_copy.still_paused(order, hours)
             case ProposalState.PENDING_APPROVAL:
-                moment = datetime.fromisoformat(decide_by(changed, self._ttl))
-                view["update_by"] = moment.isoformat()
-                hours = customer_copy.hours_until(moment, now)
-                view["customer_message"] = customer_copy.with_team(order, hours)
+                return customer_copy.with_team(order, hours)
             case ProposalState.EXECUTING:
-                view["customer_message"] = customer_copy.sending(order)
+                return customer_copy.sending(order)
             case ProposalState.EXECUTED:
                 name = await self._first_name(order)
-                view["customer_message"] = customer_copy.sent(name, order, amount)
-            case _:
-                view["customer_message"] = customer_copy.declined(order)
-        return view
+                return customer_copy.sent(name, order, amount)
+        paypal = await asyncio.to_thread(self._ledger.paypal_status, request_id)
+        if state is ProposalState.FAILED and paypal in ("FAILED", "CANCELLED"):
+            return customer_copy.failed_late(order)
+        return customer_copy.declined(order)
 
     async def _run(
         self, proposal: Proposal, evidence: OrderEvidence, outcome: Outcome
@@ -364,6 +413,20 @@ class Gateway:
         views += await self._waiting_views()
         views += await self._paused_views()
         views += await self._sending_views()
+        views += await self._late_failure_views()
+        return views
+
+    async def _late_failure_views(self) -> list[dict[str, str | list[str]]]:
+        views: list[dict[str, str | list[str]]] = []
+        for item in await asyncio.to_thread(self._ledger.late_failures, self._clock()):
+            facts = await self._live_facts(item["order_id"])
+            views.append(
+                {
+                    **self._basics(item, "failed_late"),
+                    "customer": facts["customer"],
+                    "failed_at": item["updated_at"],
+                }
+            )
         return views
 
     async def _live_facts(self, order_id: str) -> dict[str, str]:

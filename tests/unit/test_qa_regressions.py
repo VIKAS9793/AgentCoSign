@@ -199,3 +199,72 @@ async def test_editing_a_recorded_decision_is_detected(
         conn.execute("UPDATE proposals SET state = 'executing', decision = 'allow'")
     with pytest.raises(AuditIntegrityError):
         ledger.verify_records()
+
+
+# --- our own refund is recognised by the stamp PayPal keeps, never by its amount
+class LosesRequest(RecordedPayPalClient):
+    """The first refund request never reaches PayPal at all."""
+
+    def __init__(self) -> None:
+        super().__init__({"ORD-1": order_json()})
+        self.calls = 0
+
+    async def refund_capture(self, capture_id, amount, currency, request_id):  # type: ignore[no-untyped-def,override] -- test double
+        self.calls += 1
+        if self.calls == 1:
+            raise PayPalClientError("timed out", {"retryable": True})
+        return await super().refund_capture(capture_id, amount, currency, request_id)
+
+
+async def test_a_landed_refund_is_recorded_without_sending_it_again(
+    ledger: Ledger,
+) -> None:
+    client = LosesFirstReply()
+    decided = await _decided(ledger, client, refund("r1", "20.00"))
+    await execute(
+        refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    second = await execute(
+        refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    assert second.state is ProposalState.EXECUTED
+    assert client.calls == 1  # found by its stamp; PayPal was not asked twice
+    assert await _refunded(client) == Decimal("20.00")
+
+
+async def test_a_same_amount_outside_refund_is_never_taken_for_ours(
+    ledger: Ledger,
+) -> None:
+    client = LosesRequest()
+    decided = await _decided(ledger, client, refund("r1", "20.00"))
+    await execute(
+        refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    # someone refunds exactly 20.00 in PayPal directly; ours never arrived
+    await RecordedPayPalClient.refund_capture(
+        client, "CAP-1", Decimal("20.00"), "USD", "outside-1"
+    )
+    second = await execute(
+        refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    assert second.state is ProposalState.PENDING_APPROVAL  # a person looks again
+    assert await _refunded(client) == Decimal("20.00")  # theirs only, ours not sent
+
+
+async def test_ours_and_a_same_amount_outside_refund_are_told_apart(
+    ledger: Ledger,
+) -> None:
+    client = LosesFirstReply()
+    decided = await _decided(ledger, client, refund("r1", "20.00"))
+    await execute(
+        refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    await RecordedPayPalClient.refund_capture(
+        client, "CAP-1", Decimal("20.00"), "USD", "outside-1"
+    )
+    second = await execute(
+        refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    assert second.state is ProposalState.PENDING_APPROVAL  # the outside one is a change
+    assert client.calls == 1
+    assert await _refunded(client) == Decimal("40.00")  # ours once, theirs once

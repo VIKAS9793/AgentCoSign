@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from agentcosign.clients.paypal import REFUND_NOTE_TO_PAYER
 from agentcosign.services import customer_copy as copy
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
@@ -17,6 +18,8 @@ LINES = [
     copy.sent(None, "ORD-1", "40.00"),
     copy.sending("ORD-1"),
     copy.declined("ORD-1"),
+    copy.failed_late("ORD-1"),
+    REFUND_NOTE_TO_PAYER,
 ]
 
 

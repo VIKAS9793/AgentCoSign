@@ -65,6 +65,9 @@ class OrderEvidence:
     customer_key: str | None = None
     # The capture a refund is issued against.
     capture_id: str | None = None
+    # Refunds on the order that carry our stamp: (our request id, PayPal refund
+    # id, PayPal status). Lets us recognise our own refund exactly.
+    tagged_refunds: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

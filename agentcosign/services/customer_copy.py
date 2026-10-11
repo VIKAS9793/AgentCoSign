@@ -83,6 +83,14 @@ def sending(order: str) -> str:
     )
 
 
+def failed_late(order: str) -> str:
+    """PayPal could not complete a refund it had accepted; no money moved."""
+    return (
+        f"We're sorry, your refund for order {order} didn't go through on PayPal's "
+        "side, so no money has moved yet. Our team has been told and will be in touch."
+    )
+
+
 def declined(order: str) -> str:
     """The merchant decided not to refund, or a re-check could not allow it."""
     return (

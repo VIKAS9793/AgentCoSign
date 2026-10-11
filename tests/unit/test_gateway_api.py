@@ -506,3 +506,48 @@ def test_the_paused_card_counts_the_real_refunds_in_the_window(
         i for i in listed if i["status"] == "paused" and i["request_id"] == "next"
     ]
     assert paused[0]["count_in_window"] == str(earlier + 1)
+
+
+# --- a refund PayPal accepts as pending and later fails ---------------------------
+async def test_a_pending_refund_that_fails_later_is_never_reported_as_sent(
+    tmp_path: Path,
+) -> None:
+    env = Env(tmp_path)
+    env.paypal = RecordedPayPalClient(
+        {"ORD-1": order_json(captured="500.00")}, refund_status="PENDING"
+    )
+    env.client = TestClient(create_app(env.settings, env.paypal))
+    with env.client:
+        env.propose("r1", "10.00")
+        env.enrol()
+        session = env.session()
+        response, _ = env.decide("r1", "approve", session)
+        assert response.json()["paypal_status"] == "PENDING"
+        gateway = env.client.app.state.gateway  # type: ignore[attr-defined]
+        assert await gateway.settle_pending() == []  # still pending: nothing to do
+        env.paypal.set_refund_status("r1", "FAILED")
+        assert await gateway.settle_pending() == ["r1"]
+        agent = env.key("agent_api_key")
+        status = env.client.get("/v1/proposals/r1", headers=agent).json()
+        assert status["state"] == "failed"
+        assert "didn't go through" in status["customer_message"]
+        listed = env.client.get("/v1/approvals", headers=session).json()
+        assert [i["status"] for i in listed] == ["failed_late"]
+
+
+async def test_a_pending_refund_that_completes_is_settled(tmp_path: Path) -> None:
+    env = Env(tmp_path)
+    env.paypal = RecordedPayPalClient(
+        {"ORD-1": order_json(captured="500.00")}, refund_status="PENDING"
+    )
+    env.client = TestClient(create_app(env.settings, env.paypal))
+    with env.client:
+        env.propose("r1", "10.00")
+        env.enrol()
+        env.decide("r1", "approve", env.session())
+        gateway = env.client.app.state.gateway  # type: ignore[attr-defined]
+        env.paypal.set_refund_status("r1", "COMPLETED")
+        assert await gateway.settle_pending() == ["r1"]
+        status = env.client.get("/v1/proposals/r1", headers=env.key("agent_api_key"))
+        assert status.json()["state"] == "executed"
+        assert await gateway.settle_pending() == []  # nothing left to re-read
