@@ -22,6 +22,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -54,6 +55,9 @@ ENROLMENT_LINK_SECONDS = 600
 RETRY_QUIET_SECONDS = 60
 VIEW_REQUEST = "approver-session"
 VIEW_DIGEST = hashlib.sha256(b"view pending approvals").hexdigest()
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,14 +232,20 @@ class Gateway:
             if evidence is None:
                 continue
             signals = Signals(screening=ScreeningVerdict.UNAVAILABLE)
-            recorded = await asyncio.to_thread(
-                self._ledger.release,
-                request_id,
-                evidence,
-                signals,
-                self._screening,
-                now,
-            )
+            try:
+                recorded = await asyncio.to_thread(
+                    self._ledger.release,
+                    request_id,
+                    evidence,
+                    signals,
+                    self._screening,
+                    now,
+                )
+            except FailClosedError:
+                # declined (or otherwise moved on) since the list was read: the
+                # merchant's decision stands, and the other releases continue
+                logger.info("release skipped, no longer paused: %s", request_id)
+                continue
             if recorded.result.decision is Decision.ALLOW:
                 await execute(
                     proposal,

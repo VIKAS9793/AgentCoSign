@@ -551,3 +551,91 @@ async def test_a_pending_refund_that_completes_is_settled(tmp_path: Path) -> Non
         status = env.client.get("/v1/proposals/r1", headers=env.key("agent_api_key"))
         assert status.json()["state"] == "executed"
         assert await gateway.settle_pending() == []  # nothing left to re-read
+
+
+# --- edge cases where real decisions happen ----------------------------------------
+def _gateway(env: Env) -> Any:
+    return env.client.app.state.gateway  # type: ignore[attr-defined]
+
+
+async def test_e1_two_pauses_releasing_together_never_both_pass(env: Env) -> None:
+    _three_then_a_fourth(env)  # the fourth request is paused
+    env.propose("r5", "11.00")  # a different amount: its own pause
+    later = datetime.now(UTC) + timedelta(hours=24, minutes=1)
+    _gateway(env)._clock = lambda: later
+    await _gateway(env).release_due()
+    agent = env.key("agent_api_key")
+    states = {
+        rid: env.client.get(f"/v1/proposals/{rid}", headers=agent).json()["state"]
+        for rid in ("r4", "r5")
+    }
+    # the three earlier refunds left the window, so both fit; neither is lost
+    assert set(states.values()) <= {"pending_approval", "paused"}
+    assert "pending_approval" in states.values()
+
+
+async def test_e2_an_order_refunded_elsewhere_while_paused_is_refused_at_release(
+    env: Env,
+) -> None:
+    _three_then_a_fourth(env)
+    await env.paypal.refund_capture("CAP-1", Decimal("500.00"), "USD", "outside-all")
+    later = datetime.now(UTC) + timedelta(hours=25)
+    _gateway(env)._clock = lambda: later
+    assert await _gateway(env).release_due() == ["r4"]
+    status = env.client.get("/v1/proposals/r4", headers=env.key("agent_api_key"))
+    assert status.json()["state"] == "denied"
+    assert "can't make a refund" in status.json()["customer_message"]
+    assert await env.refunded() == Decimal("500.00")  # nothing more went out
+
+
+def test_e4_same_order_different_amount_is_its_own_request(env: Env) -> None:
+    _three_then_a_fourth(env)
+    other = env.propose("r4-other", "12.00").json()
+    assert other["request_id"] == "r4-other"
+    assert other["replayed"] is False
+    assert other["state"] == "paused"
+
+
+def test_e5_asking_again_after_a_decline_is_a_fresh_request(env: Env) -> None:
+    _three_then_a_fourth(env)
+    env.enrol()
+    env.decide("r4", "reject", env.session())
+    again = env.propose("r4-again", "10.00").json()
+    assert again["request_id"] == "r4-again"  # the declined one is not revived
+    assert again["state"] == "paused"
+
+
+async def test_e6_a_decline_racing_the_release_wins_and_others_still_release(
+    env: Env,
+) -> None:
+    _three_then_a_fourth(env)
+    env.propose("r5", "11.00")
+    env.enrol()
+    env.decide("r4", "reject", env.session())
+    gateway = _gateway(env)
+    real = gateway._ledger.releases_due
+    gateway._ledger.releases_due = lambda now: ["r4", *real(now)]  # stale list
+    later = datetime.now(UTC) + timedelta(hours=25)
+    gateway._clock = lambda: later
+    assert await gateway.release_due() == [
+        "r5"
+    ]  # the declined one is skipped, the other released
+    status = env.client.get("/v1/proposals/r4", headers=env.key("agent_api_key"))
+    assert status.json()["state"] == "denied"
+
+
+async def test_e9_an_immediate_paypal_failure_is_never_shown_as_processing(
+    tmp_path: Path,
+) -> None:
+    env = Env(tmp_path)
+    env.paypal = RecordedPayPalClient(
+        {"ORD-1": order_json(captured="500.00")}, refund_status="FAILED"
+    )
+    env.client = TestClient(create_app(env.settings, env.paypal))
+    with env.client:
+        env.propose("r1", "10.00")
+        env.enrol()
+        response, _ = env.decide("r1", "approve", env.session())
+        assert response.json()["state"] == "failed"
+        status = env.client.get("/v1/proposals/r1", headers=env.key("agent_api_key"))
+        assert "didn't go through" in status.json()["customer_message"]

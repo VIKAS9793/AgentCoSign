@@ -61,6 +61,7 @@ async def _call_paypal(
 
 
 LANDED_STATUSES = ("COMPLETED", "PENDING")
+PAYPAL_FAILED = ("FAILED", "CANCELLED")
 
 
 def _our_refund(proposal: Proposal, current: OrderEvidence) -> tuple[str, str] | None:
@@ -187,5 +188,13 @@ async def execute(
 async def _record_success(
     ledger: Ledger, request_id: str, now: datetime, paypal_id: str, status: str
 ) -> Execution:
+    """Record PayPal's answer; a refund it answers as failed moved no money."""
+    if status in PAYPAL_FAILED:
+        await asyncio.to_thread(
+            ledger.mark_failed_by_paypal, request_id, now, paypal_id, status
+        )
+        return Execution(
+            request_id, ProposalState.FAILED, "paypal_failed", paypal_id, status
+        )
     await asyncio.to_thread(ledger.mark_executed, request_id, now, paypal_id, status)
     return Execution(request_id, ProposalState.EXECUTED, "executed", paypal_id, status)

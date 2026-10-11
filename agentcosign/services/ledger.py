@@ -612,6 +612,21 @@ class Ledger:
                 _Q_PAYPAL, (paypal_id, paypal_status, _iso(_utc(now)), request_id)
             )
 
+    def mark_failed_by_paypal(
+        self, request_id: str, now: datetime, paypal_id: str, paypal_status: str
+    ) -> None:
+        """PayPal answered the refund with a failure: no money moved."""
+        detail = {
+            "reason": "paypal_failed",
+            "paypal_id": paypal_id,
+            "paypal_status": paypal_status,
+        }
+        self.transition(request_id, S.FAILED, now, detail)
+        with self._transaction() as conn:
+            conn.execute(
+                _Q_PAYPAL, (paypal_id, paypal_status, _iso(_utc(now)), request_id)
+            )
+
     def unsettled(self) -> list[str]:
         """Executed refunds PayPal still reports as pending."""
         with self._connection() as conn:
