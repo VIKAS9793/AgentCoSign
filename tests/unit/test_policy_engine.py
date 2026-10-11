@@ -10,7 +10,7 @@ import pytest
 
 from agentcosign.core.config import get_settings
 from agentcosign.models.domain import Decision, PolicyResult
-from agentcosign.models.policy import OrderEvidence
+from agentcosign.models.policy import LedgerContext, OrderEvidence
 from agentcosign.services import policy_engine
 from agentcosign.services.policy_engine import check_execution_drift, evaluate
 from tests.scenarios.policy_scenarios import (
@@ -70,6 +70,8 @@ def test_strictest_outcome_always_wins() -> None:
         decisions = {h["decision"] for h in hits}
         if "deny" in decisions:
             assert result.decision is Decision.DENY
+        elif "pause" in decisions:
+            assert result.decision is Decision.PAUSE
         elif "escalate" in decisions:
             assert result.decision is Decision.ESCALATE
 
@@ -193,3 +195,41 @@ def test_fresh_evidence_is_judged_against_the_injected_clock_not_the_wall_clock(
     result = evaluate(proposal, evidence, ledger, signals, rules, screening, later)
     assert result.decision is Decision.DENY
     assert result.rule_id == "R14"
+
+
+# --- the repeat-refund pause --------------------------------------------------
+@pytest.mark.parametrize(
+    ("hours_ago", "expected_hours_from_now"),
+    [
+        # three refunds 20, 10 and 2 hours ago: the oldest leaves the window first
+        ((20, 10, 2), 4),
+        # five refunds: three must leave before the customer is under the limit
+        ((23, 22, 15, 9, 1), 9),
+    ],
+)
+def test_a_pause_releases_when_the_customer_is_back_under_the_limit(
+    hours_ago: tuple[int, ...], expected_hours_from_now: int
+) -> None:
+    times = tuple(NOW - timedelta(hours=h) for h in hours_ago)
+    ledger = LedgerContext(
+        expected_account_id="ACCT-1",
+        refunds_24h_for_customer=len(times),
+        customer_refund_times=times,
+    )
+    release = policy_engine.release_time(ledger, 3, NOW)
+    assert release == NOW + timedelta(hours=expected_hours_from_now)
+
+
+def test_a_pause_without_refund_times_holds_a_full_day() -> None:
+    ledger = LedgerContext(expected_account_id="ACCT-1", refunds_24h_for_customer=3)
+    assert policy_engine.release_time(ledger, 3, NOW) == NOW + timedelta(hours=24)
+
+
+def test_every_pause_carries_a_future_release_time_and_needs_no_person() -> None:
+    for scenario in SCENARIOS:
+        result = run(scenario)
+        if result.decision is Decision.PAUSE:
+            assert result.release_at is not None and result.release_at > NOW
+            assert result.requires_human_approval is False
+        else:
+            assert result.release_at is None

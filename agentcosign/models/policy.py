@@ -74,6 +74,9 @@ class LedgerContext:
     expected_account_id: str
     reserved_for_order: Decimal = Decimal("0")
     refunds_24h_for_customer: int = 0
+    # When each of those refunds was counted, so a pause can say exactly when
+    # the customer is back under the limit.
+    customer_refund_times: tuple[datetime, ...] = ()
     outflow_24h: Decimal = Decimal("0")
     known_payee: bool = False
     duplicate_payout_in_window: bool = False

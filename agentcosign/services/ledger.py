@@ -51,6 +51,7 @@ class ProposalState(StrEnum):
     """Lifecycle of a proposal after the decision."""
 
     PENDING_APPROVAL = "pending_approval"
+    PAUSED = "paused"
     EXECUTING = "executing"
     EXECUTED = "executed"
     DENIED = "denied"
@@ -59,16 +60,23 @@ class ProposalState(StrEnum):
 
 
 S = ProposalState
-RESERVING = (S.PENDING_APPROVAL, S.EXECUTING)
-OUTFLOW = (S.PENDING_APPROVAL, S.EXECUTING, S.EXECUTED)
+# A paused refund keeps its money set aside so nothing else can promise it, but
+# it is not yet one of the customer's refunds: paused requests never hold each
+# other back, and each is counted once it is released.
+RESERVING = (S.PENDING_APPROVAL, S.EXECUTING, S.PAUSED)
+OUTFLOW = (S.PENDING_APPROVAL, S.EXECUTING, S.EXECUTED, S.PAUSED)
+CUSTOMER_REFUNDS = (S.PENDING_APPROVAL, S.EXECUTING, S.EXECUTED)
 ALLOWED_TRANSITIONS: dict[ProposalState, frozenset[ProposalState]] = {
     S.PENDING_APPROVAL: frozenset({S.EXECUTING, S.DENIED, S.EXPIRED}),
+    # Declining is always possible; sending only happens through a release.
+    S.PAUSED: frozenset({S.DENIED}),
     # Back to approval when the order's state moved between decision and execution.
     S.EXECUTING: frozenset({S.EXECUTED, S.FAILED, S.PENDING_APPROVAL}),
 }
 STATE_FOR_DECISION = {
     Decision.ALLOW: S.EXECUTING,
     Decision.ESCALATE: S.PENDING_APPROVAL,
+    Decision.PAUSE: S.PAUSED,
     Decision.DENY: S.DENIED,
 }
 
@@ -113,17 +121,42 @@ CREATE TABLE IF NOT EXISTS audit (
 _Q_GET = "SELECT * FROM proposals WHERE request_id = ?"
 _Q_ORDER_RESERVED = (
     "SELECT amount FROM proposals WHERE order_id = ? AND tool IN (?, ?) "
-    "AND state IN (?, ?)"
+    "AND state IN (?, ?, ?) AND request_id != ?"
 )
-_Q_OUTFLOW = "SELECT amount FROM proposals WHERE created_at >= ? AND state IN (?, ?, ?)"
+_Q_OUTFLOW = (
+    "SELECT amount FROM proposals WHERE decided_at >= ? AND state IN (?, ?, ?, ?) "
+    "AND request_id != ?"
+)
 _Q_CUSTOMER = (
+    "SELECT decided_at FROM proposals WHERE customer_key = ? AND tool = ? "
+    "AND decided_at >= ? AND state IN (?, ?, ?) AND request_id != ?"
+)
+_Q_CUSTOMER_ASKS = (
     "SELECT COUNT(*) FROM proposals WHERE customer_key = ? AND tool = ? "
-    "AND created_at >= ? AND state IN (?, ?, ?)"
+    "AND created_at >= ?"
+)
+_Q_STAMP = "UPDATE proposals SET decided_at = ?, release_at = ? WHERE request_id = ?"
+_Q_REDECIDE = (
+    "UPDATE proposals SET state = ?, decision = ?, rule_id = ?, explanation = ?, "
+    "triggered = ?, evidence_json = ?, decided_at = ?, release_at = ?, attempts = 0, "
+    "updated_at = ? WHERE request_id = ?"
+)
+_Q_RELEASE_DUE = (
+    "SELECT request_id FROM proposals WHERE state = ? AND release_at <= ? "
+    "ORDER BY release_at, created_at"
+)
+_Q_PAUSED = (
+    "SELECT request_id, tool, amount, currency, order_id, customer_key, release_at, "
+    "created_at FROM proposals WHERE state = ? ORDER BY release_at"
+)
+_Q_SAME_PAUSED = (
+    "SELECT request_id FROM proposals WHERE state = ? AND order_id = ? AND tool = ? "
+    "AND amount = ? ORDER BY created_at LIMIT 1"
 )
 _Q_KNOWN_PAYEE = "SELECT 1 FROM proposals WHERE payee_key = ? AND state = ? LIMIT 1"
 _Q_DUPLICATE = (
     "SELECT 1 FROM proposals WHERE payee_key = ? AND amount = ? AND reference = ? "
-    "AND created_at >= ? AND state IN (?, ?, ?) LIMIT 1"
+    "AND created_at >= ? AND state IN (?, ?, ?, ?) LIMIT 1"
 )
 _Q_INSERT = (
     "INSERT INTO proposals (request_id, payload_hash, tool, order_id, customer_key, "
@@ -136,7 +169,9 @@ _Q_REBASE = (
     "UPDATE proposals SET state = ?, evidence_json = ?, attempts = 0, "
     "updated_at = ? WHERE request_id = ?"
 )
-_Q_DUE = "SELECT request_id FROM proposals WHERE state = ? AND created_at < ?"
+# the approval window runs from when the request reached the person, which
+# for a released pause is the release, not the original request
+_Q_DUE = "SELECT request_id FROM proposals WHERE state = ? AND updated_at < ?"
 _Q_STALE = (
     "SELECT request_id FROM proposals WHERE state = ? AND updated_at < ? "
     "ORDER BY updated_at"
@@ -153,10 +188,14 @@ _MIGRATIONS = {
     "attempts": "ALTER TABLE proposals ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
     "proposal_json": "ALTER TABLE proposals ADD COLUMN proposal_json TEXT",
     "evidence_json": "ALTER TABLE proposals ADD COLUMN evidence_json TEXT",
+    "decided_at": "ALTER TABLE proposals ADD COLUMN decided_at TEXT",
+    "release_at": "ALTER TABLE proposals ADD COLUMN release_at TEXT",
 }
+_Q_BACKFILL = "UPDATE proposals SET decided_at = created_at WHERE decided_at IS NULL"
 _Q_PENDING = (
     "SELECT request_id, tool, amount, currency, order_id, rule_id, explanation, "
-    "triggered, created_at FROM proposals WHERE state = ? ORDER BY created_at"
+    "triggered, created_at, updated_at FROM proposals WHERE state = ? "
+    "ORDER BY created_at"
 )
 _Q_ALL_PROPOSALS = "SELECT request_id, tool, amount, decision, state FROM proposals"
 _Q_LAST_HASH = "SELECT entry_hash FROM audit ORDER BY seq DESC LIMIT 1"
@@ -187,6 +226,10 @@ def canonical_json(value: Any) -> str:
 
 def _iso(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def _iso_or_none(moment: datetime | None) -> str | None:
+    return _iso(moment) if moment is not None else None
 
 
 def _utc(moment: datetime) -> datetime:
@@ -264,6 +307,7 @@ class Ledger:
             for column, statement in _MIGRATIONS.items():
                 if column not in columns:
                     conn.execute(statement)
+            conn.execute(_Q_BACKFILL)
 
     # ------------------------------------------------------------ connections
 
@@ -319,6 +363,10 @@ class Ledger:
                 return Recorded(proposal.request_id, None, result)
             state = STATE_FOR_DECISION[result.decision]
             self._insert(conn, proposal, evidence, digest, result, state, now)
+            conn.execute(
+                _Q_STAMP,
+                (_iso(now), _iso_or_none(result.release_at), proposal.request_id),
+            )
             self._append(
                 conn,
                 proposal.request_id,
@@ -332,12 +380,14 @@ class Ledger:
         if not hmac.compare_digest(row["payload_hash"], digest):
             return Recorded(row["request_id"], None, _reused_id_result())
         decision = Decision(row["decision"])
+        release = row["release_at"]
         result = PolicyResult(
             decision=decision,
             rule_id=row["rule_id"],
             explanation=row["explanation"],
             requires_human_approval=decision is Decision.ESCALATE,
             triggered_rules=tuple(json.loads(row["triggered"])),
+            release_at=datetime.fromisoformat(release) if release else None,
         )
         return Recorded(row["request_id"], ProposalState(row["state"]), result, True)
 
@@ -348,7 +398,12 @@ class Ledger:
         evidence: OrderEvidence | None,
         now: datetime,
     ) -> LedgerContext:
-        """Counters the policy needs, read inside the same write transaction."""
+        """Counters the policy needs, read inside the same write transaction.
+
+        The proposal's own row (if it exists, as for a released pause) is left out,
+        so a request never counts against itself.
+        """
+        own = proposal.request_id
         day_ago = _iso(now - timedelta(hours=24))
         refund = ToolAction.CREATE_REFUND.value
         reserved = _sum(
@@ -359,20 +414,24 @@ class Ledger:
                     refund,
                     ToolAction.ACCEPT_DISPUTE_CLAIM.value,
                     *RESERVING,
+                    own,
                 ),
             )
         )
-        outflow = _sum(conn.execute(_Q_OUTFLOW, (day_ago, *OUTFLOW)))
+        outflow = _sum(conn.execute(_Q_OUTFLOW, (day_ago, *OUTFLOW, own)))
         customer = evidence.customer_key if evidence is not None else None
-        refunds = 0
+        times: tuple[datetime, ...] = ()
         if customer:
-            params = (customer, refund, day_ago, *OUTFLOW)
-            refunds = int(conn.execute(_Q_CUSTOMER, params).fetchone()[0])
+            params = (customer, refund, day_ago, *CUSTOMER_REFUNDS, own)
+            rows = conn.execute(_Q_CUSTOMER, params).fetchall()
+            times = tuple(datetime.fromisoformat(r["decided_at"]) for r in rows)
+        refunds = len(times)
         known, duplicate = self._payee_facts(conn, proposal, now)
         return LedgerContext(
             expected_account_id=self._account,
             reserved_for_order=reserved,
             refunds_24h_for_customer=refunds,
+            customer_refund_times=times,
             outflow_24h=outflow,
             known_payee=known,
             duplicate_payout_in_window=duplicate,
@@ -509,6 +568,98 @@ class Ledger:
             )
             body = {"from": S.EXECUTING.value, "to": S.PENDING_APPROVAL.value, **detail}
             self._append(conn, request_id, "state_changed", body, now)
+
+    def timing(self, request_id: str) -> tuple[ProposalState, str, str] | None:
+        """State, release time and last change of a proposal, for status messages."""
+        with self._connection() as conn:
+            row = conn.execute(_Q_GET, (request_id,)).fetchone()
+        if row is None:
+            return None
+        return ProposalState(row["state"]), row["release_at"] or "", row["updated_at"]
+
+    def releases_due(self, now: datetime) -> list[str]:
+        """Paused requests whose release time has come, oldest pause first."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                _Q_RELEASE_DUE, (S.PAUSED.value, _iso(_utc(now)))
+            ).fetchall()
+        return [str(row["request_id"]) for row in rows]
+
+    def release(
+        self,
+        request_id: str,
+        evidence: OrderEvidence | None,
+        signals: Signals,
+        screening: ScreeningSettings,
+        now: datetime,
+    ) -> Recorded:
+        """Decide a paused request again from fresh facts, exactly as if new.
+
+        Every rule applies again; the result may send it, ask a person, refuse it,
+        or pause it once more with a new release time.
+        """
+        now = _utc(now)
+        with self._transaction() as conn:
+            row = conn.execute(_Q_GET, (request_id,)).fetchone()
+            if row is None or ProposalState(row["state"]) is not S.PAUSED:
+                raise FailClosedError("only a paused request can be released")
+            proposal = proposal_from_dict(json.loads(row["proposal_json"]))
+            if evidence is not None and evidence.order_id != proposal.order_id:
+                raise FailClosedError("release evidence is for a different order")
+            context = self._context(conn, proposal, evidence, now)
+            result = evaluate(
+                proposal, evidence, context, signals, self._policy, screening, now
+            )
+            state = STATE_FOR_DECISION[result.decision]
+            conn.execute(
+                _Q_REDECIDE,
+                (
+                    state.value,
+                    result.decision.value,
+                    result.rule_id,
+                    result.explanation,
+                    json.dumps(list(result.triggered_rules)),
+                    canonical_json(evidence_to_dict(evidence)) if evidence else None,
+                    _iso(now),
+                    _iso_or_none(result.release_at),
+                    _iso(now),
+                    request_id,
+                ),
+            )
+            body = {"from": S.PAUSED.value, **_audit_body(proposal, result, state)}
+            self._append(conn, request_id, "released", body, now)
+        return Recorded(request_id, state, result)
+
+    def paused(self, now: datetime) -> list[dict[str, str]]:
+        """Paused requests for the merchant, with how often the customer asked today."""
+        day_ago = _iso(_utc(now) - timedelta(hours=24))
+        refund = ToolAction.CREATE_REFUND.value
+        items: list[dict[str, str]] = []
+        with self._connection() as conn:
+            for row in conn.execute(_Q_PAUSED, (S.PAUSED.value,)).fetchall():
+                asks = 0
+                if row["customer_key"]:
+                    params = (row["customer_key"], refund, day_ago)
+                    asks = int(conn.execute(_Q_CUSTOMER_ASKS, params).fetchone()[0])
+                item = {k: str(v or "") for k, v in dict(row).items()}
+                item.pop("customer_key")
+                item["requests_today"] = str(asks)
+                items.append(item)
+        return items
+
+    def same_paused_request(self, proposal: Proposal) -> str | None:
+        """An existing pause for the same order, action and amount, if any."""
+        with self._connection() as conn:
+            row = conn.execute(
+                _Q_SAME_PAUSED,
+                (
+                    S.PAUSED.value,
+                    proposal.order_id,
+                    proposal.tool,
+                    _money_text(proposal.amount),
+                ),
+            ).fetchone()
+        return str(row["request_id"]) if row else None
 
     def expire_due(self, now: datetime, ttl_seconds: int) -> list[str]:
         """Expire approvals left waiting too long, releasing their reservations."""
@@ -761,4 +912,5 @@ def _audit_body(
         "rule_id": result.rule_id,
         "triggered": list(result.triggered_rules),
         "state": state.value,
+        **({"release_at": _iso(result.release_at)} if result.release_at else {}),
     }

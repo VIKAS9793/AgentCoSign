@@ -416,3 +416,70 @@ async def test_a_lost_paypal_answer_is_shown_as_sending_then_finished_once(
         assert await gateway.finish_unfinished() == ["r1"]
         assert await env.refunded() == Decimal("100.00")  # once, not twice
         assert env.client.get("/v1/approvals", headers=session).json() == []
+
+
+# --- the repeat-refund pause, end to end -----------------------------------------
+def _three_then_a_fourth(env: Env) -> Any:
+    for n in range(1, 4):
+        env.propose(f"r{n}", "10.00")
+    return env.propose("r4", "10.00", order_id="ORD-1")
+
+
+def test_a_fourth_refund_is_paused_with_a_kind_customer_message(env: Env) -> None:
+    body = _three_then_a_fourth(env).json()
+    assert body["state"] == "paused"
+    assert body["update_by"]
+    message = body["customer_message"]
+    assert "We've received your refund request for order ORD-1" in message
+    assert "You don't need to do anything" in message
+    for word in ("limit", "denied", "fraud", "abuse", "3 refunds"):
+        assert word not in message.lower()
+
+
+def test_nobody_can_send_a_paused_refund_but_declining_works(env: Env) -> None:
+    _three_then_a_fourth(env)
+    env.enrol()
+    session = env.session()
+    listed = env.client.get("/v1/approvals", headers=session).json()
+    paused = [i for i in listed if i["status"] == "paused"]
+    assert paused and paused[0]["count_today"] == "4"
+    approve = env.client.post(
+        "/v1/approvals/r4/options", json={"intent": "approve"}, headers=session
+    )
+    assert approve.status_code == 409  # sending early is not possible
+    response, _ = env.decide("r4", "reject", session)
+    assert response.json()["state"] == "denied"
+    status = env.client.get("/v1/proposals/r4", headers=env.key("agent_api_key"))
+    assert "can't make a refund" in status.json()["customer_message"]
+
+
+def test_asking_again_returns_the_same_pause_not_a_new_request(env: Env) -> None:
+    _three_then_a_fourth(env)
+    again = env.propose("r4-again", "10.00").json()
+    assert again["request_id"] == "r4"
+    assert again["replayed"] is True
+    assert "saved and on track" in again["customer_message"]
+
+
+async def test_a_pause_is_decided_again_from_fresh_facts_at_release(env: Env) -> None:
+    _three_then_a_fourth(env)
+    gateway = env.client.app.state.gateway  # type: ignore[attr-defined]
+    assert await gateway.release_due() == []  # not before the release time
+    later = datetime.now(UTC) + timedelta(hours=25)
+    gateway._clock = lambda: later
+    assert await gateway.release_due() == ["r4"]
+    status = env.client.get("/v1/proposals/r4", headers=env.key("agent_api_key")).json()
+    # back under the limit; the safety check is not wired yet, so a person decides
+    assert status["state"] == "pending_approval"
+    assert "with our team now" in status["customer_message"]
+
+
+async def test_an_unreachable_paypal_keeps_a_pause_paused(env: Env) -> None:
+    _three_then_a_fourth(env)
+    gateway = env.client.app.state.gateway  # type: ignore[attr-defined]
+    later = datetime.now(UTC) + timedelta(hours=25)
+    gateway._clock = lambda: later
+    env.paypal._orders.pop("ORD-1")  # type: ignore[attr-defined]  # PayPal cannot answer
+    assert await gateway.release_due() == []
+    status = env.client.get("/v1/proposals/r4", headers=env.key("agent_api_key"))
+    assert status.json()["state"] == "paused"

@@ -88,6 +88,8 @@ def _out(outcome: Outcome) -> OutcomeOut:
         execution=outcome.execution,
         paypal_id=outcome.paypal_id,
         paypal_status=outcome.paypal_status,
+        customer_message=outcome.customer_message,
+        update_by=outcome.update_by,
     )
 
 
@@ -107,10 +109,10 @@ async def propose(body: ProposalIn, request: Request) -> OutcomeOut:
 @router.get("/v1/proposals/{request_id}", dependencies=[Depends(require_agent)])
 async def proposal_status(request_id: RequestId, request: Request) -> dict[str, str]:
     """Current state of a proposal (the agent polls; it never waits on a person)."""
-    state = _gateway(request).status(request_id)
-    if state is None:
+    view = await _gateway(request).status_view(request_id)
+    if view is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown request id.")
-    return {"request_id": request_id, "state": state}
+    return view
 
 
 # ----------------------------------------------------------------- enrolment

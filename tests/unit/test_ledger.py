@@ -124,7 +124,7 @@ def test_velocity_counts_one_customer_across_orders(ledger: Ledger) -> None:
         result = decide(ledger, refund(f"r{index}", "5.00", order), evidence(order))
         assert result.result.decision is Decision.ALLOW
     fourth = decide(ledger, refund("r3", "5.00", "ORD-3"), evidence("ORD-3"))
-    assert fourth.result.decision is Decision.ESCALATE
+    assert fourth.result.decision is Decision.PAUSE
     assert fourth.result.rule_id == "R5"
 
 

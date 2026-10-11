@@ -24,7 +24,7 @@ import hmac
 import json
 import secrets
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -33,7 +33,9 @@ from agentcosign.core.config import PolicySettings, ScreeningSettings
 from agentcosign.core.exceptions import FailClosedError, PayPalClientError
 from agentcosign.models.domain import Decision, ToolAction
 from agentcosign.models.policy import OrderEvidence, Proposal, ScreeningVerdict, Signals
+from agentcosign.services import customer_copy
 from agentcosign.services.approval_view import (
+    UNKNOWN_NAME,
     business_reasons,
     decide_by,
     money_view,
@@ -68,6 +70,8 @@ class Outcome:
     execution: str | None = None
     paypal_id: str | None = None
     paypal_status: str | None = None
+    customer_message: str | None = None
+    update_by: str | None = None
 
 
 def _utc_now() -> datetime:
@@ -139,6 +143,12 @@ class Gateway:
     async def propose(self, proposal: Proposal) -> Outcome:
         """Decide a proposal and execute it at once if the policy allows."""
         now = self._clock()
+        if await asyncio.to_thread(self._ledger.state_of, proposal.request_id) is None:
+            existing = await asyncio.to_thread(
+                self._ledger.same_paused_request, proposal
+            )
+            if existing is not None:
+                return await self._already_paused(existing, proposal, now)
         evidence = await self._evidence(proposal, now)
         signals = Signals(screening=ScreeningVerdict.UNAVAILABLE)
         recorded = await asyncio.to_thread(
@@ -154,6 +164,16 @@ class Gateway:
             triggered=result.triggered_rules,
             replayed=recorded.replayed,
         )
+        if result.decision is Decision.PAUSE and result.release_at is not None:
+            name = await self._first_name(proposal.order_id)
+            hours = customer_copy.hours_until(result.release_at, now)
+            outcome = replace(
+                outcome,
+                customer_message=customer_copy.paused(
+                    name, proposal.order_id or "", f"{proposal.amount:.2f}", hours
+                ),
+                update_by=result.release_at.isoformat(),
+            )
         if (
             recorded.replayed
             or result.decision is not Decision.ALLOW
@@ -161,6 +181,104 @@ class Gateway:
         ):
             return outcome
         return await self._run(proposal, evidence, outcome)
+
+    async def _first_name(self, order_id: str | None) -> str | None:
+        """The customer's first name from PayPal, read live and never stored."""
+        if not order_id:
+            return None
+        try:
+            facts = order_facts(await self._paypal.get_order(order_id))
+        except PayPalClientError:
+            return None
+        return customer_copy.first_name(facts["customer"], UNKNOWN_NAME)
+
+    async def _already_paused(
+        self, existing: str, proposal: Proposal, now: datetime
+    ) -> Outcome:
+        """A repeat ask for a paused refund gets the same pause, not a new request."""
+        timing = await asyncio.to_thread(self._ledger.timing, existing)
+        release = datetime.fromisoformat(timing[1]) if timing and timing[1] else now
+        hours = customer_copy.hours_until(release, now)
+        return Outcome(
+            request_id=existing,
+            decision=Decision.PAUSE.value,
+            rule_id="R5",
+            explanation="The same refund is already paused; nothing new was recorded.",
+            state=ProposalState.PAUSED.value,
+            triggered=("R5",),
+            replayed=True,
+            customer_message=customer_copy.still_paused(proposal.order_id or "", hours),
+            update_by=release.isoformat(),
+        )
+
+    async def release_due(self) -> list[str]:
+        """Decide paused requests again once their release time has come.
+
+        Facts are read fresh from PayPal. If PayPal cannot be reached the request
+        stays paused and is tried again, so an outage never turns into a refusal.
+        """
+        now = self._clock()
+        released: list[str] = []
+        for request_id in await asyncio.to_thread(self._ledger.releases_due, now):
+            loaded = await asyncio.to_thread(self._ledger.load, request_id)
+            if loaded is None:
+                continue
+            proposal = loaded[0]
+            evidence = await self._evidence(proposal, now)
+            if evidence is None:
+                continue
+            signals = Signals(screening=ScreeningVerdict.UNAVAILABLE)
+            recorded = await asyncio.to_thread(
+                self._ledger.release,
+                request_id,
+                evidence,
+                signals,
+                self._screening,
+                now,
+            )
+            if recorded.result.decision is Decision.ALLOW:
+                await execute(
+                    proposal,
+                    evidence,
+                    self._paypal,
+                    self._ledger,
+                    now=now,
+                    secret=self._secret,
+                )
+            released.append(request_id)
+        return released
+
+    async def status_view(self, request_id: str) -> dict[str, str] | None:
+        """The state of a proposal and the exact line to tell the customer."""
+        now = self._clock()
+        timing = await asyncio.to_thread(self._ledger.timing, request_id)
+        loaded = await asyncio.to_thread(self._ledger.load, request_id)
+        if timing is None:
+            return None
+        state, release, changed = timing
+        proposal = loaded[0] if loaded else None
+        order = (proposal.order_id if proposal else None) or ""
+        amount = f"{proposal.amount:.2f}" if proposal else "0.00"
+        view = {"request_id": request_id, "state": state.value}
+        match state:
+            case ProposalState.PAUSED:
+                moment = datetime.fromisoformat(release) if release else now
+                view["update_by"] = moment.isoformat()
+                hours = customer_copy.hours_until(moment, now)
+                view["customer_message"] = customer_copy.still_paused(order, hours)
+            case ProposalState.PENDING_APPROVAL:
+                moment = datetime.fromisoformat(decide_by(changed, self._ttl))
+                view["update_by"] = moment.isoformat()
+                hours = customer_copy.hours_until(moment, now)
+                view["customer_message"] = customer_copy.with_team(order, hours)
+            case ProposalState.EXECUTING:
+                view["customer_message"] = customer_copy.sending(order)
+            case ProposalState.EXECUTED:
+                name = await self._first_name(order)
+                view["customer_message"] = customer_copy.sent(name, order, amount)
+            case _:
+                view["customer_message"] = customer_copy.declined(order)
+        return view
 
     async def _run(
         self, proposal: Proposal, evidence: OrderEvidence, outcome: Outcome
@@ -239,47 +357,74 @@ class Gateway:
         return token_is_valid(self._secret, purpose, token, self._clock())
 
     async def pending(self) -> list[dict[str, str | list[str]]]:
-        """Requests waiting for a person, with live facts from PayPal and a plain
-        reason. The customer's name is read now and never stored."""
-        items = await asyncio.to_thread(self._ledger.pending_approvals)
+        """Everything the merchant should see: requests waiting for them, paused
+        refunds, and refunds still waiting for PayPal. Customer names are read
+        live from PayPal and never stored."""
         views: list[dict[str, str | list[str]]] = []
-        for item in items:
-            facts = unavailable_facts()
-            if item.get("order_id"):
-                try:
-                    facts = order_facts(await self._paypal.get_order(item["order_id"]))
-                except PayPalClientError:
-                    facts = unavailable_facts()
+        views += await self._waiting_views()
+        views += await self._paused_views()
+        views += await self._sending_views()
+        return views
+
+    async def _live_facts(self, order_id: str) -> dict[str, str]:
+        if not order_id:
+            return unavailable_facts()
+        try:
+            return order_facts(await self._paypal.get_order(order_id))
+        except PayPalClientError:
+            return unavailable_facts()  # the card still shows the order and amount
+
+    @staticmethod
+    def _basics(item: dict[str, str], status: str) -> dict[str, str | list[str]]:
+        return {
+            "status": status,
+            "request_id": item["request_id"],
+            "tool": item["tool"],
+            "amount": item["amount"],
+            "currency": item["currency"],
+            "order_id": item["order_id"],
+        }
+
+    async def _waiting_views(self) -> list[dict[str, str | list[str]]]:
+        views: list[dict[str, str | list[str]]] = []
+        for item in await asyncio.to_thread(self._ledger.pending_approvals):
+            facts = await self._live_facts(item["order_id"])
             triggered = json.loads(item["triggered"] or "[]")
             views.append(
                 {
-                    "status": "waiting",
-                    "request_id": item["request_id"],
-                    "tool": item["tool"],
-                    "amount": item["amount"],
-                    "currency": item["currency"],
-                    "order_id": item["order_id"],
+                    **self._basics(item, "waiting"),
                     "reasons": business_reasons(triggered, self._policy),
                     "safety_check": safety_check(triggered),
                     **money_view(facts, item["amount"]),
                     "asked_at": item["created_at"],
-                    "decide_by": decide_by(item["created_at"], self._ttl),
+                    "decide_by": decide_by(item["updated_at"], self._ttl),
                     **facts,
                 }
             )
-        for item in await asyncio.to_thread(self._ledger.sending):
+        return views
+
+    async def _paused_views(self) -> list[dict[str, str | list[str]]]:
+        limit = self._policy.velocity_max_refunds_24h
+        views: list[dict[str, str | list[str]]] = []
+        for item in await asyncio.to_thread(self._ledger.paused, self._clock()):
+            facts = await self._live_facts(item["order_id"])
+            many = int(item["requests_today"]) >= 2 * limit
             views.append(
                 {
-                    "status": "sending",
-                    "request_id": item["request_id"],
-                    "tool": item["tool"],
-                    "amount": item["amount"],
-                    "currency": item["currency"],
-                    "order_id": item["order_id"],
-                    "last_try": item["updated_at"],
+                    **self._basics(item, "paused"),
+                    "customer": facts["customer"],
+                    "release_at": item["release_at"],
+                    "count_today": str(limit + 1),
+                    "many_requests": "yes" if many else "no",
                 }
             )
         return views
+
+    async def _sending_views(self) -> list[dict[str, str | list[str]]]:
+        return [
+            {**self._basics(item, "sending"), "last_try": item["updated_at"]}
+            for item in await asyncio.to_thread(self._ledger.sending)
+        ]
 
     async def finish_unfinished(self) -> list[str]:
         """Retry executions whose PayPal answer never arrived, with the same id.
@@ -313,8 +458,10 @@ class Gateway:
 
     # ------------------------------------------------------------- approvals
 
-    def _pending_digest(self, request_id: str) -> str:
-        if self._ledger.state_of(request_id) is not ProposalState.PENDING_APPROVAL:
+    def _pending_digest(self, request_id: str, intent: str) -> str:
+        state = self._ledger.state_of(request_id)
+        declining_a_pause = state is ProposalState.PAUSED and intent == "reject"
+        if state is not ProposalState.PENDING_APPROVAL and not declining_a_pause:
             raise FailClosedError("this request is not waiting for approval")
         digest = self._ledger.action_digest(request_id)
         if digest is None:
@@ -323,7 +470,7 @@ class Gateway:
 
     def approval_options(self, request_id: str, intent: str) -> str:
         """Passkey challenge bound to this exact pending action and intent."""
-        digest = self._pending_digest(request_id)
+        digest = self._pending_digest(request_id, intent)
         return self._passkeys.approval_options(
             request_id, intent, digest, self._clock()
         )
@@ -333,7 +480,7 @@ class Gateway:
     ) -> Outcome:
         """Apply a passkey-signed approve or reject, then execute if approved."""
         now = self._clock()
-        digest = self._pending_digest(request_id)
+        digest = self._pending_digest(request_id, intent)
         approver = self._passkeys.verify_approval(
             request_id, intent, digest, credential, now
         )

@@ -117,7 +117,7 @@ class Scenario:
         )
 
 
-A, E, X = Decision.ALLOW, Decision.ESCALATE, Decision.DENY
+A, E, P, X = Decision.ALLOW, Decision.ESCALATE, Decision.PAUSE, Decision.DENY
 BIG = {"captured_amount": D("5000.00")}  # lets amount limits be tested alone
 DISPUTE = {
     "has_open_dispute": True,
@@ -265,21 +265,48 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         "S17",
-        "Fourth refund in a day escalates",
-        E,
+        "Fourth refund in a day is paused, not refused",
+        P,
         "R5",
         ("R5",),
         ledger={"refunds_24h_for_customer": 3},
     ),
     Scenario(
         "S18",
-        "Velocity and amount both escalate; velocity decides",
-        E,
+        "A pause outranks asking a person; both are recorded",
+        P,
         "R5",
         ("R2", "R5"),
         proposal={"amount": D("50.00")},
         evidence=BIG,
         ledger={"refunds_24h_for_customer": 3},
+    ),
+    Scenario(
+        "S84",
+        "An open dispute on a paused refund is asked about after the pause",
+        P,
+        "R5",
+        ("R5", "R6"),
+        evidence=DISPUTE,
+        ledger={"refunds_24h_for_customer": 3},
+    ),
+    Scenario(
+        "S85",
+        "A refusal outranks a pause",
+        X,
+        "R3",
+        ("R3", "R5"),
+        proposal={"amount": D("250.01")},
+        evidence=BIG,
+        ledger={"refunds_24h_for_customer": 3},
+    ),
+    Scenario(
+        "S86",
+        "Well past the limit is still a pause, never a refusal",
+        P,
+        "R5",
+        ("R5",),
+        ledger={"refunds_24h_for_customer": 9},
     ),
     # --- disputes ----------------------------------------------------------------
     Scenario(

@@ -15,7 +15,7 @@ functions are not edited to change behaviour of another rule.
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from agentcosign.core.config import PolicySettings, ScreeningSettings
@@ -49,6 +49,10 @@ RULE_INVALID = "R12"
 RULE_MISMATCH_SCOPE = "R13"
 RULE_EVIDENCE = "R14"
 RULE_SCREENING_DOWN = "R15"
+
+VELOCITY_WINDOW = timedelta(hours=24)
+# never release in the past or in the same instant, so a pause always holds
+MIN_PAUSE = timedelta(minutes=1)
 
 # When several rules of the same strictness fire, the first one listed decides.
 # Safety invariants come first so the reason shown is the most fundamental one.
@@ -407,7 +411,12 @@ def _rule_amount_limits(case: _Case) -> RuleHit | None:
 
 
 def _rule_velocity(case: _Case) -> RuleHit | None:
-    """More than the allowed refunds for one customer in 24 hours escalates."""
+    """A refund past the customer's 24-hour limit is paused until they are under it.
+
+    Pausing instead of refusing keeps genuine refunds inside the gateway (a flat
+    refusal sends them to PayPal directly, outside every check) while nobody,
+    including the merchant, can push an extra refund through early.
+    """
     if case.tool is not ToolAction.CREATE_REFUND:
         return None
     count = case.ledger.refunds_24h_for_customer + 1
@@ -415,7 +424,7 @@ def _rule_velocity(case: _Case) -> RuleHit | None:
         return None
     return _hit(
         RULE_VELOCITY,
-        Decision.ESCALATE,
+        Decision.PAUSE,
         "velocity",
         f"This would be refund {count} in 24 hours; "
         f"the limit is {case.policy.velocity_max_refunds_24h}.",
@@ -480,6 +489,27 @@ RULES: tuple[Rule, ...] = (
 # ------------------------------------------------------------------- combining
 
 
+def release_time(ledger: LedgerContext, limit: int, now: datetime) -> datetime:
+    """When the customer's count in the last 24 hours drops below the limit.
+
+    With the refunds sorted oldest first, the request fits again once all but
+    ``limit - 1`` of them have left the window. Missing times pause a full day.
+    """
+    times = sorted(ledger.customer_refund_times)
+    index = len(times) - limit
+    if index < 0 or len(times) < ledger.refunds_24h_for_customer:
+        return now + VELOCITY_WINDOW
+    return max(times[index] + VELOCITY_WINDOW, now + MIN_PAUSE)
+
+
+def _decision_of(hits: list[RuleHit]) -> Decision:
+    """Strictest wins: refuse, then pause, then ask a person, then allow."""
+    for decision in (Decision.DENY, Decision.PAUSE, Decision.ESCALATE):
+        if any(h.decision is decision for h in hits):
+            return decision
+    return Decision.ALLOW
+
+
 def _deciding(hits: list[RuleHit], decision: Decision) -> RuleHit:
     order = DENY_PRIORITY if decision is Decision.DENY else ESCALATE_PRIORITY
     candidates = [h for h in hits if h.decision is decision]
@@ -511,13 +541,13 @@ def _result(case: _Case, hits: list[RuleHit]) -> PolicyResult:
             triggered_rules=(RULE_ALLOW,),
             metadata=metadata,
         )
-    decision = (
-        Decision.DENY
-        if any(h.decision is Decision.DENY for h in hits)
-        else (Decision.ESCALATE)
-    )
+    decision = _decision_of(hits)
     winner = _deciding(hits, decision)
     triggered = sorted({h.rule_id for h in hits}, key=_numeric)
+    release = None
+    if decision is Decision.PAUSE:
+        limit = case.policy.velocity_max_refunds_24h
+        release = release_time(case.ledger, limit, case.now)
     return PolicyResult(
         decision=decision,
         rule_id=winner.rule_id,
@@ -525,6 +555,7 @@ def _result(case: _Case, hits: list[RuleHit]) -> PolicyResult:
         requires_human_approval=decision is Decision.ESCALATE,
         triggered_rules=tuple(triggered),
         metadata=metadata,
+        release_at=release,
     )
 
 

@@ -66,6 +66,8 @@ class OutcomeOut(BaseModel):
     execution: str | None
     paypal_id: str | None
     paypal_status: str | None = None
+    customer_message: str | None = None
+    update_by: str | None = None
 
 
 class IntentIn(BaseModel):

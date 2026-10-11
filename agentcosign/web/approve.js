@@ -261,11 +261,11 @@
   }
 
   function isPastDeadline(item) {
-    return Date.now() >= new Date(item.decide_by).getTime();
+    return Boolean(item.decide_by) && Date.now() >= new Date(item.decide_by).getTime();
   }
 
   function waitingCount() {
-    return document.querySelectorAll("#requests .decision").length;
+    return document.querySelectorAll("#requests .decision:not(.pause-actions)").length;
   }
 
   function updateTitle() {
@@ -351,6 +351,38 @@
           setProgress(card, "We could not start this. Nothing was sent. Please try again.", true);
         }
       });
+  }
+
+  function ordinal(n) {
+    var tens = n % 100;
+    if (tens >= 11 && tens <= 13) {
+      return n + "th";
+    }
+    return n + ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th");
+  }
+
+  // Held until a set time. Sending early is not possible for anyone; saying no is.
+  function pausedCard(item) {
+    var card = el("section", "", "card result-card paused");
+    card.appendChild(el("p", "Paused for now", "result-badge"));
+    card.appendChild(el("h3", item.customer + ", " + money(item.amount) + ", order " + item.order_id + ".", "result-title"));
+    card.appendChild(el("p", "This would be this customer's " + ordinal(Number(item.count_today)) + " refund today. We check it again at " + clock(item.release_at) + " and follow your usual settings then. Your assistant has told the customer when to expect an update.", "result-detail"));
+    if (item.many_requests === "yes") {
+      card.appendChild(el("p", "This customer has asked for many refunds today. You may want to contact them.", "why"));
+    }
+    var progress = el("p", "", "progress");
+    progress.hidden = true;
+    card.appendChild(progress);
+    var actions = el("div", "", "decision pause-actions");
+    var decline = el("button", "Decline now", "secondary");
+    decline.type = "button";
+    decline.addEventListener("click", function () {
+      decide(item, "reject", card);
+    });
+    actions.appendChild(decline);
+    actions.appendChild(el("p", "Nothing is sent. The customer is told the refund can't be made.", "consequence"));
+    card.appendChild(actions);
+    return card;
   }
 
   // Approved but PayPal has not answered: no buttons, nothing to decide.
@@ -461,7 +493,10 @@
         var list = document.getElementById("requests");
         list.replaceChildren();
         items.forEach(function (item) {
-          list.appendChild(item.status === "sending" ? sendingCard(item) : requestCard(item));
+          var card = item.status === "sending" ? sendingCard(item)
+            : item.status === "paused" ? pausedCard(item)
+            : requestCard(item);
+          list.appendChild(card);
         });
         show("empty", items.length === 0);
         updateTitle();

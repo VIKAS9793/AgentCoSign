@@ -12,6 +12,9 @@ class Decision(StrEnum):
 
     ALLOW = "allow"
     ESCALATE = "escalate"
+    # Held until a known time, then decided again from fresh facts. Nobody can
+    # send it before then; declining stays possible.
+    PAUSE = "pause"
     DENY = "deny"
 
 
@@ -46,6 +49,7 @@ class PolicyResult:
     requires_human_approval: bool = False
     triggered_rules: tuple[str, ...] = ()
     metadata: dict[str, Any] | None = None
+    release_at: datetime | None = None
 
 
 @dataclass(frozen=True)

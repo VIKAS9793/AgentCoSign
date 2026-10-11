@@ -185,7 +185,7 @@ async def test_velocity_fires_for_repeat_wallet_refunds(ledger: Ledger) -> None:
         )
         decisions.append(recorded.result.decision)
     assert decisions[:3] == [Decision.ALLOW] * 3
-    assert decisions[3] is Decision.ESCALATE
+    assert decisions[3] is Decision.PAUSE
 
 
 # --- edits to the proposals table must be detected

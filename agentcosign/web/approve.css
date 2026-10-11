@@ -290,6 +290,11 @@ summary:focus-visible {
   border-color: var(--rule);
 }
 
+.result-card.paused {
+  border-color: var(--rule);
+  border-style: dashed;
+}
+
 .result-card.check {
   border-color: var(--caution-line);
   background: var(--caution-bg);

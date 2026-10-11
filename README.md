@@ -47,7 +47,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 | R2 | Auto limit < refund ≤ max limit | ESCALATE (passkey co-sign) |
 | R3 | Refund > max limit | DENY |
 | R4 | Cumulative refunds (executed + reserved) exceed captured amount | DENY |
-| R5 | > N refunds for one customer in 24 h | ESCALATE |
+| R5 | > N refunds for one customer in 24 h | PAUSE: held until the customer is back under the limit, then decided again automatically from fresh PayPal facts; the customer gets a kind, fixed message with an update time; nobody can send it early, the merchant can decline |
 | R6 | Order has an open dispute | ESCALATE |
 | R7 | Any dispute-claim acceptance | ESCALATE (always) |
 | R8 | New/changed payee (payouts, optional) | ESCALATE |
@@ -71,7 +71,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 |---|---|
 | Strict fail-closed config, security headers, domain types, offline test suite, CI, container | ✅ Built (CI and the container image verified green) |
 | Hosted demo on Render with traffic protection (per-client limits, penalty box, reserved reviewer capacity, daily live-call pools), landing page, API reference | ✅ Built and verified on the live host |
-| Policy engine R1–R15 plus execution-drift check: 83-row scenario table, property tests for bounded exposure | ✅ Built and called by the propose route |
+| Policy engine R1–R15 plus execution-drift check: 86-row scenario table, property tests for bounded exposure | ✅ Built and called by the propose route |
 | Ledger (hash chain + HMAC, atomic reservations), PayPal evidence fetcher, idempotent executor with a hard cap just before each PayPal call, retry of unanswered refunds with the same request id, propose and approve API | ✅ Built; sandbox refunds executed end to end from a real phone |
 | Screening and extraction in the request path | 🚧 Planned (models verified live with single samples; accuracy not yet measured). Until then every request says the safety check did not run and asks a person |
 | Mobile PWA approver with WebAuthn passkey co-sign (approval bound to the exact refund) | ✅ Built; tested on a real Android phone against the PayPal sandbox. Not yet on the hosted demo |
