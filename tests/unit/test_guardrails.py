@@ -401,3 +401,73 @@ def test_history_check_flags_bad_commits_in_a_range(tmp_path: Path) -> None:
     git("commit", "--allow-empty", "-q", "-m", "wip things")
     assert guardrails.run_history(["HEAD"], tmp_path) == 1
     assert guardrails.run_history(["HEAD~1"], tmp_path) == 0
+
+
+# --- merchant screen: the mechanically checkable product UX gates ------------------
+GOOD_CSS = """
+:root { color-scheme: only light; }
+body { font-size: 16px; }
+button {
+  min-height: 56px;
+}
+"""
+
+
+def _merchant(
+    tmp_path: Path, js: str = "", html: str = "", css: str = GOOD_CSS
+) -> dict[str, list[str]]:
+    web = "agentcosign/web/"
+    _write(tmp_path, web + "approve.html", html or "<h1>Refund requests</h1>\n")
+    _write(tmp_path, web + "approve.js", js)
+    _write(tmp_path, web + "approve.css", css)
+    report = guardrails.Report()
+    guardrails.check_merchant_screen(tmp_path, report)
+    violations: dict[str, list[str]] = report.violations
+    return violations
+
+
+@pytest.mark.parametrize(
+    ("js", "html", "css", "rule"),
+    [
+        (
+            'say("Escalated under R2 by the policy engine");\n',
+            "",
+            GOOD_CSS,
+            "merchant-jargon",
+        ),
+        ("", "<p>Approve with your passkey</p>\n", GOOD_CSS, "merchant-jargon"),
+        (
+            'title = "Refund sent. Money is on its way";\n',
+            "",
+            GOOD_CSS,
+            "success-without-paypal-confirmation",
+        ),
+        (
+            "setInterval(tick, 1000);\n",
+            "",
+            GOOD_CSS,
+            "ticking-timer-on-merchant-screen",
+        ),
+        (
+            "",
+            "",
+            GOOD_CSS.replace("only light", "light dark"),
+            "merchant-screen-not-fixed-light",
+        ),
+        ("", "", GOOD_CSS + ".note { font-size: 12px; }\n", "text-below-14px"),
+        ("", "", GOOD_CSS.replace("56px", "40px"), "button-below-48px"),
+    ],
+)
+def test_merchant_screen_gates_catch_each_breach(
+    tmp_path: Path, js: str, html: str, css: str, rule: str
+) -> None:
+    assert rule in _merchant(tmp_path, js, html, css)
+
+
+def test_confirmed_success_and_owner_words_pass(tmp_path: Path) -> None:
+    js = (
+        'if (outcome.state === "executed" && outcome.paypal_status === "COMPLETED") {\n'
+        '  return ["sent", "Refund sent. It is on its way to Test Buyer."];\n'
+        "}\n"
+    )
+    assert _merchant(tmp_path, js) == {}

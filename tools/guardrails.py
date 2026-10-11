@@ -827,6 +827,84 @@ def check_web_assets(root: Path, report: Report) -> None:
                 report.add("external-web-resource", f"{rel}:{number}")
 
 
+MERCHANT_SCREEN = ("approve.html", "approve.js", "approve.css")
+JS_LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
+HTML_TEXT = re.compile(r">([^<>]+)<")
+MERCHANT_JARGON = re.compile(
+    r"\bR\d{1,2}\b|(?i:\b(?:agent|approv\w*|reject\w*|passkey|ledger|escalat\w*|"
+    r"webauthn|policy|rule|error|exception|payload|hash|undefined|null)\b)"
+)
+CONFIRMED_SUCCESS = 'paypal_status === "COMPLETED"'
+CSS_FONT = re.compile(r"font-size:\s*([\d.]+)(px|rem|em)")
+BUTTON_HEIGHT = re.compile(r"(?s)\nbutton\s*\{[^}]*?min-height:\s*(\d+)px")
+MIN_TEXT_PX = 14
+MIN_BUTTON_PX = 48
+
+
+def _merchant_copy(path: Path, text: str) -> list[tuple[int, str]]:
+    """Human-readable strings on the merchant screen, with their line numbers."""
+    pattern = JS_LITERAL if path.suffix == ".js" else HTML_TEXT
+    found: list[tuple[int, str]] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith(("//", "/*", "*", "<!--")):
+            continue
+        for match in pattern.finditer(line):
+            copy = match.group(1).strip()
+            if " " in copy:  # words for people, not ids, paths or class names
+                found.append((number, copy))
+    return found
+
+
+def _check_merchant_words(root: Path, report: Report) -> None:
+    """Owner words only, and success is only claimed when PayPal confirmed it."""
+    web = root / PACKAGE / "web"
+    for name in ("approve.html", "approve.js"):
+        path = web / name
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for number, copy in _merchant_copy(path, text):
+            if PRAGMA.search(lines[number - 1]):
+                continue
+            if MERCHANT_JARGON.search(copy):
+                report.add("merchant-jargon", f"{rel}:{number}")
+            if "Refund sent" in copy:
+                window = "\n".join(lines[max(0, number - 4) : number])
+                if CONFIRMED_SUCCESS not in window:
+                    report.add("success-without-paypal-confirmation", f"{rel}:{number}")
+        if path.suffix == ".js" and "setInterval" in text:
+            report.add("ticking-timer-on-merchant-screen", rel)
+
+
+def _check_merchant_style(root: Path, report: Report) -> None:
+    """Fixed light palette, readable text and thumb-sized buttons."""
+    css = root / PACKAGE / "web" / "approve.css"
+    if not css.is_file():
+        return
+    rel = css.relative_to(root).as_posix()
+    text = css.read_text(encoding="utf-8")
+    if "color-scheme: only light" not in text or "prefers-color-scheme" in text:
+        report.add("merchant-screen-not-fixed-light", rel)
+    for match in CSS_FONT.finditer(text):
+        size, unit = float(match.group(1)), match.group(2)
+        px = size if unit == "px" else size * 16
+        if px < MIN_TEXT_PX:
+            report.add("text-below-14px", f"{rel}:{match.group(0)}")
+    button = BUTTON_HEIGHT.search(text)
+    if button is None or int(button.group(1)) < MIN_BUTTON_PX:
+        report.add("button-below-48px", rel)
+
+
+def check_merchant_screen(root: Path, report: Report) -> None:
+    """The mechanically checkable product UX gates for the merchant's screen."""
+    if not (root / PACKAGE / "web" / MERCHANT_SCREEN[0]).is_file():
+        return
+    _check_merchant_words(root, report)
+    _check_merchant_style(root, report)
+
+
 def check_public_docs(root: Path, report: Report) -> None:
     """Public docs never point at gitignored internal material."""
     docs = [root / "README.md", *sorted((root / "docs").glob("*.md"))]
@@ -999,6 +1077,7 @@ REPO_CHECKS: tuple[Callable[[Path, Report], None], ...] = (
     check_tracked_files,
     check_config_pins,
     check_web_assets,
+    check_merchant_screen,
     check_public_docs,
     check_dependency_ranges,
     check_wiring,
