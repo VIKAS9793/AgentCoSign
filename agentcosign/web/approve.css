@@ -1,22 +1,31 @@
 :root {
-  /* Fixed light palette: financial screens keep one meaning per colour.
-     Contrast on white: text 16:1, muted 7.6:1, primary 6.7:1, success 5.0:1. */
+  /* Fixed light palette in two layers. Brand colours (paper, ink, accent) are for
+     recognition only; meaning colours (ok, caution, danger) are for money state
+     only, always with a symbol and words. Contrast on white: ink 14.9:1,
+     muted 7.4:1, ok on its tint 5.6:1, caution on its ochre tint 6.1:1, danger
+     on its tint 6.1:1, sandbox pill 5.9:1 (all measured). Meaning colours are
+     warm earth tones so they sit with the paper and ink; caution is ochre,
+     a different hue from the terracotta brand accent. */
   color-scheme: only light;
-  --bg: #ffffff;
-  --text: #111827;
-  --muted: #4b5563;
-  --card: #f8fafc;
-  --border: #e2e8f0;
-  --primary: #1d4ed8;
-  --primary-text: #ffffff;
-  --ok: #15803d;
-  --ok-bg: #ecfdf3;
-  --warn: #b45309;
-  --warn-bg: #fffbeb;
-  --danger-text: #b91c1c;
-  --danger-bg: #fef2f2;
+  --paper: #f4f1ea;
+  --surface: #fdfcf9;
+  --ink: #1f2a24;
+  --ink-muted: #4b5563;
+  --rule: #e3ded3;
+  --accent: #c2410c;
+  --accent-tint: #f6e3d8;
+  --accent-deep: #9a3412;
+  --on-ink: #ffffff;
+  --ok: #1e6b43;
+  --ok-bg: #e7f0e8;
+  --caution: #7a4f05;
+  --caution-bg: #f8eccb;
+  --caution-line: #c9952b;
+  --danger: #a3261c;
+  --danger-bg: #f9e6e2;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "Roboto Mono", "SF Mono", monospace;
 }
-
 
 * {
   box-sizing: border-box;
@@ -24,150 +33,133 @@
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font: 16px/1.5 var(--sans);
 }
 
 main {
   max-width: 34rem;
   margin: 0 auto;
-  padding: 20px 16px 40px;
+  padding: 12px 16px 40px;
+}
+
+/* brand bar: who this is and that it is the sandbox, always visible */
+.brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0 12px;
+  border-bottom: 1px dashed var(--rule);
+}
+
+.wordmark {
+  font-weight: 800;
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+.mode-pill {
+  font: 600 14px/1 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--accent-tint);
+  color: var(--accent-deep);
 }
 
 h1 {
   font-size: 1.6rem;
-  margin: 4px 0 8px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 16px 0 4px;
 }
 
 h2 {
-  font-size: 1.15rem;
+  font-size: 1.1rem;
   margin: 12px 0 8px;
+}
+
+#queue-title {
+  font: 600 14px/1.4 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
 }
 
 .status {
   min-height: 1.5em;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 16px;
   padding: 8px 16px 16px;
-  margin: 16px 0;
+  margin: 12px 0;
 }
 
-.fact {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
+.question,
+.result-title {
+  font-size: 1.4rem;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  margin: 8px 0 6px;
 }
 
-.fact span:first-child {
-  color: var(--muted);
+.result-title:focus {
+  outline: none;
+}
+
+.order-line {
+  margin: 0 0 10px;
+  color: var(--ink-muted);
 }
 
 .why {
   margin: 10px 0;
 }
 
-.consequence {
-  font-size: 0.95rem;
-  color: var(--muted);
-  margin: 4px 0 12px;
-}
-
-label {
-  display: block;
-  margin: 8px 0 4px;
-}
-
-input {
-  width: 100%;
-  min-height: 48px;
-  font: inherit;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--text);
-}
-
-button {
-  display: block;
-  width: 100%;
-  min-height: 56px;
-  margin-top: 12px;
-  font: inherit;
-  font-weight: 600;
-  border-radius: 10px;
-  cursor: pointer;
-}
-
-button.primary {
-  background: var(--primary);
-  color: var(--primary-text);
-  border: none;
-}
-
-button.secondary {
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--border);
-}
-
-button.link {
-  background: transparent;
-  border: none;
-  color: var(--primary);
-  text-decoration: underline;
-  font-weight: 600;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-button:focus-visible,
-input:focus-visible {
-  outline: 3px solid var(--primary);
-  outline-offset: 2px;
-}
-
-.result {
-  font-weight: 600;
-  margin-top: 10px;
-}
-
-.result.failed {
-  color: var(--danger-text);
-}
-
-.note {
-  color: var(--muted);
-}
-
 .eyebrow {
   margin: 8px 0 0;
-  font-size: 0.9rem;
-  color: var(--muted);
+  font: 600 14px/1.4 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
 }
 
-.question {
-  font-size: 1.3rem;
-  line-height: 1.3;
-  margin: 4px 0 6px;
+/* safety check: passed is a quiet line; not run is a caution box */
+.safety {
+  margin: 10px 0;
 }
 
-.order-line {
-  margin: 0 0 10px;
-  color: var(--muted);
+.safety.passed {
+  color: var(--ok);
+  font-weight: 600;
 }
 
+.safety.missing {
+  padding: 4px 12px;
+  border: 2px solid var(--caution-line);
+  border-radius: 10px;
+  background: var(--caution-bg);
+  color: var(--ink);
+}
+
+.safety-title {
+  font-weight: 700;
+  color: var(--caution);
+}
+
+.safety-ask {
+  font-weight: 600;
+}
+
+/* details from PayPal: the banner's guide lines, given a job */
 .details {
   margin: 8px 0 4px;
 }
@@ -180,12 +172,111 @@ input:focus-visible {
   font-weight: 600;
 }
 
-.deadline {
-  margin: 12px 0 0;
-  font-size: 0.95rem;
-  color: var(--muted);
+.fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--rule);
+  font-variant-numeric: tabular-nums;
 }
 
+.fact span:first-child {
+  color: var(--ink-muted);
+}
+
+.consequence {
+  font-size: 15px;
+  color: var(--ink-muted);
+  margin: 4px 0 12px;
+}
+
+.deadline {
+  margin: 12px 0 0;
+  font-size: 15px;
+  color: var(--ink-muted);
+}
+
+.note {
+  color: var(--ink-muted);
+}
+
+label {
+  display: block;
+  margin: 8px 0 4px;
+}
+
+input {
+  width: 100%;
+  min-height: 48px;
+  font: inherit;
+  padding: 8px 12px;
+  border: 1.5px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+button {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  margin-top: 12px;
+  font: inherit;
+  font-weight: 700;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--ink);
+  color: var(--on-ink);
+  border: 1.5px solid var(--ink);
+}
+
+button.secondary {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1.5px solid var(--ink);
+}
+
+button.link {
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* progress and problems shown inside the card being looked at */
+.progress {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  font-weight: 600;
+}
+
+.progress.problem {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+/* results: meaning colours, each with a badge word */
 .result-card {
   border-width: 2px;
 }
@@ -196,84 +287,45 @@ input:focus-visible {
 }
 
 .result-card.stopped {
-  border-color: var(--border);
+  border-color: var(--rule);
 }
 
 .result-card.check {
-  border-color: var(--warn);
-  background: var(--warn-bg);
+  border-color: var(--caution-line);
+  background: var(--caution-bg);
 }
 
 .result-badge {
   display: inline-block;
   margin: 12px 0 0;
-  padding: 2px 10px;
+  padding: 3px 10px;
   border-radius: 999px;
-  font-weight: 700;
-  font-size: 0.9rem;
-  background: var(--border);
+  font: 700 14px/1.4 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--rule);
+  color: var(--ink);
 }
 
 .sent .result-badge {
-  background: var(--ok);
-  color: var(--primary-text);
+  background: #2f6b4a;
+  color: var(--on-ink);
 }
 
 .check .result-badge {
-  background: var(--warn);
-  color: var(--primary-text);
-}
-
-.result-title {
-  font-size: 1.3rem;
-  line-height: 1.3;
-  margin: 8px 0;
-}
-
-.result-title:focus {
-  outline: none;
+  background: var(--caution-line);
+  color: var(--ink);
 }
 
 .result-detail {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
-.progress {
-  margin: 12px 0 0;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--bg);
-  border: 1px solid var(--border);
+.result {
   font-weight: 600;
+  margin-top: 10px;
 }
 
-.progress.problem {
-  color: var(--danger-text);
-  background: var(--danger-bg);
-  border-color: var(--danger-text);
-}
-
-.safety {
-  margin: 10px 0;
-}
-
-.safety.passed {
-  color: var(--ok);
-  font-weight: 600;
-}
-
-.safety.missing {
-  padding: 4px 12px;
-  border: 2px solid var(--warn);
-  border-radius: 8px;
-  background: var(--warn-bg);
-}
-
-.safety-title {
-  font-weight: 700;
-  color: var(--warn);
-}
-
-.safety-ask {
-  font-weight: 600;
+.result.failed {
+  color: var(--danger);
 }

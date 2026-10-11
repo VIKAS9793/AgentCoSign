@@ -2,17 +2,18 @@
   "use strict";
 
   var CAPACITY_TEXT = {
-    normal: "Live services are available.",
-    public_replay: "Live services are busy, so answers come from recordings.",
-    replay_only: "Live services are paused, so answers come from recordings.",
+    public_replay: "The service is busy, so answers come from recordings.",
+    replay_only: "The service is paused, so answers come from recordings.",
   };
 
+  // Say exactly where refunds go in this mode; never claim live calls that
+  // are not happening.
   function describe(health) {
-    var mode = health.hermetic
-      ? "Recorded demo: no live model or PayPal calls."
-      : "Connected to live services.";
+    var payments = health.paypal_execution === "sandbox"
+      ? "Refunds go to the PayPal sandbox, with test money only."
+      : "Refunds use recorded PayPal results. Nothing is sent to PayPal.";
     var capacity = CAPACITY_TEXT[health.capacity] || "";
-    return "Running. " + mode + " " + capacity;
+    return "Running. " + payments + " " + capacity;
   }
 
   var box = document.getElementById("status");

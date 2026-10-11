@@ -155,6 +155,10 @@
         loadQueue();
       })
       .catch(function (error) {
+        if (error && error.status === 409) {
+          say("This phone is not set up yet. Ask for a setup link, then open it on this phone.");
+          return;
+        }
         say(error && error.name === "NotAllowedError"
           ? "You closed the fingerprint prompt. Try again when you are ready."
           : "We could not open your requests. Please try again.");
