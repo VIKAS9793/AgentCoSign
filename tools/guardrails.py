@@ -225,7 +225,14 @@ SIGNOFF_PATHS = (
 PRODUCT_PATHS = ("agentcosign/",)
 SCREEN_PATHS = ("agentcosign/web/",)
 SPEC_PREFIX = "docs/pm/ux/"
-TRAILER = re.compile(r"^(Constraints|Evidence|Spec|README):[ \t]*(.*)$", re.MULTILINE)
+TRAILER = re.compile(
+    r"^(Constraints|Evidence|Edge cases|Spec|README):[ \t]*(.*)$", re.MULTILINE
+)
+# New behaviour and fixes must name edge-case tests, not only success cases.
+EDGE_REQUIRED = re.compile(r"^(feat|fix)(\(|!|:)")
+# Edge-case tests may never be quietly removed: the count only goes up.
+EDGE_FLOOR = 40
+EDGE_MARK = "@pytest.mark.edge"
 CONSTRAINT_ID = re.compile(
     r"^(?:I(?:1[01]|[1-9])|R(?:1[0-5]|[1-9])|H(?:10|[1-9])|G(?:10|[1-9])"
     r"|G-P[1-8]|F-\d{2}|none)$"
@@ -930,6 +937,18 @@ def _yaml_money(config: str, key: str) -> str | None:
     return match.group(1) if match else None
 
 
+def check_edge_floor(root: Path, report: Report) -> None:
+    """Edge-case tests may be added but never removed below the recorded floor."""
+    tests = root / "tests"
+    if not tests.is_dir():
+        return
+    count = sum(
+        p.read_text(encoding="utf-8").count(EDGE_MARK) for p in tests.rglob("*.py")
+    )
+    if count < EDGE_FLOOR:
+        report.add("edge-tests-below-floor", f"{count} edge tests, floor {EDGE_FLOOR}")
+
+
 def check_readme_facts(root: Path, report: Report) -> None:
     """Numbers the README states must match the code they describe."""
     readme_path = root / "README.md"
@@ -1144,6 +1163,7 @@ REPO_CHECKS: tuple[Callable[[Path, Report], None], ...] = (
     check_config_pins,
     check_web_assets,
     check_merchant_screen,
+    check_edge_floor,
     check_readme_facts,
     check_public_docs,
     check_dependency_ranges,
@@ -1188,22 +1208,36 @@ def check_message(message: str, files: Sequence[str]) -> list[str]:
     return problems
 
 
-def _evidence_problems(value: str, read: Callable[[str], str | None]) -> list[str]:
-    """Each named test must exist in the committed code, by file and name."""
+def _node_problems(
+    label: str, value: str, read: Callable[[str], str | None], edge: bool
+) -> list[str]:
+    """Each named test must exist in the committed code (and be marked edge)."""
     nodes = [n for n in re.split(r"[,\s]+", value) if n]
     if not nodes:
-        return ["Evidence: name at least one test as tests/...py::test_name"]
+        return [f"{label}: name at least one test as tests/...py::test_name"]
     problems: list[str] = []
     for node in nodes:
         match = EVIDENCE_NODE.match(node)
         if match is None:
-            problems.append(f"Evidence: {node!r} is not tests/...py::test_name")
+            problems.append(f"{label}: {node!r} is not tests/...py::test_name")
             continue
-        source = read(match.group(1))
-        defined = re.compile(rf"^\s*(?:async\s+)?def {match.group(2)}\(", re.M)
-        if source is None or not defined.search(source):
-            problems.append(f"Evidence: {node} does not exist in the commit")
+        source = read(match.group(1)) or ""
+        name = match.group(2)
+        defined = re.compile(rf"^\s*(?:async\s+)?def {name}\(", re.M)
+        marked = re.compile(
+            rf"^@pytest\.mark\.edge\b[^\n]*\n(?:@[^\n]*\n)*(?:async\s+)?def {name}\(",
+            re.M,
+        )
+        if not defined.search(source):
+            problems.append(f"{label}: {node} does not exist in the commit")
+        elif edge and not marked.search(source):
+            problems.append(f"{label}: {node} is not marked @pytest.mark.edge")
     return problems
+
+
+def _evidence_problems(value: str, read: Callable[[str], str | None]) -> list[str]:
+    """Each named test must exist in the committed code, by file and name."""
+    return _node_problems("Evidence", value, read, edge=False)
 
 
 def check_traceability(
@@ -1231,6 +1265,9 @@ def check_traceability(
         f"Constraints: unknown id {i!r}" for i in ids if not CONSTRAINT_ID.match(i)
     ]
     problems += _evidence_problems(found.get("Evidence", ""), read)
+    if EDGE_REQUIRED.match(subject):
+        edge = found.get("Edge cases", "")
+        problems += _node_problems("Edge cases", edge, read, edge=True)
     if any(f.startswith(SCREEN_PATHS) for f in files):
         spec = found.get("Spec", "")
         if not (spec.startswith(SPEC_PREFIX) and spec.endswith(".md")):

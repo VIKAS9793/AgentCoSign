@@ -68,6 +68,7 @@ def test_the_safety_status_matches_the_engine(scenario: Scenario) -> None:
 
 
 @given(st.sets(st.sampled_from(BUSINESS_RULES + (RULE_SCREENING_DOWN,)), min_size=1))
+@pytest.mark.edge
 def test_no_combination_of_rules_hides_a_reason(triggered: set[str]) -> None:
     rules = policy()
     shown = business_reasons(sorted(triggered), rules)
@@ -83,6 +84,7 @@ def test_no_combination_of_rules_hides_a_reason(triggered: set[str]) -> None:
 
 
 @pytest.mark.parametrize("prior", [3, 4, 5, 9])
+@pytest.mark.edge
 def test_the_repeat_refund_line_is_true_for_every_count_that_fires_it(
     prior: int,
 ) -> None:

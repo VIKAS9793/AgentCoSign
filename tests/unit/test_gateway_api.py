@@ -250,6 +250,7 @@ async def test_passkey_rejection_moves_no_money(env: Env) -> None:
     assert await env.refunded() == 0
 
 
+@pytest.mark.edge
 def test_a_denied_request_cannot_be_approved(env: Env) -> None:
     env.propose("r1", "999.00")  # above the maximum: denied
     env.enrol()
@@ -259,6 +260,7 @@ def test_a_denied_request_cannot_be_approved(env: Env) -> None:
     assert response.status_code == 409
 
 
+@pytest.mark.edge
 def test_a_signature_for_one_request_cannot_approve_another(env: Env) -> None:
     env.propose("r1", "10.00")
     env.propose("r2", "20.00")
@@ -314,6 +316,7 @@ def test_a_one_time_link_enrols_without_the_operator_key(env: Env) -> None:
 
 
 @pytest.mark.parametrize("purpose", ["approver-session", "enrolment"])
+@pytest.mark.edge
 def test_forged_or_expired_links_are_refused(env: Env, purpose: str) -> None:
     from datetime import UTC, datetime, timedelta
 
@@ -364,6 +367,7 @@ def test_the_approver_sees_owner_words_and_live_paypal_facts(env: Env) -> None:
     assert item["decide_by"] > item["asked_at"]
 
 
+@pytest.mark.edge
 async def test_a_refund_made_in_paypal_while_waiting_cannot_overspend(env: Env) -> None:
     # 500.00 was paid; the assistant asks for 200.00, then 400.00 is refunded in
     # PayPal directly while the request waits, leaving only 100.00
@@ -396,6 +400,7 @@ class LosesFirstRefundReply(RecordedPayPalClient):
         return result
 
 
+@pytest.mark.edge
 async def test_a_lost_paypal_answer_is_shown_as_sending_then_finished_once(
     tmp_path: Path,
 ) -> None:
@@ -437,6 +442,7 @@ def test_a_fourth_refund_is_paused_with_a_kind_customer_message(env: Env) -> Non
         assert word not in message.lower()
 
 
+@pytest.mark.edge
 def test_nobody_can_send_a_paused_refund_but_declining_works(env: Env) -> None:
     _three_then_a_fourth(env)
     env.enrol()
@@ -454,6 +460,7 @@ def test_nobody_can_send_a_paused_refund_but_declining_works(env: Env) -> None:
     assert "can't make a refund" in status.json()["customer_message"]
 
 
+@pytest.mark.edge
 def test_asking_again_returns_the_same_pause_not_a_new_request(env: Env) -> None:
     _three_then_a_fourth(env)
     again = env.propose("r4-again", "10.00").json()
@@ -475,6 +482,7 @@ async def test_a_pause_is_decided_again_from_fresh_facts_at_release(env: Env) ->
     assert "with our team now" in status["customer_message"]
 
 
+@pytest.mark.edge
 async def test_an_unreachable_paypal_keeps_a_pause_paused(env: Env) -> None:
     _three_then_a_fourth(env)
     gateway = env.client.app.state.gateway  # type: ignore[attr-defined]
@@ -487,6 +495,7 @@ async def test_an_unreachable_paypal_keeps_a_pause_paused(env: Env) -> None:
 
 
 @pytest.mark.parametrize("earlier", [3, 4])
+@pytest.mark.edge
 def test_the_paused_card_counts_the_real_refunds_in_the_window(
     env: Env, earlier: int
 ) -> None:
@@ -509,6 +518,7 @@ def test_the_paused_card_counts_the_real_refunds_in_the_window(
 
 
 # --- a refund PayPal accepts as pending and later fails ---------------------------
+@pytest.mark.edge
 async def test_a_pending_refund_that_fails_later_is_never_reported_as_sent(
     tmp_path: Path,
 ) -> None:
@@ -558,6 +568,7 @@ def _gateway(env: Env) -> Any:
     return env.client.app.state.gateway  # type: ignore[attr-defined]
 
 
+@pytest.mark.edge
 async def test_e1_two_pauses_releasing_together_never_both_pass(env: Env) -> None:
     _three_then_a_fourth(env)  # the fourth request is paused
     env.propose("r5", "11.00")  # a different amount: its own pause
@@ -574,6 +585,7 @@ async def test_e1_two_pauses_releasing_together_never_both_pass(env: Env) -> Non
     assert "pending_approval" in states.values()
 
 
+@pytest.mark.edge
 async def test_e2_an_order_refunded_elsewhere_while_paused_is_refused_at_release(
     env: Env,
 ) -> None:
@@ -588,6 +600,7 @@ async def test_e2_an_order_refunded_elsewhere_while_paused_is_refused_at_release
     assert await env.refunded() == Decimal("500.00")  # nothing more went out
 
 
+@pytest.mark.edge
 def test_e4_same_order_different_amount_is_its_own_request(env: Env) -> None:
     _three_then_a_fourth(env)
     other = env.propose("r4-other", "12.00").json()
@@ -596,6 +609,7 @@ def test_e4_same_order_different_amount_is_its_own_request(env: Env) -> None:
     assert other["state"] == "paused"
 
 
+@pytest.mark.edge
 def test_e5_asking_again_after_a_decline_is_a_fresh_request(env: Env) -> None:
     _three_then_a_fourth(env)
     env.enrol()
@@ -605,6 +619,7 @@ def test_e5_asking_again_after_a_decline_is_a_fresh_request(env: Env) -> None:
     assert again["state"] == "paused"
 
 
+@pytest.mark.edge
 async def test_e6_a_decline_racing_the_release_wins_and_others_still_release(
     env: Env,
 ) -> None:
@@ -624,6 +639,7 @@ async def test_e6_a_decline_racing_the_release_wins_and_others_still_release(
     assert status.json()["state"] == "denied"
 
 
+@pytest.mark.edge
 async def test_e9_an_immediate_paypal_failure_is_never_shown_as_processing(
     tmp_path: Path,
 ) -> None:

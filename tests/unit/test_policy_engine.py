@@ -85,6 +85,7 @@ def test_allow_is_only_ever_the_clean_case() -> None:
             assert result.metadata["hits"] == []
 
 
+@pytest.mark.edge
 def test_no_malformed_input_raises() -> None:
     bad_amounts = [
         Decimal("NaN"),
@@ -220,6 +221,7 @@ def test_a_pause_releases_when_the_customer_is_back_under_the_limit(
     assert release == NOW + timedelta(hours=expected_hours_from_now)
 
 
+@pytest.mark.edge
 def test_a_pause_without_refund_times_holds_a_full_day() -> None:
     ledger = LedgerContext(expected_account_id="ACCT-1", refunds_24h_for_customer=3)
     assert policy_engine.release_time(ledger, 3, NOW) == NOW + timedelta(hours=24)

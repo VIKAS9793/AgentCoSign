@@ -45,6 +45,7 @@ def test_hours_round_up_and_never_drop_below_one() -> None:
     assert copy.hours_until(NOW - timedelta(hours=1), NOW) == 1
 
 
+@pytest.mark.edge
 def test_a_missing_name_is_never_guessed() -> None:
     assert copy.first_name("the customer", "the customer") is None
     assert copy.first_name("  ", "the customer") is None

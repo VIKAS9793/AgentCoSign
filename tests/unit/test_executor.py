@@ -69,6 +69,7 @@ async def test_executed_refunds_count_through_paypal_not_twice(ledger: Ledger) -
     assert over.result.rule_id == "R4"
 
 
+@pytest.mark.edge
 async def test_a_dispute_opened_before_execution_sends_it_back_for_approval(
     ledger: Ledger,
 ) -> None:
@@ -85,6 +86,7 @@ async def test_a_dispute_opened_before_execution_sends_it_back_for_approval(
     ).refunded_amount == 0
 
 
+@pytest.mark.edge
 async def test_a_changed_order_stops_the_payment(ledger: Ledger) -> None:
     client = RecordedPayPalClient({"ORD-1": order_json()})
     decided = await decide(ledger, client, refund("r1", "10.00"))
@@ -117,6 +119,7 @@ async def test_a_definite_refusal_releases_the_reservation(ledger: Ledger) -> No
     assert again.result.decision is Decision.ESCALATE  # the 60.00 is free again
 
 
+@pytest.mark.edge
 async def test_an_unknown_outcome_keeps_the_reservation_for_a_safe_retry(
     ledger: Ledger,
 ) -> None:

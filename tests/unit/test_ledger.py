@@ -139,6 +139,7 @@ def test_velocity_does_not_merge_different_cards(ledger: Ledger) -> None:
     assert result.result.decision is Decision.ALLOW
 
 
+@pytest.mark.edge
 def test_concurrent_requests_cannot_overspend_one_order(ledger: Ledger) -> None:
     outcomes: list[Decision] = []
     lock = threading.Lock()
@@ -168,6 +169,7 @@ def test_repeating_a_request_replays_the_original_outcome(ledger: Ledger) -> Non
     assert ledger.verify_chain() == 1  # the replay wrote nothing
 
 
+@pytest.mark.edge
 def test_reusing_an_id_for_different_content_is_refused(ledger: Ledger) -> None:
     decide(ledger, refund("r1", "10.00"))
     reused = decide(ledger, refund("r1", "99.00"))
@@ -360,6 +362,7 @@ def replace_time(ev: OrderEvidence, moment) -> OrderEvidence:  # noqa: ANN001
 
 
 @pytest.mark.parametrize("bad", ["x" * 39, "req\nid", "req id", "../r"])
+@pytest.mark.edge
 def test_request_ids_paypal_would_reject_are_never_stored(
     ledger: Ledger, bad: str
 ) -> None:

@@ -47,6 +47,7 @@ async def _refunded(client: RecordedPayPalClient) -> Decimal:
 
 
 # --- the executor must not trust its caller
+@pytest.mark.edge
 async def test_a_proposal_awaiting_approval_cannot_be_executed(ledger: Ledger) -> None:
     client = RecordedPayPalClient({"ORD-1": order_json()})
     decided = await _decided(ledger, client, refund("r1", "60.00"))  # escalated
@@ -58,6 +59,7 @@ async def test_a_proposal_awaiting_approval_cannot_be_executed(ledger: Ledger) -
     assert ledger.state_of("r1") is ProposalState.PENDING_APPROVAL
 
 
+@pytest.mark.edge
 async def test_execution_cannot_change_the_decided_amount(ledger: Ledger) -> None:
     client = RecordedPayPalClient({"ORD-1": order_json()})
     decided = await _decided(ledger, client, refund("r1", "10.00"))  # allowed
@@ -67,6 +69,7 @@ async def test_execution_cannot_change_the_decided_amount(ledger: Ledger) -> Non
     assert await _refunded(client) == 0
 
 
+@pytest.mark.edge
 async def test_a_denied_proposal_cannot_be_executed(ledger: Ledger) -> None:
     client = RecordedPayPalClient({"ORD-1": order_json()})
     decided = await _decided(ledger, client, refund("r1", "300.00"))  # denied
@@ -93,6 +96,7 @@ class LosesFirstReply(RecordedPayPalClient):
         return result
 
 
+@pytest.mark.edge
 async def test_retry_after_a_lost_reply_completes_without_a_second_refund(
     ledger: Ledger,
 ) -> None:
@@ -110,6 +114,7 @@ async def test_retry_after_a_lost_reply_completes_without_a_second_refund(
     assert ledger.verify_chain() >= 4
 
 
+@pytest.mark.edge
 async def test_an_outside_refund_after_a_lost_reply_is_not_mistaken_for_ours(
     ledger: Ledger,
 ) -> None:
@@ -131,6 +136,7 @@ async def test_an_outside_refund_after_a_lost_reply_is_not_mistaken_for_ours(
 
 
 # --- the cumulative cap covers dispute concessions too
+@pytest.mark.edge
 async def test_refund_and_concession_together_cannot_exceed_captured(
     ledger: Ledger,
 ) -> None:
@@ -153,6 +159,7 @@ async def test_refund_and_concession_together_cannot_exceed_captured(
 
 
 # --- evidence must not read an open dispute as none
+@pytest.mark.edge
 def test_an_open_dispute_without_an_id_still_counts_as_open() -> None:
     nameless = {
         "status": "OPEN",
@@ -216,6 +223,7 @@ class LosesRequest(RecordedPayPalClient):
         return await super().refund_capture(capture_id, amount, currency, request_id)
 
 
+@pytest.mark.edge
 async def test_a_landed_refund_is_recorded_without_sending_it_again(
     ledger: Ledger,
 ) -> None:
@@ -232,6 +240,7 @@ async def test_a_landed_refund_is_recorded_without_sending_it_again(
     assert await _refunded(client) == Decimal("20.00")
 
 
+@pytest.mark.edge
 async def test_a_same_amount_outside_refund_is_never_taken_for_ours(
     ledger: Ledger,
 ) -> None:
@@ -251,6 +260,7 @@ async def test_a_same_amount_outside_refund_is_never_taken_for_ours(
     assert await _refunded(client) == Decimal("20.00")  # theirs only, ours not sent
 
 
+@pytest.mark.edge
 async def test_ours_and_a_same_amount_outside_refund_are_told_apart(
     ledger: Ledger,
 ) -> None:

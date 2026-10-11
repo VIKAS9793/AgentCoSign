@@ -102,6 +102,7 @@ asyncio_mode = "auto"
 # Run live checks explicitly: pytest -m integration
 addopts = "-v --tb=short -m 'not integration'"
 markers = [
+    "edge: a race, lost or late answer, outside change, boundary, repeat or stale data",
     "integration: needs live network and credentials (PayPal sandbox, Groq, NIM)",
     "slow: long-running benchmark or soak test",
 ]

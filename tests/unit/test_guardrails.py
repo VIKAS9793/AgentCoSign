@@ -474,11 +474,17 @@ def test_confirmed_success_and_owner_words_pass(tmp_path: Path) -> None:
 
 
 # --- traceability: product changes name their rules, proof and README check -------
-SOURCE = {"tests/unit/test_x.py": "def test_real_one() -> None:\n    assert True\n"}
+SOURCE = {
+    "tests/unit/test_x.py": (
+        "def test_real_one() -> None:\n    assert True\n\n\n"
+        "@pytest.mark.edge\ndef test_race() -> None:\n    assert True\n"
+    )
+}
 GOOD = (
     "fix(policy): x\n\n"
     "Constraints: R4, H1\n"
     "Evidence: tests/unit/test_x.py::test_real_one\n"
+    "Edge cases: tests/unit/test_x.py::test_race\n"
     "README: checked\n"
 )
 
@@ -569,3 +575,46 @@ def test_stale_readme_numbers_are_caught(tmp_path: Path) -> None:
     assert any("scenario table" in f for f in found)
     assert any("daily_outflow_cap" in f for f in found)
     assert not any("refund_auto_limit" in f for f in found)
+
+
+# --- golden rule: fixes and features must name edge-case tests --------------------
+EDGE_SOURCE = {
+    "tests/unit/test_x.py": (
+        "def test_real_one() -> None:\n    assert True\n\n\n"
+        "@pytest.mark.edge\ndef test_race() -> None:\n    assert True\n"
+    )
+}
+TRACED = GOOD + "Edge cases: tests/unit/test_x.py::test_race\n"
+
+
+def _edge(message: str) -> list[str]:
+    problems: list[str] = guardrails.check_traceability(
+        message, ["agentcosign/services/x.py"], EDGE_SOURCE.get, lambda _s: True
+    )
+    return problems
+
+
+def test_a_fix_naming_a_marked_edge_test_passes() -> None:
+    assert _edge(TRACED) == []
+
+
+def test_a_fix_without_edge_cases_is_refused() -> None:
+    message = GOOD.replace("Edge cases: tests/unit/test_x.py::test_race\n", "")
+    assert any("Edge cases" in p for p in _edge(message))
+
+
+def test_a_happy_path_test_cannot_pose_as_an_edge_case() -> None:
+    message = GOOD.replace("::test_race", "::test_real_one")
+    assert any("not marked @pytest.mark.edge" in p for p in _edge(message))
+
+
+def test_refactors_and_docs_need_no_edge_cases() -> None:
+    message = GOOD.replace("fix(policy): x", "refactor(policy): x")
+    assert _edge(message) == []
+
+
+def test_removing_edge_tests_below_the_floor_is_caught(tmp_path: Path) -> None:
+    _write(tmp_path, "tests/unit/test_a.py", "@pytest.mark.edge\ndef test_a(): ...\n")
+    report = guardrails.Report()
+    guardrails.check_edge_floor(tmp_path, report)
+    assert "edge-tests-below-floor" in report.violations

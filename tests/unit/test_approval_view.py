@@ -75,6 +75,7 @@ def test_the_screen_shows_what_can_be_refunded_now_and_after() -> None:
     }
 
 
+@pytest.mark.edge
 def test_a_refund_that_no_longer_fits_is_marked_so_no_send_is_offered() -> None:
     # someone refunded 35.00 in PayPal directly while a 30.00 request waited
     facts = {"paid": "50.00", "already_refunded": "35.00"}
@@ -83,12 +84,14 @@ def test_a_refund_that_no_longer_fits_is_marked_so_no_send_is_offered() -> None:
     assert view["refundable_now"] == "15.00"
 
 
+@pytest.mark.edge
 def test_refunding_exactly_what_is_left_fits() -> None:
     facts = {"paid": "50.00", "already_refunded": "20.00"}
     assert money_view(facts, "30.00")["fits"] == "yes"
     assert money_view(facts, "30.01")["fits"] == "no"
 
 
+@pytest.mark.edge
 def test_unknown_amounts_are_never_guessed() -> None:
     assert money_view({"paid": "", "already_refunded": ""}, "10.00")["fits"] == (
         "unknown"
