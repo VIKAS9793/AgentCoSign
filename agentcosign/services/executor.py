@@ -60,29 +60,78 @@ async def _call_paypal(
     )
 
 
-async def _stop_on_drift(
-    ledger: Ledger,
-    request_id: str,
+def _own_refund_may_have_landed(
+    proposal: Proposal,
     decided: OrderEvidence,
     current: OrderEvidence,
     previous_attempts: int,
+) -> bool:
+    """True when the only new refund on the order could be this request's own.
+
+    An earlier attempt may have reached PayPal without us seeing the reply.
+    Resending the same request id returns that refund instead of a new one, so
+    it is not an outside change. Any other difference is someone else's refund.
+    """
+    if previous_attempts == 0 or proposal.tool != ToolAction.CREATE_REFUND.value:
+        return False
+    return current.refunded_amount == decided.refunded_amount + proposal.amount
+
+
+async def _stop_on_drift(
+    ledger: Ledger,
+    proposal: Proposal,
+    decided: OrderEvidence,
+    current: OrderEvidence,
+    own_landed: bool,
     now: datetime,
 ) -> Execution | None:
     """Stop or send back for approval when the order changed since the decision."""
+    request_id = proposal.request_id
     compared = current
-    if previous_attempts > 0:
-        # An earlier attempt may already have landed at PayPal. Its refund is not
-        # an outside change: resending the same request id returns that result.
+    if own_landed:
         compared = replace(current, refunded_amount=decided.refunded_amount)
     drift = check_execution_drift(decided, compared)
     if drift is None:
         return None
     if drift.decision is Decision.DENY:
-        state, reason = ProposalState.FAILED, "evidence_changed"
-    else:
-        state, reason = ProposalState.PENDING_APPROVAL, "state_drift"
-    await _move(ledger, request_id, state, now, {"reason": reason})
-    return Execution(request_id, state, reason)
+        await _move(
+            ledger,
+            request_id,
+            ProposalState.FAILED,
+            now,
+            {"reason": "evidence_changed"},
+        )
+        return Execution(request_id, ProposalState.FAILED, "evidence_changed")
+    await asyncio.to_thread(
+        ledger.send_back_for_approval,
+        request_id,
+        current,
+        now,
+        {"reason": "state_drift"},
+    )
+    return Execution(request_id, ProposalState.PENDING_APPROVAL, "state_drift")
+
+
+async def _stop_if_over_refundable(
+    ledger: Ledger,
+    proposal: Proposal,
+    current: OrderEvidence,
+    own_landed: bool,
+    now: datetime,
+) -> Execution | None:
+    """Refuse a refund that would take the order past what the customer paid.
+
+    Checked against PayPal's figures immediately before sending, whatever was
+    decided earlier, so no approval can return more than was paid.
+    """
+    if proposal.tool != ToolAction.CREATE_REFUND.value:
+        return None
+    others = current.refunded_amount - (proposal.amount if own_landed else 0)
+    if others + proposal.amount <= current.captured_amount:
+        return None
+    detail = {"reason": "exceeds_refundable"}
+    await _move(ledger, proposal.request_id, ProposalState.FAILED, now, detail)
+    return Execution(proposal.request_id, ProposalState.FAILED, "exceeds_refundable")
 
 
 async def execute(
@@ -105,7 +154,10 @@ async def execute(
         current = await fetch_evidence(client, decided.order_id, now=now, secret=secret)
     except PayPalClientError:
         return Execution(request_id, ProposalState.EXECUTING, "evidence_unavailable")
-    stopped = await _stop_on_drift(ledger, request_id, decided, current, previous, now)
+    own_landed = _own_refund_may_have_landed(proposal, decided, current, previous)
+    stopped = await _stop_on_drift(
+        ledger, proposal, decided, current, own_landed, now
+    ) or await _stop_if_over_refundable(ledger, proposal, current, own_landed, now)
     if stopped is not None:
         return stopped
     try:

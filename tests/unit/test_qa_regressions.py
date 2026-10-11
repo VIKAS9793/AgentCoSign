@@ -110,6 +110,26 @@ async def test_retry_after_a_lost_reply_completes_without_a_second_refund(
     assert ledger.verify_chain() >= 4
 
 
+async def test_an_outside_refund_after_a_lost_reply_is_not_mistaken_for_ours(
+    ledger: Ledger,
+) -> None:
+    client = LosesFirstReply()
+    decided = await _decided(ledger, client, refund("r1", "20.00"))
+    first = await execute(
+        refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    assert first.reason == "retry_with_same_id"
+    # someone else refunds 30.00 in PayPal before the retry
+    await RecordedPayPalClient.refund_capture(
+        client, "CAP-1", Decimal("30.00"), "USD", "outside-1"
+    )
+    second = await execute(
+        refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    assert second.state is ProposalState.PENDING_APPROVAL
+    assert await _refunded(client) == Decimal("50.00")  # ours once, theirs once
+
+
 # --- the cumulative cap covers dispute concessions too
 async def test_refund_and_concession_together_cannot_exceed_captured(
     ledger: Ledger,

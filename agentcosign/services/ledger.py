@@ -132,6 +132,10 @@ _Q_INSERT = (
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 _Q_SET_STATE = "UPDATE proposals SET state = ?, updated_at = ? WHERE request_id = ?"
+_Q_REBASE = (
+    "UPDATE proposals SET state = ?, evidence_json = ?, attempts = 0, "
+    "updated_at = ? WHERE request_id = ?"
+)
 _Q_DUE = "SELECT request_id FROM proposals WHERE state = ? AND created_at < ?"
 _Q_ATTEMPT = (
     "UPDATE proposals SET attempts = attempts + 1, updated_at = ? WHERE request_id = ?"
@@ -471,6 +475,31 @@ class Ledger:
                 )
             conn.execute(_Q_SET_STATE, (to_state.value, _iso(now), request_id))
             body = {"from": current.value, "to": to_state.value, **(detail or {})}
+            self._append(conn, request_id, "state_changed", body, now)
+
+    def send_back_for_approval(
+        self,
+        request_id: str,
+        current: OrderEvidence,
+        now: datetime,
+        detail: dict[str, str],
+    ) -> None:
+        """Return an executing proposal to the approver with the order as it is now.
+
+        Nothing was sent to PayPal in the attempt that found the change, so the
+        attempt count starts again and the next approval is judged against the
+        order the approver actually saw, not the one first decided on.
+        """
+        now = _utc(now)
+        snapshot = canonical_json(evidence_to_dict(current))
+        with self._transaction() as conn:
+            row = conn.execute(_Q_GET, (request_id,)).fetchone()
+            if row is None or ProposalState(row["state"]) is not S.EXECUTING:
+                raise FailClosedError("only an executing proposal can be sent back")
+            conn.execute(
+                _Q_REBASE, (S.PENDING_APPROVAL.value, snapshot, _iso(now), request_id)
+            )
+            body = {"from": S.EXECUTING.value, "to": S.PENDING_APPROVAL.value, **detail}
             self._append(conn, request_id, "state_changed", body, now)
 
     def expire_due(self, now: datetime, ttl_seconds: int) -> list[str]:

@@ -358,3 +358,20 @@ def test_the_approver_sees_owner_words_and_live_paypal_facts(env: Env) -> None:
     assert item["fits"] == "yes"
     assert "R15" not in json.dumps(item)
     assert item["decide_by"] > item["asked_at"]
+
+
+async def test_a_refund_made_in_paypal_while_waiting_cannot_overspend(env: Env) -> None:
+    # 500.00 was paid; the assistant asks for 200.00, then 400.00 is refunded in
+    # PayPal directly while the request waits, leaving only 100.00
+    env.propose("r1", "200.00")
+    await env.paypal.refund_capture("CAP-1", Decimal("400.00"), "USD", "outside-1")
+    env.enrol()
+    session = env.session()
+    first, _ = env.decide("r1", "approve", session)
+    # the order changed, so the approver is asked again with today's figures
+    assert first.json()["state"] == "pending_approval"
+    assert await env.refunded() == Decimal("400.00")
+    second, _ = env.decide("r1", "approve", session)
+    # approving again cannot return more than was paid
+    assert second.json()["state"] == "failed"
+    assert await env.refunded() == Decimal("400.00")
