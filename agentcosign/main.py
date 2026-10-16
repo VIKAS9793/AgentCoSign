@@ -8,7 +8,6 @@ import logging
 import sqlite3
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
@@ -18,24 +17,16 @@ from agentcosign.api.gateway_routes import router as gateway_router
 from agentcosign.api.protection import ProtectionMiddleware, monotonic_ms
 from agentcosign.api.site import register_site
 from agentcosign.api.traffic import router as traffic_router
-from agentcosign.clients.paypal import (
-    LivePayPalClient,
-    PayPalClient,
-    RecordedPayPalClient,
-)
+from agentcosign.clients.paypal import PayPalClient
 from agentcosign.core.config import Settings, get_settings
 from agentcosign.core.exceptions import AgentCoSignError
 from agentcosign.core.limits import TrafficGuard
 from agentcosign.services.gateway import Gateway
-from agentcosign.services.ledger import Ledger
-from agentcosign.services.passkeys import PasskeyRegistry
+from agentcosign.wiring import build_gateway
 
 logger = logging.getLogger("agentcosign")
 
 EXPIRY_INTERVAL_SECONDS = 30
-RECORDINGS_DIR = (
-    Path(__file__).resolve().parent.parent / "docs" / "evidence" / "recordings"
-)
 
 # The approver UI is same-origin and script-light, so a strict CSP is cheap.
 # LLM-generated text is untrusted and must only ever be rendered as text.
@@ -73,6 +64,14 @@ async def _expire_forever(gateway: Gateway) -> None:
             await gateway.finish_unfinished()
         except (AgentCoSignError, sqlite3.Error):
             logger.exception("finishing unanswered executions failed; will retry")
+        try:
+            await gateway.reconcile_if_due()
+        except (AgentCoSignError, sqlite3.Error):
+            logger.exception("reconciliation with PayPal failed; will retry")
+        try:
+            await gateway.check_records_if_due()
+        except sqlite3.Error:
+            logger.exception("checking the saved record failed; will retry")
 
 
 @asynccontextmanager
@@ -110,8 +109,13 @@ def _install_security_headers(app: FastAPI) -> None:
         response = await call_next(request)
         for header, value in _SECURITY_HEADERS.items():
             response.headers.setdefault(header, value)
-        if request.url.path.startswith("/api"):
+        path = request.url.path
+        if path.startswith(("/api", "/v1")):
+            # refund data and decisions are never kept in a browser cache
             response.headers["Cache-Control"] = "no-store"
+        elif path.startswith("/assets/"):
+            # unversioned files are always revalidated, never guessed fresh
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
 
@@ -179,33 +183,11 @@ def _register_policy_routes(app: FastAPI, settings: Settings) -> None:
         }
 
 
-def _paypal_client(settings: Settings) -> PayPalClient:
-    """Live sandbox calls when configured, otherwise recorded sandbox responses."""
-    if settings.paypal_execution == "sandbox":
-        return LivePayPalClient(
-            settings.paypal_client_id, settings.paypal_client_secret
-        )
-    return RecordedPayPalClient.from_directory(RECORDINGS_DIR)
-
-
 def _install_gateway(
     app: FastAPI, settings: Settings, paypal: PayPalClient | None
 ) -> None:
-    """Build the ledger, passkey registry and gateway, and add their routes."""
-    database = Path(settings.sqlite_db_path)
-    database.parent.mkdir(parents=True, exist_ok=True)
-    secret = settings.audit_hmac_key.get_secret_value().encode("utf-8")
-    ledger = Ledger(database, secret, settings.policy, settings.paypal_merchant_id)
-    passkeys = PasskeyRegistry(database, settings.passkey_rp_id, settings.public_origin)
-    app.state.gateway = Gateway(
-        ledger=ledger,
-        passkeys=passkeys,
-        paypal=paypal or _paypal_client(settings),
-        policy=settings.policy,
-        screening=settings.screening,
-        secret=secret,
-        approval_ttl_seconds=settings.approval.ttl_seconds,
-    )
+    """Build the gateway and add its routes."""
+    app.state.gateway = build_gateway(settings, paypal)
     app.include_router(gateway_router)
 
 

@@ -54,10 +54,11 @@ approval:
   # minutes; out-of-band OTP lifetimes are commonly capped at 10 minutes (SMS/phone)
   # and 5 minutes (time-based devices). Capped at 600 in code: it cannot be raised here.
   ttl_seconds: 600
-  # Preferred assurance: passkey (WebAuthn) signature over the action hash.
-  # "session" is a weaker, clearly-flagged fallback for demo devices without a
-  # platform authenticator; the assurance level is written to the audit log.
-  allowed_assurance: ["passkey", "session"]
+  # A signed-in phone is signed out after this long. Every decision still needs
+  # its own fingerprint signature. Capped at 600 in code.
+  session_seconds: 600
+  # A one-time setup link works for this long. Capped at 600 in code.
+  enrolment_link_seconds: 600
 
 # ------------------------------------------------------------------------------
 # Prompt-injection screening
@@ -129,6 +130,10 @@ limits:
   # Per-client state is bounded so an address-rotation flood cannot exhaust memory.
   max_tracked_clients: 5000
   exempt_paths: ["/health"]
+  # Live update streams: open for minutes, so they have their own cap and never
+  # use the in-flight slots above.
+  streaming_paths: ["/v1/approvals/stream"]
+  max_open_streams: 8
 
   # A bucket holds `capacity` requests and gains one every `refill_seconds`.
   public:
@@ -162,9 +167,29 @@ limits:
     max_block_seconds: 900
 
 # ------------------------------------------------------------------------------
-# Audit Log & Verification
+# Reconciliation with PayPal
+# ------------------------------------------------------------------------------
+reconciliation:
+  # How far back each run compares the refunds we sent with PayPal's records.
+  lookback_days: 7
+  # A refund PayPal still shows as processing after this long is reported.
+  stale_processing_hours: 24
+  # How often the comparison runs in the background.
+  interval_hours: 24
+
+# ------------------------------------------------------------------------------
+# Reading PayPal for the merchant's screens (display only: every decision and
+# every refund reads PayPal again on its own)
 # ------------------------------------------------------------------------------
 audit:
-  hash_algorithm: "sha256"
-  storage_type: "sqlite"
-  table_name: "audit_ledger"
+  # How often the whole audit record is checked in the background. A request's
+  # history checks its own entries and anything new at once; an edit to an older
+  # entry of another request is found by this full check.
+  full_check_hours: 24
+
+display:
+  # How many orders are read from PayPal at once while a screen loads.
+  max_parallel_reads: 4
+  # A screen reuses an order read this recent while none of our records
+  # changed, so live updates and two open tabs do not repeat PayPal calls.
+  reuse_seconds: 10

@@ -91,7 +91,10 @@ class ApprovalSettings(BaseModel):
     # expiry is harmless (nothing is sent), so the window is capped at 10 minutes and
     # cannot be raised by configuration.
     ttl_seconds: int = Field(ge=30, le=600)
-    allowed_assurance: list[Literal["passkey", "session"]] = Field(min_length=1)
+    # How long a signed-in phone stays open, and how long a setup link works.
+    # Both are capped at 10 minutes in code for the same reason.
+    session_seconds: int = Field(ge=60, le=600)
+    enrolment_link_seconds: int = Field(ge=60, le=600)
 
 
 class ScreeningSettings(BaseModel):
@@ -206,6 +209,10 @@ class LimitSettings(BaseModel):
     reviewer_reserved_concurrency: int = Field(ge=0, le=255)
     max_tracked_clients: int = Field(ge=100, le=100_000)
     exempt_paths: list[str]
+    # Live update streams stay open for minutes, so they are counted against
+    # their own cap instead of the request slots everyone else needs.
+    streaming_paths: list[str]
+    max_open_streams: int = Field(ge=1, le=256)
     public: TierLimits
     reviewer: TierLimits
     live_llm_budget: LlmBudget
@@ -213,11 +220,11 @@ class LimitSettings(BaseModel):
     provider_low_percent: int = Field(ge=0, le=50)
     penalty: PenaltySettings
 
-    @field_validator("exempt_paths")
+    @field_validator("exempt_paths", "streaming_paths")
     @classmethod
     def _paths_are_absolute(cls, value: list[str]) -> list[str]:
         if any(not p.startswith("/") for p in value):
-            raise ValueError("exempt_paths must start with '/'")
+            raise ValueError("paths must start with '/'")
         return value
 
     @model_validator(mode="after")
@@ -240,14 +247,32 @@ class LimitSettings(BaseModel):
         return self
 
 
-class AuditConfig(BaseModel):
-    """Configuration for audit logging and hash chaining."""
+class ReconciliationSettings(BaseModel):
+    """How the daily comparison with PayPal runs."""
 
     model_config = _STRICT
 
-    hash_algorithm: Literal["sha256"]
-    storage_type: Literal["sqlite"]
-    table_name: str = Field(pattern=r"^[a-z_][a-z0-9_]{0,62}$")
+    lookback_days: int = Field(ge=1, le=31)
+    stale_processing_hours: int = Field(ge=1, le=168)
+    interval_hours: int = Field(ge=1, le=168)
+
+
+class AuditSettings(BaseModel):
+    """How often the whole audit record is checked in the background."""
+
+    model_config = _STRICT
+
+    full_check_hours: int = Field(ge=1, le=168)
+
+
+class DisplaySettings(BaseModel):
+    """How the merchant's screens read PayPal (display only, never decisions)."""
+
+    model_config = _STRICT
+
+    max_parallel_reads: int = Field(ge=1, le=10)
+    # kept short: a screen must never show old facts for long
+    reuse_seconds: int = Field(ge=0, le=60)
 
 
 class Settings(BaseSettings):
@@ -325,7 +350,9 @@ class Settings(BaseSettings):
     approval: ApprovalSettings
     screening: ScreeningSettings
     models: ModelsConfig
-    audit: AuditConfig
+    reconciliation: ReconciliationSettings
+    audit: AuditSettings
+    display: DisplaySettings
     limits: LimitSettings
 
     _ephemeral: set[str] = PrivateAttr(default_factory=set)
@@ -429,7 +456,16 @@ def get_settings() -> Settings:
         ConfigurationError: if config.yaml or the environment is invalid.
     """
     yaml_data = _load_yaml_config()
-    sections = ("policy", "approval", "screening", "models", "audit", "limits")
+    sections = (
+        "policy",
+        "approval",
+        "screening",
+        "models",
+        "limits",
+        "reconciliation",
+        "audit",
+        "display",
+    )
     missing = [s for s in sections if s not in yaml_data]
     if missing:
         raise ConfigurationError(f"config.yaml is missing sections: {missing}")

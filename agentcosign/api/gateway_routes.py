@@ -8,13 +8,22 @@ Three separate principals, never interchangeable:
   with the same passkey to see what is waiting.
 """
 
+import asyncio
 import hmac
+import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
+from fastapi.responses import StreamingResponse
 
+from agentcosign.api.site import site_build
 from agentcosign.core.config import Settings
-from agentcosign.core.exceptions import FailClosedError
+from agentcosign.core.exceptions import (
+    ConfigurationError,
+    FailClosedError,
+    PayPalClientError,
+    SignatureError,
+)
 from agentcosign.schemas.gateway import (
     REQUEST_ID,
     CredentialIn,
@@ -25,9 +34,13 @@ from agentcosign.schemas.gateway import (
     ProposalIn,
 )
 from agentcosign.services.gateway import Gateway, Outcome
+from agentcosign.services.live_updates import change_events
 
 router = APIRouter(tags=["Gateway"])
 RequestId = Annotated[str, Path(pattern=REQUEST_ID)]
+ControlIntent = Annotated[str, Path(pattern="^(stop|resume)$")]
+# PayPal events are small; anything larger is refused before it is parsed
+WEBHOOK_MAX_BYTES = 65_536
 
 
 def _gateway(request: Request) -> Gateway:
@@ -73,6 +86,10 @@ def require_approver_session(request: Request) -> None:
 
 
 def _refused(exc: FailClosedError) -> HTTPException:
+    """A fingerprint that cannot be accepted (try again) is told apart from a
+    request or control that cannot be decided right now."""
+    if isinstance(exc, SignatureError):
+        return HTTPException(status.HTTP_403_FORBIDDEN, exc.message)
     return HTTPException(status.HTTP_409_CONFLICT, exc.message)
 
 
@@ -152,17 +169,116 @@ async def session_options(request: Request) -> Response:
 @router.post("/v1/approver/session")
 async def open_session(body: CredentialIn, request: Request) -> dict[str, str]:
     """Verify the approver's passkey and return a short-lived session token."""
+    gateway = _gateway(request)
     try:
-        token = _gateway(request).open_session(body.credential)
+        token, approver = gateway.open_session(body.credential)
     except FailClosedError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, exc.message) from exc
-    return {"session": token}
+    return {
+        "session": token,
+        "approver": approver,
+        "account": gateway.account_ending(),
+        "session_minutes": str(gateway.session_minutes()),
+    }
 
 
-@router.get("/v1/approvals", dependencies=[Depends(require_approver_session)])
-async def pending_approvals(request: Request) -> list[dict[str, str | list[str]]]:
-    """Requests waiting for a person, oldest first."""
-    return await _gateway(request).pending()
+@router.post(
+    "/v1/controls/{intent}/options",
+    dependencies=[Depends(require_approver_session)],
+)
+async def control_options(intent: ControlIntent, request: Request) -> Response:
+    """Passkey challenge to stop or resume all refunds."""
+    try:
+        return _json(_gateway(request).control_options(intent))
+    except FailClosedError as exc:
+        raise _refused(exc) from exc
+
+
+@router.post("/v1/controls/{intent}", dependencies=[Depends(require_approver_session)])
+async def set_control(
+    intent: ControlIntent, body: CredentialIn, request: Request
+) -> dict[str, str]:
+    """Stop or resume all refunds with a fingerprint signed for that intent."""
+    try:
+        return await _gateway(request).set_control(intent, body.credential)
+    except FailClosedError as exc:
+        raise _refused(exc) from exc
+
+
+@router.post("/v1/webhooks/paypal")
+async def paypal_webhook(request: Request) -> dict[str, str]:
+    """PayPal events, trusted only after PayPal itself verifies the signature."""
+    declared = request.headers.get("content-length", "0")
+    if declared.isdigit() and int(declared) > WEBHOOK_MAX_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Too large.")
+    raw = await request.body()
+    if len(raw) > WEBHOOK_MAX_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Too large.")
+    try:
+        event = json.loads(raw)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Not JSON.") from exc
+    if not isinstance(event, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Not an event.")
+    headers = {name.lower(): value for name, value in request.headers.items()}
+    try:
+        outcome = await _gateway(request).handle_webhook(headers, event)
+    except ConfigurationError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, exc.message) from exc
+    except FailClosedError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.message) from exc
+    except PayPalClientError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, exc.message) from exc
+    return {"status": outcome}
+
+
+@router.get("/api/v1/audit/head")
+async def chain_head(request: Request) -> dict[str, Any]:
+    """The latest audit chain entry, for anyone to record independently."""
+    return await _gateway(request).chain_head()
+
+
+@router.get("/v1/approvals/home", dependencies=[Depends(require_approver_session)])
+async def merchant_home(request: Request) -> dict[str, Any]:
+    """Everything the merchant's home shows, with every state decided here."""
+    token = request.headers.get("x-approver-session", "")
+    return {**await _gateway(request).home(token), "build": site_build()}
+
+
+@router.get("/v1/approvals/stream", dependencies=[Depends(require_approver_session)])
+async def live_updates(request: Request) -> StreamingResponse:
+    """Hints that something changed, so the phone re-reads; no money details."""
+    gateway = _gateway(request)
+    token = request.headers.get("x-approver-session", "")
+    # database checks run in a worker thread, never on the event loop
+    events = change_events(
+        lambda: asyncio.to_thread(gateway.live_version),
+        lambda: asyncio.to_thread(gateway.session_is_valid, token),
+        asyncio.sleep,
+    )
+    return StreamingResponse(
+        events,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/v1/approvals/done", dependencies=[Depends(require_approver_session)])
+async def done_today(request: Request) -> dict[str, Any]:
+    """Requests that ended in the last 24 hours, with the true total."""
+    return await _gateway(request).done_page()
+
+
+@router.get(
+    "/v1/approvals/{request_id}/history",
+    dependencies=[Depends(require_approver_session)],
+)
+async def request_history(request_id: RequestId, request: Request) -> dict[str, Any]:
+    """One request's record in owner words."""
+    found = await _gateway(request).history(request_id)
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown request id.")
+    return found
 
 
 @router.post(

@@ -1,8 +1,9 @@
 """Operator commands for running AgentCoSign against the PayPal sandbox.
 
     python -m agentcosign.cli enrol-link
-        Print a one-time link (valid 10 minutes) that sets up an approver passkey
-        on a phone, so the operator key is never typed into the phone.
+        Print a one-time link that sets up an approver passkey on a phone, so the
+        operator key is never typed into the phone. It works for the time set in
+        config.yaml (approval.enrolment_link_seconds).
 
     python -m agentcosign.cli propose --order ORDER_ID --amount 10.00
         Submit a refund proposal as the agent, the way an AI assistant would.
@@ -12,6 +13,7 @@ and this command must share them.
 """
 
 import argparse
+import asyncio
 import json
 import secrets
 import sys
@@ -20,8 +22,16 @@ from datetime import UTC, datetime
 
 import httpx
 
+from agentcosign.clients.paypal import PayPalClient
 from agentcosign.core.config import Settings, get_settings
-from agentcosign.services.gateway import ENROLMENT_LINK_SECONDS, issue_token
+from agentcosign.core.exceptions import AuditIntegrityError
+from agentcosign.services.gateway import (
+    issue_token,
+)
+from agentcosign.services.gateway import (
+    revoke_approver as revoke_passkeys,
+)
+from agentcosign.wiring import build_gateway, open_ledger, open_passkeys
 
 TIMEOUT_SECONDS = 30
 
@@ -52,11 +62,12 @@ def enrol_link(settings: Settings) -> int:
         secret,
         "enrolment",
         secrets.token_hex(8),
-        ENROLMENT_LINK_SECONDS,
+        settings.approval.enrolment_link_seconds,
         datetime.now(UTC),
     )
     _out(f"{settings.public_origin}/approve#enrol={token}")
-    _out("Open it on the approver's phone within 10 minutes.")
+    minutes = settings.approval.enrolment_link_seconds // 60
+    _out(f"Open it on the approver's phone within {minutes} minutes.")
     return 0
 
 
@@ -83,11 +94,83 @@ def propose(settings: Settings, order: str, amount: str, request_id: str | None)
     return 0 if response.status_code == 200 else 1
 
 
+def stop_refunds(settings: Settings) -> int:
+    """Stop all refunds at once. Only the merchant can turn them back on, with
+    their fingerprint in the app, so an operator can never restart money flow."""
+    if not _require_shared_secrets(settings, ["audit_hmac_key"]):
+        return 1
+    ledger = open_ledger(settings)
+    changed = ledger.set_refunds_stopped(True, "operator", datetime.now(UTC))
+    _out("All refunds are stopped." if changed else "Refunds were already stopped.")
+    still_sending = len(ledger.sending())
+    if still_sending:
+        _out(f"{still_sending} refund(s) already with PayPal will finish.")
+    return 0
+
+
+def revoke_approver(settings: Settings, name: str) -> int:
+    """Revoke a lost or replaced phone: its passkey and open sessions stop working."""
+    if not _require_shared_secrets(settings, ["audit_hmac_key"]):
+        return 1
+    count = revoke_passkeys(
+        open_passkeys(settings), open_ledger(settings), name, datetime.now(UTC)
+    )
+    if not count:
+        _out(f"No active passkey for {name}. Nothing changed.")
+        return 1
+    _out(f"Revoked {count} passkey(s) for {name}. Their sessions end now.")
+    return 0
+
+
+def audit_head(settings: Settings) -> int:
+    """Print the chain head to publish somewhere this service cannot edit."""
+    head = open_ledger(settings).head()
+    _out(f"seq={head['seq']} hash={head['entry_hash']} at={head['created_at']}")
+    return 0
+
+
+def verify_head(settings: Settings, seq: int, entry_hash: str) -> int:
+    """Check the chain still contains a head that was published earlier."""
+    if not _require_shared_secrets(settings, ["audit_hmac_key"]):
+        return 1
+    try:
+        count = open_ledger(settings).verify_against_head(seq, entry_hash)
+    except AuditIntegrityError as exc:
+        _out(f"FAILED: {exc.message}")
+        return 1
+    _out(f"OK: {count} entries verified; the published head at seq {seq} matches.")
+    return 0
+
+
+def reconcile(settings: Settings, paypal: PayPalClient | None = None) -> int:
+    """Compare every refund sent in the look-back window with PayPal now."""
+    if not _require_shared_secrets(settings, ["audit_hmac_key"]):
+        return 1
+    report = asyncio.run(build_gateway(settings, paypal).reconcile())
+    counts = report.summary()
+    _out(", ".join(f"{name} {value}" for name, value in counts.items()))
+    for found in report.breaks:
+        _out(f"break: {found.request_id} on order {found.order_id}: {found.kind}")
+    for outside in report.outside:
+        _out(f"outside the app: {outside.amount} on order {outside.order_id}")
+    for order_id in report.unchecked:
+        _out(f"could not check order {order_id}")
+    return 0 if not report.breaks and not report.unchecked else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Command-line entry point."""
     parser = argparse.ArgumentParser(prog="python -m agentcosign.cli")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("enrol-link", help="one-time approver enrolment link")
+    commands.add_parser("stop-refunds", help="stop all refunds now")
+    commands.add_parser("audit-head", help="print the chain head to publish")
+    commands.add_parser("reconcile", help="compare our refunds with PayPal now")
+    check = commands.add_parser("verify-head", help="check against a published head")
+    check.add_argument("--seq", type=int, required=True)
+    check.add_argument("--hash", required=True)
+    revoke = commands.add_parser("revoke-approver", help="revoke a lost phone")
+    revoke.add_argument("--name", required=True)
     proposal = commands.add_parser(
         "propose", help="submit a refund proposal as the agent"
     )
@@ -98,6 +181,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     settings = get_settings()
     if args.command == "enrol-link":
         return enrol_link(settings)
+    if args.command == "stop-refunds":
+        return stop_refunds(settings)
+    if args.command == "revoke-approver":
+        return revoke_approver(settings, args.name)
+    if args.command == "audit-head":
+        return audit_head(settings)
+    if args.command == "reconcile":
+        return reconcile(settings)
+    if args.command == "verify-head":
+        return verify_head(settings, args.seq, args.hash)
     return propose(settings, args.order, args.amount, args.request_id)
 
 

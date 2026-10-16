@@ -49,6 +49,7 @@ RULE_INVALID = "R12"
 RULE_MISMATCH_SCOPE = "R13"
 RULE_EVIDENCE = "R14"
 RULE_SCREENING_DOWN = "R15"
+RULE_STOPPED = "R16"
 
 VELOCITY_WINDOW = timedelta(hours=24)
 # never release in the past or in the same instant, so a pause always holds
@@ -58,6 +59,7 @@ MIN_PAUSE = timedelta(minutes=1)
 # Safety invariants come first so the reason shown is the most fundamental one.
 DENY_PRIORITY = (
     RULE_INVALID,
+    RULE_STOPPED,
     RULE_MISMATCH_SCOPE,
     RULE_EVIDENCE,
     RULE_INJECTION,
@@ -92,6 +94,7 @@ _RULE_TITLES = {
     RULE_MISMATCH_SCOPE: "Currency or account does not match",
     RULE_EVIDENCE: "Claims do not match PayPal's records",
     RULE_SCREENING_DOWN: "Screening is unavailable",
+    RULE_STOPPED: "The merchant stopped all refunds",
 }
 
 
@@ -250,6 +253,18 @@ def _validate(case: _Case) -> list[RuleHit]:
 
 
 # ----------------------------------------------------------------------- rules
+
+
+def _rule_stopped(case: _Case) -> RuleHit | None:
+    """While the merchant has stopped refunds, every money action is refused."""
+    if not case.ledger.refunds_stopped:
+        return None
+    return _hit(
+        RULE_STOPPED,
+        Decision.DENY,
+        "refunds_stopped",
+        "the merchant has stopped all refunds",
+    )
 
 
 def _rule_scope(case: _Case) -> RuleHit | None:
@@ -471,6 +486,7 @@ def _rule_new_payee(case: _Case) -> RuleHit | None:
 
 
 RULES: tuple[Rule, ...] = (
+    _rule_stopped,
     _rule_scope,
     _rule_evidence,
     _rule_injection,

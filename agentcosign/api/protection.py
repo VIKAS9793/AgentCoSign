@@ -186,4 +186,4 @@ class ProtectionMiddleware:
                 await _reject(send, STATUS_TOO_LARGE, "too_large", 0)
         finally:
             if admission.counted:
-                self._guard.release()
+                self._guard.release(admission)

@@ -187,3 +187,42 @@ async def test_request_ids_that_break_the_header_are_refused_before_any_call(
     with pytest.raises(PayPalClientError):
         await recorded.refund_capture("CAP-1", Decimal("1.00"), "USD", bad)
     assert fake.requests == []
+
+
+WEBHOOK_HEADERS = {
+    "paypal-auth-algo": "SHA256withRSA",
+    "paypal-cert-url": "https://api.sandbox.paypal.com/v1/notifications/certs/c",
+    "paypal-transmission-id": "trans-1",
+    "paypal-transmission-sig": "signature",
+    "paypal-transmission-time": "2026-10-13T00:00:00Z",
+}
+
+
+@pytest.mark.parametrize(
+    ("answer", "verified"),
+    [
+        ({"verification_status": "SUCCESS"}, True),
+        ({"verification_status": "FAILURE"}, False),
+        ({}, False),
+    ],
+)
+@pytest.mark.edge
+async def test_only_a_success_status_in_the_body_verifies_a_webhook(
+    answer: dict[str, str], verified: bool
+) -> None:
+    fake = FakePayPal([httpx.Response(200, json=answer)])
+    client = client_for(fake)
+    event = {"id": "WH-1", "event_type": "PAYMENT.CAPTURE.REFUNDED"}
+    assert await client.verify_webhook(WEBHOOK_HEADERS, event, "WEBHOOK-1") is verified
+    sent = json.loads(fake.requests[0].content)
+    assert fake.requests[0].url.path == "/v1/notifications/verify-webhook-signature"
+    assert sent["webhook_id"] == "WEBHOOK-1" and sent["webhook_event"] == event
+
+
+@pytest.mark.edge
+async def test_the_simulated_paypal_verifies_no_webhook_unless_a_test_opts_in() -> None:
+    client = RecordedPayPalClient({"ORD-1": order_json(captured="10.00")})
+    event = {"id": "WH-1", "event_type": "PAYMENT.CAPTURE.REFUNDED"}
+    assert await client.verify_webhook(WEBHOOK_HEADERS, event, "WEBHOOK-1") is False
+    client.set_webhook_verification("SUCCESS")
+    assert await client.verify_webhook(WEBHOOK_HEADERS, event, "WEBHOOK-1") is True

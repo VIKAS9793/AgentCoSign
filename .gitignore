@@ -80,6 +80,8 @@ CLAUDE.md
 docs/pm/
 docs/research/
 docs/internal/
+docs/agent-context/
+.telemetry/
 
 # Spike run output (IDs only, but keep local until sanitised)
 spikes/out/

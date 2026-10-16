@@ -27,6 +27,15 @@ class FailClosedError(AgentCoSignError):
     """Raised when an unrecoverable error forces a fail-closed DENY outcome."""
 
 
+class SignatureError(FailClosedError):
+    """Raised when a passkey signature cannot be accepted.
+
+    The passkey is unknown, the signature does not verify, or the request to
+    sign expired or was already used. Nothing was decided, so the person can
+    try again; this is told apart from a request that cannot be decided.
+    """
+
+
 class PolicyEvaluationError(AgentCoSignError):
     """Raised when a policy evaluation fails or cannot resolve rules."""
 

@@ -881,6 +881,35 @@ SCENARIOS: tuple[Scenario, ...] = (
             "refunded_amount": D("80.00"),
         },
     ),
+    # --- emergency stop -----------------------------------------------------------
+    Scenario(
+        "S87",
+        "A clean small refund while the merchant has stopped refunds is denied",
+        X,
+        "R16",
+        ("R16",),
+        ledger={"refunds_stopped": True},
+    ),
+    Scenario(
+        "S88",
+        "A refund that would need approval while refunds are stopped is denied",
+        X,
+        "R16",
+        ("R2", "R16"),
+        proposal={"amount": D("25.01")},
+        evidence=BIG,
+        ledger={"refunds_stopped": True},
+    ),
+    Scenario(
+        "S89",
+        "Stopped and over the maximum: the stop is the reason given",
+        X,
+        "R16",
+        ("R3", "R16"),
+        proposal={"amount": D("300.00")},
+        evidence=BIG,
+        ledger={"refunds_stopped": True},
+    ),
 )
 
 # Evidence drift between approval and execution: (id, change, expected, rule).

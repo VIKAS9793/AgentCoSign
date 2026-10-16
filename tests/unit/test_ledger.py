@@ -16,6 +16,7 @@ from agentcosign.services.ledger import Ledger, ProposalState
 from tests.scenarios.policy_scenarios import ACCOUNT, NOW, policy, screening
 
 SECRET = b"s" * 32
+WINDOW = 600  # seconds allowed to decide
 SCREEN = screening()
 CUSTOMER = card_fingerprint(SECRET, "VISA", "4242", "Jane Buyer")
 
@@ -188,7 +189,13 @@ def test_invalid_request_ids_are_decided_but_not_stored(ledger: Ledger) -> None:
 # --- lifecycle ----------
 def test_approval_path_and_audit_trail(ledger: Ledger) -> None:
     decide(ledger, refund("r1", "60.00"))
-    ledger.transition("r1", ProposalState.EXECUTING, NOW, {"assurance": "passkey"})
+    ledger.transition(
+        "r1",
+        ProposalState.EXECUTING,
+        NOW,
+        {"assurance": "passkey"},
+        decide_within=WINDOW,
+    )
     ledger.transition("r1", ProposalState.EXECUTED, NOW, {"paypal_refund_id": "RF-1"})
     assert ledger.state_of("r1") is ProposalState.EXECUTED
     assert ledger.verify_chain() == 3
@@ -204,6 +211,41 @@ def test_transitions_outside_the_lifecycle_are_refused(
     decide(ledger, refund("r1", start_amount))  # executing, or denied
     with pytest.raises(FailClosedError):
         ledger.transition("r1", target, NOW)
+
+
+# Deadline edge cases: approve one second before, exactly at and after the
+# deadline; decline after it; a caller that gives no deadline.
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("after", "allowed"), [(599, True), (600, False), (601, False)]
+)
+def test_an_approval_is_accepted_only_before_the_deadline(
+    ledger: Ledger, after: int, allowed: bool
+) -> None:
+    decide(ledger, refund("r1", "60.00"))  # waiting for approval
+    at = NOW + timedelta(seconds=after)
+    if allowed:
+        ledger.transition("r1", ProposalState.EXECUTING, at, decide_within=WINDOW)
+        assert ledger.state_of("r1") is ProposalState.EXECUTING
+        return
+    with pytest.raises(FailClosedError):
+        ledger.transition("r1", ProposalState.EXECUTING, at, decide_within=WINDOW)
+    assert ledger.state_of("r1") is ProposalState.PENDING_APPROVAL
+
+
+@pytest.mark.edge
+def test_an_approval_without_a_deadline_is_refused(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    with pytest.raises(FailClosedError):
+        ledger.transition("r1", ProposalState.EXECUTING, NOW)
+    assert ledger.state_of("r1") is ProposalState.PENDING_APPROVAL
+
+
+@pytest.mark.edge
+def test_a_decline_after_the_deadline_is_still_accepted(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    ledger.transition("r1", ProposalState.DENIED, NOW + timedelta(seconds=WINDOW + 1))
+    assert ledger.state_of("r1") is ProposalState.DENIED
 
 
 def test_unknown_request_cannot_transition(ledger: Ledger) -> None:
@@ -251,7 +293,7 @@ def _db(tmp_path: Path) -> sqlite3.Connection:
 def test_untouched_chain_verifies(ledger: Ledger) -> None:
     _seed(ledger)
     assert ledger.verify_chain() == 3
-    assert len(ledger.head_hash()) == 64
+    assert len(ledger.head()["entry_hash"]) == 64
 
 
 def test_editing_one_row_is_detected(ledger: Ledger, tmp_path: Path) -> None:
@@ -270,6 +312,89 @@ def test_deleting_a_row_is_detected(ledger: Ledger, tmp_path: Path) -> None:
         conn.execute("DELETE FROM audit WHERE seq = 2")
     with pytest.raises(AuditIntegrityError):
         ledger.verify_chain()
+
+
+# Checking one request: its own entries always, the chain only since the last
+# point already checked (re-checking that point itself), never the whole chain.
+def _count_checks(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    checked: list[int] = []
+    real = ledger._verify_entry
+
+    def counting(row: sqlite3.Row, prev: str) -> None:
+        checked.append(int(row["seq"]))
+        real(row, prev)
+
+    monkeypatch.setattr(ledger, "_verify_entry", counting)
+    return checked
+
+
+@pytest.mark.edge
+def test_checking_one_request_reads_its_entries_and_only_new_ones(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(ledger)  # three requests, one entry each, in order
+    checked = _count_checks(ledger, monkeypatch)
+    ledger.verify_request("r1")
+    assert sorted(set(checked)) == [1, 2, 3]  # first time: up to the newest entry
+    checked.clear()
+    ledger.verify_request("r1")
+    assert sorted(set(checked)) == [2, 3]  # its own entry, and the checked point
+    decide(ledger, refund("r3", "10.00", "ORD-3"), evidence("ORD-3", "500.00"))
+    checked.clear()
+    ledger.verify_request("r1")
+    assert sorted(set(checked)) == [2, 3, 4]  # plus the one new entry
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "UPDATE audit SET body = replace(body, '60.00', '6.00') WHERE seq = 2",
+        "DELETE FROM audit WHERE request_id = 'r1'",
+        "UPDATE proposals SET amount = '6.00' WHERE request_id = 'r1'",
+        "UPDATE audit SET body = replace(body, '300.00', '3.00') WHERE seq = 3",
+    ],
+    ids=["own-entry", "own-entries-deleted", "own-row", "checked-point"],
+)
+def test_an_edit_this_request_relies_on_is_caught_after_a_check(
+    ledger: Ledger, tmp_path: Path, tamper: str
+) -> None:
+    _seed(ledger)
+    ledger.verify_request("r1")  # everything up to entry 3 is now checked
+    with _db(tmp_path) as conn:
+        conn.execute(tamper)
+    with pytest.raises(AuditIntegrityError):
+        ledger.verify_request("r1")
+
+
+@pytest.mark.edge
+def test_a_new_entry_edited_after_the_check_is_caught(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    _seed(ledger)
+    ledger.verify_request("r1")
+    decide(ledger, refund("r3", "10.00", "ORD-3"), evidence("ORD-3", "500.00"))
+    with _db(tmp_path) as conn:
+        conn.execute(
+            "UPDATE audit SET body = replace(body, '10.00', '1.00') WHERE seq = 4"
+        )
+    with pytest.raises(AuditIntegrityError):
+        ledger.verify_request("r1")
+
+
+@pytest.mark.edge
+def test_an_older_edit_to_another_request_is_left_to_the_full_check(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    _seed(ledger)
+    ledger.verify_request("r2")
+    with _db(tmp_path) as conn:
+        conn.execute(
+            "UPDATE audit SET body = replace(body, '10.00', '1.00') WHERE seq = 1"
+        )
+    ledger.verify_request("r2")  # its own record still checks out
+    with pytest.raises(AuditIntegrityError):
+        ledger.verify_records()  # the scheduled full check finds it
 
 
 def test_rewriting_the_whole_chain_without_the_key_is_detected(
@@ -343,7 +468,7 @@ def test_known_payee_and_duplicate_payout_come_from_history(ledger: Ledger) -> N
     )
     first = ledger.decide(payout, None, Signals(), SCREEN, NOW)
     assert first.result.rule_id == "R8"  # new payee escalates
-    ledger.transition("p1", ProposalState.EXECUTING, NOW)
+    ledger.transition("p1", ProposalState.EXECUTING, NOW, decide_within=WINDOW)
     ledger.transition("p1", ProposalState.EXECUTED, NOW)
     repeat = Proposal(**{**_fields(payout), "request_id": "p2"})
     duplicate = ledger.decide(repeat, None, Signals(), SCREEN, NOW)
@@ -370,3 +495,90 @@ def test_request_ids_paypal_would_reject_are_never_stored(
     assert recorded.result.decision is Decision.DENY
     assert recorded.state is None
     assert ledger.verify_chain() == 0
+
+
+# --- the emergency stop ------------------------------------------------------------
+@pytest.mark.edge
+def test_stopping_refunds_is_recorded_once_and_survives_a_restart(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    assert ledger.refunds_stopped() is False
+    assert ledger.set_refunds_stopped(True, "Vikas", NOW) is True
+    assert ledger.set_refunds_stopped(True, "Vikas", NOW) is False  # already stopped
+    reopened = Ledger(tmp_path / "ledger.db", SECRET, policy(), ACCOUNT)
+    assert reopened.refunds_stopped() is True
+    events = [e["event"] for e in ledger.events("control:refunds")]
+    assert events == ["refunds_stopped"]
+
+
+@pytest.mark.edge
+def test_resuming_when_not_stopped_records_nothing(ledger: Ledger) -> None:
+    assert ledger.set_refunds_stopped(False, "Vikas", NOW) is False
+    assert ledger.events("control:refunds") == []
+
+
+@pytest.mark.edge
+def test_a_stopped_ledger_denies_even_a_clean_small_refund(ledger: Ledger) -> None:
+    ledger.set_refunds_stopped(True, "Vikas", NOW)
+    recorded = decide(ledger, refund("r1", "5.00"))
+    assert recorded.result.decision is Decision.DENY
+    assert recorded.result.rule_id == "R16"
+
+
+@pytest.mark.edge
+def test_turning_refunds_back_on_by_editing_the_database_is_detected(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    ledger.set_refunds_stopped(True, "Vikas", NOW)
+    with sqlite3.connect(tmp_path / "ledger.db") as db:
+        db.execute("UPDATE controls SET value = 'no' WHERE name = 'refunds_stopped'")
+    with pytest.raises(AuditIntegrityError):
+        ledger.verify_records()
+
+
+# --- anchoring the chain head somewhere we don't control ---------------------------
+@pytest.mark.edge
+def test_the_chain_matches_a_head_published_earlier(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "5.00"))
+    head = ledger.head()
+    decide(ledger, refund("r2", "6.00"))
+    assert ledger.verify_against_head(head["seq"], head["entry_hash"]) > head["seq"]
+
+
+@pytest.mark.edge
+def test_a_full_rewrite_with_the_key_is_caught_by_a_published_head(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    decide(ledger, refund("r1", "5.00"))
+    published = ledger.head()
+    # someone with the database and the audit key rebuilds a clean-looking chain
+    with sqlite3.connect(tmp_path / "ledger.db") as db:
+        db.execute("DELETE FROM audit")
+    with ledger._transaction() as conn:
+        for n in range(published["seq"] + 1):
+            ledger.append_event(conn, f"fake-{n}", "decided", {"n": n}, NOW)
+    assert ledger.verify_chain() > 0  # the rewritten chain is internally valid
+    with pytest.raises(AuditIntegrityError):
+        ledger.verify_against_head(published["seq"], published["entry_hash"])
+
+
+@pytest.mark.edge
+def test_a_chain_shorter_than_the_published_head_is_caught(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "5.00"))
+    head = ledger.head()
+    with pytest.raises(AuditIntegrityError):
+        ledger.verify_against_head(head["seq"] + 5, head["entry_hash"])
+
+
+def test_an_empty_chain_has_a_genesis_head(ledger: Ledger) -> None:
+    assert ledger.head() == {"seq": 0, "entry_hash": "0" * 64, "created_at": ""}
+
+
+@pytest.mark.edge
+def test_nothing_moves_into_sending_while_refunds_are_stopped(ledger: Ledger) -> None:
+    recorded = decide(ledger, refund("r1", "30.00"))
+    assert recorded.state is ProposalState.PENDING_APPROVAL
+    ledger.set_refunds_stopped(True, "Vikas", NOW)
+    with pytest.raises(FailClosedError):
+        ledger.transition("r1", ProposalState.EXECUTING, NOW, decide_within=WINDOW)
+    assert ledger.state_of("r1") is ProposalState.PENDING_APPROVAL

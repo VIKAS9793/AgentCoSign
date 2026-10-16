@@ -37,7 +37,7 @@ def hours_until(moment: datetime, now: datetime) -> int:
 
 
 def _within(hours: int) -> str:
-    return "within 1 hour" if hours == 1 else f"within {hours} hours"
+    return f"within {hours} hour" + ("" if hours == 1 else "s")
 
 
 def paused(name: str | None, order: str, amount: str, hours: int) -> str:
@@ -88,6 +88,22 @@ def failed_late(order: str) -> str:
     return (
         f"We're sorry, your refund for order {order} didn't go through on PayPal's "
         "side, so no money has moved yet. Our team has been told and will be in touch."
+    )
+
+
+def expired(order: str) -> str:
+    """Nobody decided in time, so nothing was sent; it can be asked again."""
+    return (
+        f"Your refund request for order {order} wasn't confirmed in time, so nothing "
+        "was sent. Reply here and we'll look at it again."
+    )
+
+
+def stopped(order: str) -> str:
+    """Refunds are stopped for now; this is not a final answer."""
+    return (
+        f"We can't make refunds right now, so nothing was sent for order {order}. "
+        "Reply here and we'll look at it again."
     )
 
 

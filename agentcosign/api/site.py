@@ -5,6 +5,8 @@ policy forbids third-party scripts, so this one page gets its own policy: script
 only from the pinned host plus a per-response nonce for the inline start-up code.
 """
 
+import hashlib
+import re
 import secrets
 from pathlib import Path
 
@@ -18,6 +20,12 @@ SWAGGER_VERSION = "5.17.14"
 SWAGGER_CDN = f"https://cdn.jsdelivr.net/npm/swagger-ui-dist@{SWAGGER_VERSION}"
 CDN_HOST = "https://cdn.jsdelivr.net"
 ASSET_CACHE = "public, max-age=300"
+# a versioned path never changes content, so it may be kept for a year
+VERSIONED_CACHE = "public, max-age=31536000, immutable"
+ASSET_NAME = re.compile(r"^[\w-]+\.(js|css)$")
+BUILD_FILES = ("approve.html", "approve.js", "approve.css")
+ASSET_LINK = re.compile(r'"/assets/([\w.-]+)"')
+VERSION_CHARS = 12
 
 
 def _docs_policy(nonce: str) -> str:
@@ -30,27 +38,56 @@ def _docs_policy(nonce: str) -> str:
     )
 
 
-def _page(name: str, cache: str) -> FileResponse:
-    return FileResponse(
-        WEB_DIR / name,
-        media_type="text/html; charset=utf-8",
-        headers={"Cache-Control": cache},
+def _digest(name: str) -> str:
+    return hashlib.sha256((WEB_DIR / name).read_bytes()).hexdigest()[:VERSION_CHARS]
+
+
+def site_build() -> str:
+    """Identifies the merchant app as served now, so an open tab can tell that
+    the server was updated underneath it."""
+    joined = b"".join((WEB_DIR / name).read_bytes() for name in BUILD_FILES)
+    return hashlib.sha256(joined).hexdigest()[:VERSION_CHARS]
+
+
+def _version(match: re.Match[str]) -> str:
+    """Link an asset by a path that contains its hash, so a fresh page can never
+    be paired with a stale cached script or style after a release."""
+    name = match.group(1)
+    return f'"/static/{_digest(name)}/{name}"'
+
+
+def _page(name: str, cache: str) -> HTMLResponse:
+    html = ASSET_LINK.sub(_version, (WEB_DIR / name).read_text(encoding="utf-8"))
+    html = html.replace(
+        '<meta name="build" content="">',
+        f'<meta name="build" content="{site_build()}">',
     )
+    return HTMLResponse(html, headers={"Cache-Control": cache})
 
 
 def _register_pages(app: FastAPI) -> None:
     """Static assets, the landing page and the approver page."""
     if not (WEB_DIR / "index.html").is_file():
         return
+
+    @app.get("/static/{digest}/{name}", include_in_schema=False)
+    async def versioned_asset(digest: str, name: str) -> Response:
+        """A script or style at a path carrying its hash; any other hash is a 404,
+        so an old link never receives today's file under a year-long cache."""
+        path = WEB_DIR / name
+        if not ASSET_NAME.match(name) or not path.is_file() or digest != _digest(name):
+            return Response(status_code=404, headers={"Cache-Control": "no-store"})
+        return FileResponse(path, headers={"Cache-Control": VERSIONED_CACHE})
+
     app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
 
     @app.get("/", include_in_schema=False)
-    async def landing_page() -> FileResponse:
+    async def landing_page() -> HTMLResponse:
         """Landing page: what this is, the live status and where to go next."""
         return _page("index.html", "no-cache")
 
     @app.get("/approve", include_in_schema=False)
-    async def approver_page() -> FileResponse:
+    async def approver_page() -> HTMLResponse:
         """The approver's page: enrol a passkey, sign in, approve or decline."""
         return _page("approve.html", "no-store")
 

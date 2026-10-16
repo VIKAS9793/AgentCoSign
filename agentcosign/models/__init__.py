@@ -1,8 +1,6 @@
 """Domain models module."""
 
 from agentcosign.models.domain import (
-    ApprovalStatus,
-    AuditEntry,
     Decision,
     PolicyResult,
     ToolAction,
@@ -16,8 +14,6 @@ from agentcosign.models.policy import (
 )
 
 __all__ = [
-    "ApprovalStatus",
-    "AuditEntry",
     "Decision",
     "LedgerContext",
     "OrderEvidence",

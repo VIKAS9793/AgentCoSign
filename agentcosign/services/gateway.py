@@ -23,37 +23,74 @@ import hashlib
 import hmac
 import json
 import logging
-import secrets
-from collections.abc import Callable
+import sqlite3
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from functools import partial
 from typing import Any
 
 from agentcosign.clients.paypal import PayPalClient
-from agentcosign.core.config import PolicySettings, ScreeningSettings
-from agentcosign.core.exceptions import FailClosedError, PayPalClientError
+from agentcosign.core.config import (
+    ApprovalSettings,
+    AuditSettings,
+    DisplaySettings,
+    PolicySettings,
+    ReconciliationSettings,
+    ScreeningSettings,
+)
+from agentcosign.core.exceptions import (
+    AuditIntegrityError,
+    ConfigurationError,
+    FailClosedError,
+    PayPalClientError,
+)
 from agentcosign.models.domain import Decision, ToolAction
 from agentcosign.models.policy import OrderEvidence, Proposal, ScreeningVerdict, Signals
 from agentcosign.services import customer_copy
 from agentcosign.services.approval_view import (
+    RECENT_DONE,
+    SECTIONS,
     UNKNOWN_NAME,
     business_reasons,
+    checked_time,
     decide_by,
+    display_name,
+    history_events,
     money_view,
+    order_ending,
     order_facts,
+    paypal_checked,
+    placement,
+    read_mark,
     safety_check,
-    unavailable_facts,
+    scan_note,
+    short_flag,
+    waiting_note,
 )
 from agentcosign.services.evidence import fetch_evidence
 from agentcosign.services.executor import execute
-from agentcosign.services.ledger import Ledger, ProposalState
+from agentcosign.services.ledger import CONTROL_REQUEST, Ledger, ProposalState
+from agentcosign.services.order_reads import OrderReads, Read
 from agentcosign.services.passkeys import PasskeyRegistry
+from agentcosign.services.policy_engine import VELOCITY_WINDOW
+from agentcosign.services.reconciliation import Report, compare
 
-SESSION_SECONDS = 600
-ENROLMENT_LINK_SECONDS = 600
 # longer than one PayPal call can take, so a retry never overlaps a live attempt
 RETRY_QUIET_SECONDS = 60
 VIEW_REQUEST = "approver-session"
+CONTROL_INTENTS = ("stop", "resume")
+CONTROL_DIGEST = hashlib.sha256(b"stop or resume all refunds").hexdigest()
+RULE_STOPPED = "R16"
+SETTING_KEYS = (
+    "auto_limit",
+    "max_limit",
+    "daily_cap",
+    "repeat_limit",
+    "decide_minutes",
+    "window_hours",
+)
 VIEW_DIGEST = hashlib.sha256(b"view pending approvals").hexdigest()
 
 
@@ -106,6 +143,60 @@ def token_is_valid(secret: bytes, purpose: str, token: str, now: datetime) -> bo
     return fresh and hmac.compare_digest(parts[2], _sign(secret, purpose, body))
 
 
+PASSKEY_CONTROL = "control:passkeys"
+WEBHOOK_HEADERS = (
+    "paypal-auth-algo",
+    "paypal-cert-url",
+    "paypal-transmission-id",
+    "paypal-transmission-sig",
+    "paypal-transmission-time",
+)
+# events that can change what is left to refund or whether a refund finished
+REFUND_EVENTS = frozenset(
+    {"PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED", "PAYMENT.REFUND.FAILED"}
+)
+DISPUTE_EVENTS = frozenset(
+    {
+        "CUSTOMER.DISPUTE.CREATED",
+        "CUSTOMER.DISPUTE.UPDATED",
+        "CUSTOMER.DISPUTE.RESOLVED",
+    }
+)
+
+
+def _reconciliation_view(
+    last_run: Mapping[str, Any] | None, lookback_days: int
+) -> dict[str, str]:
+    """The last comparison with PayPal for the home screen; empty if never run."""
+    if last_run is None:
+        return {}
+    return {
+        "at": str(last_run["at"]),
+        "breaks": str(last_run.get("breaks", 0)),
+        "outside": str(last_run.get("outside", 0)),
+        "unchecked": str(last_run.get("unchecked", 0)),
+        "lookback_days": str(lookback_days),
+    }
+
+
+def revoke_approver(
+    passkeys: PasskeyRegistry, ledger: Ledger, approver: str, now: datetime
+) -> int:
+    """Revoke an approver's passkeys and record it in the chain atomically.
+
+    Sessions opened with those passkeys stop working on their next request.
+    """
+    if passkeys.path != ledger.path:
+        raise FailClosedError("passkeys and ledger must share one database")
+
+    def record(conn: sqlite3.Connection, count: int) -> None:
+        """Write the revocation to the chain in the revoke's own transaction."""
+        body = {"approver": approver, "count": count}
+        ledger.append_event(conn, PASSKEY_CONTROL, "passkey_revoked", body, now)
+
+    return passkeys.revoke(approver, now, record)
+
+
 class Gateway:
     """Coordinates evidence, decision, approval and execution."""
 
@@ -118,7 +209,11 @@ class Gateway:
         policy: PolicySettings,
         screening: ScreeningSettings,
         secret: bytes,
-        approval_ttl_seconds: int,
+        approval: ApprovalSettings,
+        reconciliation: ReconciliationSettings,
+        audit: AuditSettings,
+        display: DisplaySettings,
+        webhook_id: str = "",
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._ledger = ledger
@@ -127,7 +222,21 @@ class Gateway:
         self._policy = policy
         self._screening = screening
         self._secret = secret
-        self._ttl = approval_ttl_seconds
+        self._ttl = approval.ttl_seconds
+        self._session_seconds = approval.session_seconds
+        self._reconciliation = reconciliation
+        self._full_check_every = timedelta(hours=audit.full_check_hours)
+        self._last_full_check: datetime | None = None
+        # false once the scheduled full check finds a change to saved history
+        self._records_ok = True
+        # display reads follow this gateway's clock, including when tests move it
+        self._reads = OrderReads(
+            paypal,
+            lambda: self._clock(),
+            max_parallel=display.max_parallel_reads,
+            reuse_seconds=display.reuse_seconds,
+        )
+        self._webhook_id = webhook_id
         self._clock = clock
 
     # ------------------------------------------------------------- proposals
@@ -170,6 +279,10 @@ class Gateway:
         )
         if result.decision is Decision.PAUSE and result.release_at is not None:
             name = await self._first_name(proposal.order_id)
+            if not recorded.replayed:
+                await asyncio.to_thread(
+                    self._ledger.record_greeting, proposal.request_id, name is not None
+                )
             hours = customer_copy.hours_until(result.release_at, now)
             outcome = replace(
                 outcome,
@@ -223,6 +336,8 @@ class Gateway:
         """
         now = self._clock()
         released: list[str] = []
+        if await asyncio.to_thread(self._ledger.refunds_stopped):
+            return released  # on-hold requests wait until refunds are back on
         for request_id in await asyncio.to_thread(self._ledger.releases_due, now):
             loaded = await asyncio.to_thread(self._ledger.load, request_id)
             if loaded is None:
@@ -241,10 +356,10 @@ class Gateway:
                     self._screening,
                     now,
                 )
-            except FailClosedError:
-                # declined (or otherwise moved on) since the list was read: the
-                # merchant's decision stands, and the other releases continue
-                logger.info("release skipped, no longer paused: %s", request_id)
+            except FailClosedError as exc:
+                # declined, moved on or refunds stopped since the list was read:
+                # the request keeps its state and the other releases continue
+                logger.info("release skipped for %s: %s", request_id, exc.message)
                 continue
             if recorded.result.decision is Decision.ALLOW:
                 await execute(
@@ -334,6 +449,11 @@ class Gateway:
             case ProposalState.EXECUTED:
                 name = await self._first_name(order)
                 return customer_copy.sent(name, order, amount)
+        if state is ProposalState.EXPIRED:
+            return customer_copy.expired(order)
+        rule = await asyncio.to_thread(self._ledger.rule_of, request_id)
+        if state is ProposalState.DENIED and rule == RULE_STOPPED:
+            return customer_copy.stopped(order)
         paypal = await asyncio.to_thread(self._ledger.paypal_status, request_id)
         if state is ProposalState.FAILED and paypal in ("FAILED", "CANCELLED"):
             return customer_copy.failed_late(order)
@@ -383,27 +503,30 @@ class Gateway:
             VIEW_REQUEST, "view", VIEW_DIGEST, self._clock()
         )
 
-    def open_session(self, credential: dict[str, Any]) -> str:
-        """Verify the approver's passkey and issue a short-lived session token."""
+    def open_session(self, credential: dict[str, Any]) -> tuple[str, str]:
+        """Verify the approver's passkey; return a session token and their name."""
         now = self._clock()
         approver = self._passkeys.verify_approval(
             VIEW_REQUEST, "view", VIEW_DIGEST, credential, now
         )
-        return self._token(
-            "approver-session", approver.credential_digest, SESSION_SECONDS
+        token = self._token(
+            "approver-session", approver.credential_digest, self._session_seconds
         )
+        return token, display_name(approver.name)
+
+    def session_minutes(self) -> int:
+        """How long a signed-in phone stays open, for the sign-out message."""
+        return self._session_seconds // 60
+
+    def account_ending(self) -> str:
+        """The last four characters of the PayPal merchant account in use."""
+        return self._ledger.account_id[-4:]
 
     def session_is_valid(self, token: str) -> bool:
-        """True for an unexpired, untampered approver session token."""
-        return self._token_is_valid("approver-session", token)
-
-    def enrolment_link_token(self) -> str:
-        """A short-lived token that lets one phone enrol an approver passkey.
-
-        Issued on the operator's own machine, so the operator key never has to be
-        typed into the phone.
-        """
-        return self._token("enrolment", secrets.token_hex(8), ENROLMENT_LINK_SECONDS)
+        """True for an unexpired, untampered session whose passkey is still active."""
+        if not self._token_is_valid("approver-session", token):
+            return False
+        return self._passkeys.is_active(token.split(".")[0])
 
     def enrolment_token_is_valid(self, token: str) -> bool:
         """True for an unexpired, untampered enrolment link token."""
@@ -419,36 +542,43 @@ class Gateway:
         """Everything the merchant should see: requests waiting for them, paused
         refunds, and refunds still waiting for PayPal. Customer names are read
         live from PayPal and never stored."""
+        now = self._clock()
+        waiting = await asyncio.to_thread(self._ledger.pending_approvals)
+        paused = await asyncio.to_thread(self._ledger.paused, now)
+        late = await asyncio.to_thread(self._ledger.late_failures, now)
+        reads = await self._display_reads(
+            item["order_id"] for item in [*waiting, *paused, *late]
+        )
         views: list[dict[str, str | list[str]]] = []
-        views += await self._waiting_views()
-        views += await self._paused_views()
+        views += await self._waiting_views(waiting, reads)
+        views += self._paused_views(paused, reads)
         views += await self._sending_views()
-        views += await self._late_failure_views()
+        views += self._late_failure_views(late, reads)
         return views
 
-    async def _late_failure_views(self) -> list[dict[str, str | list[str]]]:
+    async def _display_reads(self, order_ids: Iterable[str]) -> dict[str, Read]:
+        """PayPal's facts for the screens: each order once, a few at a time, and
+        reused briefly while none of our records changed. Never used to decide."""
+        version = await asyncio.to_thread(self._ledger.version)
+        return await self._reads.read_many(order_ids, version)
+
+    def _late_failure_views(
+        self, items: list[dict[str, str]], reads: dict[str, Read]
+    ) -> list[dict[str, str | list[str]]]:
         views: list[dict[str, str | list[str]]] = []
-        for item in await asyncio.to_thread(self._ledger.late_failures, self._clock()):
-            facts = await self._live_facts(item["order_id"])
+        for item in items:
+            read = reads[item["order_id"]]
             views.append(
                 {
                     **self._basics(item, "failed_late"),
-                    "customer": facts["customer"],
+                    **read_mark(read.facts, read.at),
+                    "customer": read.facts["customer"],
                     "failed_at": item["updated_at"],
                 }
             )
         return views
 
-    async def _live_facts(self, order_id: str) -> dict[str, str]:
-        if not order_id:
-            return unavailable_facts()
-        try:
-            return order_facts(await self._paypal.get_order(order_id))
-        except PayPalClientError:
-            return unavailable_facts()  # the card still shows the order and amount
-
-    @staticmethod
-    def _basics(item: dict[str, str], status: str) -> dict[str, str | list[str]]:
+    def _basics(self, item: dict[str, str], status: str) -> dict[str, str | list[str]]:
         return {
             "status": status,
             "request_id": item["request_id"],
@@ -456,43 +586,314 @@ class Gateway:
             "amount": item["amount"],
             "currency": item["currency"],
             "order_id": item["order_id"],
+            "order_ending": order_ending(item["order_id"]),
+            # filled in only by cards whose facts were really read from PayPal
+            "paypal_read": "",
+            "checked_at": "",
         }
 
-    async def _waiting_views(self) -> list[dict[str, str | list[str]]]:
+    async def _waiting_views(
+        self, items: list[dict[str, str]], reads: dict[str, Read]
+    ) -> list[dict[str, str | list[str]]]:
         views: list[dict[str, str | list[str]]] = []
-        for item in await asyncio.to_thread(self._ledger.pending_approvals):
-            facts = await self._live_facts(item["order_id"])
+        for item in items:
+            read = reads[item["order_id"]]
+            facts = read.facts
             triggered = json.loads(item["triggered"] or "[]")
+            waiting = await asyncio.to_thread(
+                self._ledger.reserved_on_order, item["order_id"], item["request_id"]
+            )
             views.append(
                 {
                     **self._basics(item, "waiting"),
+                    **read_mark(facts, read.at),
                     "reasons": business_reasons(triggered, self._policy),
                     "safety_check": safety_check(triggered),
-                    **money_view(facts, item["amount"]),
+                    "scan_note": scan_note(triggered, self._policy),
+                    "flag": short_flag(triggered, self._policy),
+                    **money_view(facts, item["amount"], waiting),
                     "asked_at": item["created_at"],
                     "decide_by": decide_by(item["updated_at"], self._ttl),
+                    **await self._refund_split(item["order_id"], facts),
                     **facts,
                 }
             )
         return views
 
-    async def _paused_views(self) -> list[dict[str, str | list[str]]]:
+    def _paused_views(
+        self, items: list[dict[str, str]], reads: dict[str, Read]
+    ) -> list[dict[str, str | list[str]]]:
         limit = self._policy.velocity_max_refunds_24h
         views: list[dict[str, str | list[str]]] = []
-        for item in await asyncio.to_thread(self._ledger.paused, self._clock()):
-            facts = await self._live_facts(item["order_id"])
+        for item in items:
+            read = reads[item["order_id"]]
+            facts = read.facts
             many = int(item["requests_24h"]) >= 2 * limit
             views.append(
                 {
                     **self._basics(item, "paused"),
+                    **read_mark(facts, read.at),
                     "customer": facts["customer"],
                     "release_at": item["release_at"],
                     # this request would be the next refund after those counted
                     "count_in_window": str(int(item["refunds_24h"]) + 1),
+                    "asked_at": item["created_at"],
+                    **self._paused_line(item, facts),
                     "many_requests": "yes" if many else "no",
+                    "rechecking": "yes"
+                    if item["release_at"] <= self._clock().isoformat()
+                    else "no",
                 }
             )
         return views
+
+    def _paused_line(
+        self, item: dict[str, str], facts: dict[str, str]
+    ) -> dict[str, str]:
+        """The line the customer was given when the request was paused.
+
+        Only whether it greeted them by name was kept. A greeting without a name
+        is shown as given; a name PayPal cannot give now is left out and the line
+        is marked as not exact, rather than shown as if it were what they saw.
+        """
+        named = item.get("greeting_named", "")
+        live = customer_copy.first_name(facts["customer"], UNKNOWN_NAME)
+        name = live if named != "no" else None
+        exact = named == "no" or (named == "yes" and live is not None)
+        release = datetime.fromisoformat(item["release_at"])
+        asked = datetime.fromisoformat(item["created_at"])
+        hours = customer_copy.hours_until(release, asked)
+        return {
+            "customer_message": customer_copy.paused(
+                name, item["order_id"], item["amount"], hours
+            ),
+            "customer_message_exact": "yes" if exact else "no",
+        }
+
+    async def _refund_split(
+        self, order_id: str, facts: dict[str, str]
+    ) -> dict[str, str]:
+        """Refunds sent through this app versus refunded in PayPal directly."""
+        if not facts.get("paid"):
+            return {"refunded_in_app": "", "refunded_outside": ""}
+        in_app = await asyncio.to_thread(self._ledger.refunded_through_app, order_id)
+        outside = max(Decimal(facts["already_refunded"]) - in_app, Decimal("0"))
+        return {
+            "refunded_in_app": f"{in_app:.2f}",
+            "refunded_outside": f"{outside:.2f}",
+        }
+
+    async def summary(self) -> dict[str, str]:
+        """The merchant's day and their settings, for the home screen."""
+        day = await asyncio.to_thread(self._ledger.day_summary, self._clock())
+        policy = self._policy
+        return {
+            **day,
+            "account_ending": self.account_ending(),
+            "auto_limit": f"{policy.refund_auto_limit:.2f}",
+            "max_limit": f"{policy.refund_max_limit:.2f}",
+            "daily_cap": f"{policy.daily_outflow_cap:.2f}",
+            "repeat_limit": str(policy.velocity_max_refunds_24h),
+            "decide_minutes": str(self._ttl // 60),
+            "window_hours": str(int(VELOCITY_WINDOW.total_seconds() // 3600)),
+        }
+
+    async def done_today(
+        self, limit: int | None = None
+    ) -> list[dict[str, str | list[str]]]:
+        """Requests that ended in the last 24 hours, newest first, for the Done
+        section. Names are read from PayPal only for the requests returned."""
+        items = await asyncio.to_thread(self._ledger.recent_outcomes, self._clock())
+        items = items[:limit]
+        reads = await self._display_reads(item["order_id"] for item in items)
+        views: list[dict[str, str | list[str]]] = []
+        for item in items:
+            order = item["order_id"]
+            views.append(
+                {
+                    **self._basics(item, "done"),
+                    "outcome": item["state"],
+                    # sent means PayPal confirmed it; anything else is still processing
+                    "paypal_status": item.get("paypal_status", ""),
+                    "customer": reads[order].facts["customer"],
+                    "ended_at": item["updated_at"],
+                }
+            )
+        return views
+
+    async def done_page(self) -> dict[str, Any]:
+        """The latest ended requests and how many ended in all, so a capped list
+        is never presented as the whole day."""
+        items = await self.done_today()
+        total = await asyncio.to_thread(self._ledger.recent_count, self._clock())
+        return {"items": items, "total": str(total)}
+
+    async def history(self, request_id: str) -> dict[str, Any] | None:
+        """One request's record in owner words, and whether the record checks out."""
+        rows = await asyncio.to_thread(self._ledger.events, request_id)
+        if not rows:
+            return None
+        try:
+            await asyncio.to_thread(self._ledger.verify_request, request_id)
+            sealed = self._records_ok
+        except AuditIntegrityError:
+            sealed = False
+        first = rows[0]
+        return {
+            "request_id": request_id,
+            "amount": str(first.get("amount", "")),
+            "order_ending": order_ending(first.get("order_id")),
+            "events": history_events(rows),
+            "sealed": sealed,
+        }
+
+    async def handle_webhook(
+        self, headers: Mapping[str, str], event: Mapping[str, Any]
+    ) -> str:
+        """Verify a PayPal event with PayPal, record it once, then re-read PayPal.
+
+        The event body is never trusted for money facts: it only prompts fresh
+        reads, so a forged or stale event cannot change a decision.
+
+        Raises:
+            ConfigurationError: when no webhook id is configured.
+            FailClosedError: when headers are missing or PayPal does not verify it.
+            PayPalClientError: when PayPal cannot be reached to verify it.
+        """
+        if not self._webhook_id:
+            raise ConfigurationError("PayPal webhooks are not configured")
+        missing = [name for name in WEBHOOK_HEADERS if not headers.get(name)]
+        event_id, event_type = event.get("id"), event.get("event_type")
+        if missing or not isinstance(event_id, str) or not isinstance(event_type, str):
+            raise FailClosedError("the webhook is missing its signature or identity")
+        if not await self._paypal.verify_webhook(
+            headers, dict(event), self._webhook_id
+        ):
+            raise FailClosedError("PayPal did not verify this webhook")
+        if event_type not in REFUND_EVENTS | DISPUTE_EVENTS:
+            return "ignored"
+        resource = event.get("resource")
+        resource_id = (
+            str(resource.get("id", "")) if isinstance(resource, Mapping) else ""
+        )
+        recorded = await asyncio.to_thread(
+            self._ledger.record_webhook,
+            event_id,
+            event_type,
+            resource_id,
+            self._clock(),
+        )
+        if not recorded:
+            return "duplicate"
+        if event_type in REFUND_EVENTS:
+            await self.settle_pending()
+        return "accepted"
+
+    async def reconcile(self) -> Report:
+        """Compare every refund we sent with PayPal's records and record the run."""
+        now = self._clock()
+        since = now - timedelta(days=self._reconciliation.lookback_days)
+        sent, order_ids, known = await asyncio.to_thread(
+            self._ledger.reconciliation_inputs, since
+        )
+        orders: dict[str, Mapping[str, Any] | None] = {}
+        for order_id in order_ids:
+            try:
+                orders[order_id] = await self._paypal.get_order(order_id)
+            except PayPalClientError:
+                orders[order_id] = None  # reported as unchecked, never as clean
+        stale = timedelta(hours=self._reconciliation.stale_processing_hours)
+        report = compare(sent, orders, now, stale, since=since, known=known)
+        body: dict[str, Any] = {
+            **report.summary(),
+            "break_list": [
+                {"request_id": b.request_id, "kind": b.kind} for b in report.breaks
+            ],
+        }
+        await asyncio.to_thread(self._ledger.record_reconciliation, body, now)
+        if report.breaks:
+            logger.warning("reconciliation found %d breaks", len(report.breaks))
+        return report
+
+    async def reconcile_if_due(self) -> Report | None:
+        """Run reconciliation when the last run is older than the interval."""
+        last = await asyncio.to_thread(self._ledger.last_reconciliation)
+        interval = timedelta(hours=self._reconciliation.interval_hours)
+        if (
+            last is not None
+            and self._clock() - datetime.fromisoformat(str(last["at"])) < interval
+        ):
+            return None
+        return await self.reconcile()
+
+    async def check_records_if_due(self) -> bool | None:
+        """Check the whole saved record at most once per interval.
+
+        Returns None when not due, otherwise whether it checked out. A change
+        found here marks every request's history until the record checks out.
+        """
+        now = self._clock()
+        last = self._last_full_check
+        if last is not None and now - last < self._full_check_every:
+            return None
+        self._last_full_check = now
+        try:
+            await asyncio.to_thread(self._ledger.verify_records)
+        except AuditIntegrityError:
+            logger.error("the full record check found a change to saved history")
+            self._records_ok = False
+            return False
+        self._records_ok = True
+        return True
+
+    async def chain_head(self) -> dict[str, Any]:
+        """The latest chain entry, safe to publish: no amounts, names or ids."""
+        return await asyncio.to_thread(self._ledger.head)
+
+    def live_version(self) -> int:
+        """Grows with every recorded change; the phone re-reads when it moves."""
+        return self._ledger.version()
+
+    async def home(self, session_token: str) -> dict[str, Any]:
+        """Everything the merchant's home shows, decided here, not on the phone.
+
+        Each request carries its section and whether it can be sent; the phone
+        only formats. The check time is given only when PayPal was really read.
+        """
+        views = await self.pending()
+        day = await self.summary()
+        done = await self.done_today(limit=RECENT_DONE)
+        now = self._clock()
+        stopped = await asyncio.to_thread(self._ledger.refunds_stopped)
+        last_run = await asyncio.to_thread(self._ledger.last_reconciliation)
+        done_total = await asyncio.to_thread(self._ledger.recent_count, now)
+        sections: dict[str, list[dict[str, Any]]] = {name: [] for name in SECTIONS}
+        for view in views:
+            place = placement(view, now, stopped=stopped)
+            sections[place["section"]].append(
+                {**view, **place, "waiting_note": waiting_note(view)}
+            )
+        checked = paypal_checked(views)
+        subject = session_token.split(".")[0]
+        name = await asyncio.to_thread(self._passkeys.name_for, subject)
+        decidable = [str(i["decide_by"]) for i in sections["needs_decision"]]
+        return {
+            "server_now": now.isoformat(),
+            "refunds_stopped": "yes" if stopped else "no",
+            "reconciliation": _reconciliation_view(
+                last_run, self._reconciliation.lookback_days
+            ),
+            "paypal_checked": checked,
+            "checked_at": checked_time(views, checked),
+            "approver_display": display_name(name),
+            "account_ending": self.account_ending(),
+            "counts": {key: str(len(items)) for key, items in sections.items()},
+            "soonest_decide_by": min(decidable, default=""),
+            "sections": sections,
+            "done": {"recent": done, "total": str(done_total)},
+            "today": {k: v for k, v in day.items() if k not in SETTING_KEYS},
+            "settings": {k: day[k] for k in SETTING_KEYS},
+        }
 
     async def _sending_views(self) -> list[dict[str, str | list[str]]]:
         return [
@@ -537,10 +938,22 @@ class Gateway:
         declining_a_pause = state is ProposalState.PAUSED and intent == "reject"
         if state is not ProposalState.PENDING_APPROVAL and not declining_a_pause:
             raise FailClosedError("this request is not waiting for approval")
+        if intent == "approve" and self._ledger.refunds_stopped():
+            raise FailClosedError("refunds are stopped, so nothing can be approved")
+        if intent == "approve" and self._past_deadline(request_id):
+            raise FailClosedError("the time to decide this request has passed")
         digest = self._ledger.action_digest(request_id)
         if digest is None:
             raise FailClosedError("unknown request id")
         return digest
+
+    def _past_deadline(self, request_id: str) -> bool:
+        """True once the time to decide has run out, before any fingerprint."""
+        timing = self._ledger.timing(request_id)
+        if timing is None:
+            return True
+        deadline = datetime.fromisoformat(decide_by(timing[2], self._ttl))
+        return self._clock() >= deadline
 
     def approval_options(self, request_id: str, intent: str) -> str:
         """Passkey challenge bound to this exact pending action and intent."""
@@ -548,6 +961,39 @@ class Gateway:
         return self._passkeys.approval_options(
             request_id, intent, digest, self._clock()
         )
+
+    def control_options(self, intent: str) -> str:
+        """Passkey challenge to stop or resume all refunds."""
+        if intent not in CONTROL_INTENTS:
+            raise FailClosedError("unknown control")
+        return self._passkeys.approval_options(
+            CONTROL_REQUEST, intent, CONTROL_DIGEST, self._clock()
+        )
+
+    async def set_control(
+        self, intent: str, credential: dict[str, Any]
+    ) -> dict[str, str]:
+        """Stop or resume all refunds with a fingerprint signed for that intent.
+
+        A refund already with PayPal cannot be recalled; the answer says how
+        many are still finishing so the merchant is not told otherwise.
+        """
+        if intent not in CONTROL_INTENTS:
+            raise FailClosedError("unknown control")
+        now = self._clock()
+        approver = self._passkeys.verify_approval(
+            CONTROL_REQUEST, intent, CONTROL_DIGEST, credential, now
+        )
+        changed = await asyncio.to_thread(
+            self._ledger.set_refunds_stopped, intent == "stop", approver.name, now
+        )
+        sending = await asyncio.to_thread(self._ledger.sending)
+        stopped = await asyncio.to_thread(self._ledger.refunds_stopped)
+        return {
+            "refunds_stopped": "yes" if stopped else "no",
+            "changed": "yes" if changed else "no",
+            "still_sending": str(len(sending)),
+        }
 
     async def decide_approval(
         self, request_id: str, intent: str, credential: dict[str, Any]
@@ -567,7 +1013,11 @@ class Gateway:
             ProposalState.EXECUTING if intent == "approve" else ProposalState.DENIED
         )
         await asyncio.to_thread(
-            self._ledger.transition, request_id, target, now, detail
+            partial(self._ledger.transition, decide_within=self._ttl),
+            request_id,
+            target,
+            now,
+            detail,
         )
         loaded = await asyncio.to_thread(self._ledger.load, request_id)
         base = Outcome(
@@ -580,5 +1030,8 @@ class Gateway:
             triggered=(),
         )
         if intent != "approve" or loaded is None or loaded[1] is None:
+            # a decline can bring the customer back under the limit: re-decide
+            # their pauses now rather than on the next background pass
+            await self.release_due()
             return base
         return await self._run(loaded[0], loaded[1], base)

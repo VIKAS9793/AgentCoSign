@@ -147,3 +147,43 @@ def test_unknown_intent_is_refused(
 ) -> None:
     with pytest.raises(FailClosedError):
         registry.approval_options("r1", "execute", ACTION, NOW)
+
+
+# --- revoking a lost or replaced phone ---------------------------------------------
+@pytest.mark.edge
+def test_a_revoked_passkey_cannot_sign_even_with_options_issued_before(
+    registry: PasskeyRegistry, phone: SoftAuthenticator
+) -> None:
+    options = registry.approval_options("r1", "approve", ACTION, NOW)
+    assert registry.revoke("Vikas", NOW) == 1
+    with pytest.raises(FailClosedError):
+        registry.verify_approval("r1", "approve", ACTION, phone.sign(options), NOW)
+    assert not registry.has_passkeys()  # the last one gone: enrol again
+
+
+@pytest.mark.edge
+def test_revoking_an_unknown_name_changes_nothing(
+    registry: PasskeyRegistry, phone: SoftAuthenticator
+) -> None:
+    assert registry.revoke("Someone Else", NOW) == 0
+    assert registry.has_passkeys()
+
+
+@pytest.mark.edge
+def test_an_older_database_gains_revocation_without_losing_passkeys(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE passkeys (credential_id TEXT PRIMARY KEY, public_key TEXT "
+            "NOT NULL, sign_count INTEGER NOT NULL, approver TEXT NOT NULL, "
+            "created_at TEXT NOT NULL)"
+        )
+        db.execute("INSERT INTO passkeys VALUES ('id-1', 'key', 0, 'Vikas', 'now')")
+    registry = PasskeyRegistry(path, RP_ID, ORIGIN)
+    assert registry.has_passkeys()
+    assert registry.revoke("Vikas", NOW) == 1
+    assert not registry.has_passkeys()

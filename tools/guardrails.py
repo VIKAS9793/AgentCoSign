@@ -158,13 +158,13 @@ EVIDENCE_LEAK = re.compile(
 )
 ENV_SECRET_KEY = re.compile(r"(SECRET|PASSWORD|KEY|TOKEN)", re.IGNORECASE)
 ENV_PLACEHOLDER = re.compile(r"^(|changeme|<.*>|your[_-].*|xxx+|.*example.*|\.\.\.)$")
-RULE_ID = re.compile(r"\bR(1[0-5]|[1-9])\b")
+RULE_ID = re.compile(r"\bR([1-9][0-9]?)\b")
 
 # Comment hygiene: a comment explains the code in plain words. It never cites
 # internal documents, rule or decision numbers, tickets, versions or project history.
 META_REFERENCE = re.compile(
     r"\bADR[-\s]?\d+|\bPRD\b|\bSOP\b|\bRISK-\w+|\bG-P\d+|\bG[1-4]\b|\bP[0-2]\b"
-    r"|\bR(?:1[0-5]|[1-9])\b|\bS[1-9]\b|\bv\d+\.\d+\b|§\s*\d+"
+    r"|\bR[1-9][0-9]?\b|\bS[1-9]\b|\bv\d+\.\d+\b|§\s*\d+"
     r"|CLAUDE\.md|\bdocs/[\w./-]+|requires-human-signoff"
     r"|\b(?:section|invariant|rule)\s+\d+\b"
     r"|\b(?:bug\s?fix|bugfix|hotfix|fix|issue|ticket|finding|gap|item)\s*[#-]?\s*\d+\b"
@@ -231,10 +231,10 @@ TRAILER = re.compile(
 # New behaviour and fixes must name edge-case tests, not only success cases.
 EDGE_REQUIRED = re.compile(r"^(feat|fix)(\(|!|:)")
 # Edge-case tests may never be quietly removed: the count only goes up.
-EDGE_FLOOR = 40
+EDGE_FLOOR = 49
 EDGE_MARK = "@pytest.mark.edge"
 CONSTRAINT_ID = re.compile(
-    r"^(?:I(?:1[01]|[1-9])|R(?:1[0-5]|[1-9])|H(?:10|[1-9])|G(?:10|[1-9])"
+    r"^(?:I(?:1[01]|[1-9])|R[1-9][0-9]?|H(?:10|[1-9])|G(?:10|[1-9])"
     r"|G-P[1-8]|F-\d{2}|none)$"
 )
 EVIDENCE_NODE = re.compile(r"^(tests/[\w/]+\.py)::(test_\w+)$")
@@ -852,7 +852,7 @@ MERCHANT_SCREEN = ("approve.html", "approve.js", "approve.css")
 JS_LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
 HTML_TEXT = re.compile(r">([^<>]+)<")
 MERCHANT_JARGON = re.compile(
-    r"\bR\d{1,2}\b|(?i:\b(?:agent|approv\w*|reject\w*|passkey|ledger|escalat\w*|"
+    r"\bR\d{1,2}\b|(?i:\b(?:agent|reject\w*|passkey|ledger|escalat\w*|"
     r"webauthn|policy|rule|error|exception|payload|hash|undefined|null)\b)"
 )
 CONFIRMED_SUCCESS = 'paypal_status === "COMPLETED"'
@@ -891,7 +891,7 @@ def _check_merchant_words(root: Path, report: Report) -> None:
                 continue
             if MERCHANT_JARGON.search(copy):
                 report.add("merchant-jargon", f"{rel}:{number}")
-            if "Refund sent" in copy:
+            if "Refund sent" in copy or "refunded to" in copy:
                 window = "\n".join(lines[max(0, number - 4) : number])
                 if CONFIRMED_SUCCESS not in window:
                     report.add("success-without-paypal-confirmation", f"{rel}:{number}")
@@ -1157,12 +1157,118 @@ def check_comment_hygiene(root: Path, report: Report) -> None:
                 report.add("process-narration-in-comment", f"{rel}:{number}")
 
 
+# ------------------------------------------------- hard-coding and fake data
+
+PLACEHOLDER = re.compile(
+    r"\b(TODO|FIXME|XXX|TBD|HACK)\b|lorem ipsum|\[your [a-z ]+\]|"
+    r"\bexample\.(com|org|net)\b|\bacme\b|\bdummy\b",
+    re.IGNORECASE,
+)
+FAKE_DATA = re.compile(
+    r"\b(Jane|John) (Buyer|Doe)\b|\bTest Buyer\b|\b4111[ -]?1111[ -]?1111[ -]?1111\b|"
+    r"\b4[0-9]{15}\b|[\w.+-]+@[\w-]+\.(com|org|net|in|io)\b|\bORD-[0-9]+\b"
+)
+# "24 hours" and "24-hour" alike
+DURATION_IN_COPY = re.compile(
+    r"\b\d+[\s-]+(second|seconds|minute|minutes|hour|hours|day|days)\b",
+    re.IGNORECASE,
+)
+MONEY_IN_COPY = re.compile(r"\$\s?\d")
+BARE_NUMBER = re.compile(r"(?<![\w.$#-])\d{4,}(?![\w])")
+NAMED_CONSTANT = re.compile(r"^\s*var [A-Z][A-Z0-9_]* = ")
+JS_STRING = re.compile(r'"(?:[^"\\]|\\.)*"' + r"|'(?:[^'\\]|\\.)*'")
+CODE_SUFFIXES = {".py", ".js", ".html", ".css"}
+# Python modules whose string literals are words people read
+WORDING_MODULES = (
+    "services/customer_copy.py",
+    "services/approval_view.py",
+    "cli.py",
+)
+
+
+def _string_literals(text: str) -> list[tuple[int, str]]:
+    """Every plain string constant in Python source, with its line number."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    return [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+def _scan_lines(
+    rel: str, lines: list[str], pattern: re.Pattern[str], rule: str, report: Report
+) -> None:
+    for number, line in enumerate(lines, 1):
+        if pattern.search(line) and not PRAGMA.search(line):
+            report.add(rule, f"{rel}:{number}")
+
+
+def _check_script_numbers(rel: str, lines: list[str], report: Report) -> None:
+    """Bare numbers in the phone script must be named constants."""
+    inside_icons = False
+    for number, line in enumerate(lines, 1):
+        if "var ICONS = {" in line:
+            inside_icons = True
+        if inside_icons:
+            inside_icons = line.strip() != "};"
+            continue
+        if NAMED_CONSTANT.match(line) or PRAGMA.search(line):
+            continue
+        # numbers inside strings are words or addresses, checked by the copy rules
+        if BARE_NUMBER.search(JS_STRING.sub('""', line)):
+            report.add("bare-number-in-script", f"{rel}:{number}")
+
+
+def check_no_hardcoding(root: Path, report: Report) -> None:
+    """No placeholders, sample data, or values typed into words the server owns."""
+    package = root / PACKAGE
+    if not package.is_dir():
+        return
+    for path in sorted(p for p in package.rglob("*") if p.suffix in CODE_SUFFIXES):
+        rel = path.relative_to(root).as_posix()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        _scan_lines(rel, lines, PLACEHOLDER, "placeholder-in-code", report)
+        _scan_lines(rel, lines, FAKE_DATA, "fake-data-in-code", report)
+    web = package / "web"
+    for name in ("approve.html", "approve.js"):
+        path = web / name
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for number, copy in _merchant_copy(path, text):
+            if PRAGMA.search(lines[number - 1]):
+                continue
+            if DURATION_IN_COPY.search(copy):
+                report.add("duration-in-copy", f"{rel}:{number}")
+            if MONEY_IN_COPY.search(copy):
+                report.add("money-in-copy", f"{rel}:{number}")
+        if path.suffix == ".js":
+            _check_script_numbers(rel, lines, report)
+    for module in WORDING_MODULES:
+        path = package / module
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for number, value in _string_literals(text):
+            if DURATION_IN_COPY.search(value) and not PRAGMA.search(lines[number - 1]):
+                report.add("duration-in-copy", f"{rel}:{number}")
+
+
 REPO_CHECKS: tuple[Callable[[Path, Report], None], ...] = (
     check_comment_hygiene,
     check_tracked_files,
     check_config_pins,
     check_web_assets,
     check_merchant_screen,
+    check_no_hardcoding,
     check_edge_floor,
     check_readme_facts,
     check_public_docs,
@@ -1264,6 +1370,16 @@ def check_traceability(
     problems += [
         f"Constraints: unknown id {i!r}" for i in ids if not CONSTRAINT_ID.match(i)
     ]
+    # a rule id must be one the policy engine actually defines
+    rule_ids = [i for i in ids if i.startswith("R") and i[1:].isdigit()]
+    engine = read(ENGINE_MODULE)
+    if rule_ids and engine is None:
+        problems.append("Constraints: rule ids cannot be checked without the engine")
+    elif engine is not None:
+        defined = {f"R{n}" for n in RULE_ID.findall(engine)}
+        problems += [
+            f"Constraints: no such rule {i!r}" for i in rule_ids if i not in defined
+        ]
     problems += _evidence_problems(found.get("Evidence", ""), read)
     if EDGE_REQUIRED.match(subject):
         edge = found.get("Edge cases", "")

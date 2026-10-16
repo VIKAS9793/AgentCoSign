@@ -1,14 +1,13 @@
 (function () {
   "use strict";
 
-  var CAPACITY_TEXT = {
-    public_replay: "The service is busy, so answers come from recordings.",
-    replay_only: "The service is paused, so answers come from recordings.",
-  };
-
   // Say exactly where refunds go in this mode; never claim live calls that
   // are not happening.
   function describe(health) {
+    var CAPACITY_TEXT = {
+      public_replay: "The service is busy, so answers come from recordings.",
+      replay_only: "The service is paused, so answers come from recordings.",
+    };
     var payments = health.paypal_execution === "sandbox"
       ? "Refunds go to the PayPal sandbox, with test money only."
       : "Refunds use recorded PayPal results. Nothing is sent to PayPal.";

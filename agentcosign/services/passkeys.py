@@ -11,10 +11,11 @@ Only public keys are stored. The private key never leaves the approver's device.
 """
 
 import hashlib
+import hmac
 import json
 import secrets
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -37,12 +38,12 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
-from agentcosign.core.exceptions import FailClosedError
+from agentcosign.core.exceptions import FailClosedError, SignatureError
 
 CHALLENGE_TTL_SECONDS = 120
 BUSY_TIMEOUT_SECONDS = 5
 APPROVER_NAME_MAX = 64
-INTENTS = frozenset({"approve", "reject", "view"})
+INTENTS = frozenset({"approve", "reject", "view", "stop", "resume"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS passkeys (
@@ -50,7 +51,8 @@ CREATE TABLE IF NOT EXISTS passkeys (
     public_key TEXT NOT NULL,
     sign_count INTEGER NOT NULL,
     approver TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
 );
 CREATE TABLE IF NOT EXISTS passkey_challenges (
     purpose TEXT PRIMARY KEY,
@@ -71,11 +73,18 @@ _Q_ADD_PASSKEY = (
     "created_at) VALUES (?, ?, ?, ?, ?)"
 )
 _Q_GET_PASSKEY = (
-    "SELECT public_key, sign_count, approver FROM passkeys WHERE credential_id = ?"
+    "SELECT public_key, sign_count, approver FROM passkeys "
+    "WHERE credential_id = ? AND revoked_at IS NULL"
 )
-_Q_ALL_IDS = "SELECT credential_id FROM passkeys"
+_Q_ALL_IDS = "SELECT credential_id FROM passkeys WHERE revoked_at IS NULL"
+_Q_NAMES = "SELECT credential_id, approver FROM passkeys WHERE revoked_at IS NULL"
+_Q_REVOKE = (
+    "UPDATE passkeys SET revoked_at = ? WHERE approver = ? AND revoked_at IS NULL"
+)
+_Q_COLUMNS = "PRAGMA table_info(passkeys)"
+_Q_ADD_REVOKED = "ALTER TABLE passkeys ADD COLUMN revoked_at TEXT"
 _Q_SET_COUNT = "UPDATE passkeys SET sign_count = ? WHERE credential_id = ?"
-_Q_COUNT = "SELECT COUNT(*) FROM passkeys"
+_Q_COUNT = "SELECT COUNT(*) FROM passkeys WHERE revoked_at IS NULL"
 
 _VERIFY_ERRORS = (WebAuthnException, ValueError, KeyError, TypeError)
 
@@ -112,6 +121,15 @@ class PasskeyRegistry:
         self._origin = origin
         with self._connection() as conn:
             conn.executescript(_SCHEMA)
+            columns = {row["name"] for row in conn.execute(_Q_COLUMNS).fetchall()}
+            if "revoked_at" not in columns:
+                # databases created before revocation existed gain the column
+                conn.execute(_Q_ADD_REVOKED)
+
+    @property
+    def path(self) -> str:
+        """The database file holding the passkeys."""
+        return self._path
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -137,9 +155,47 @@ class PasskeyRegistry:
             conn.execute(_Q_DROP_CHALLENGE, (purpose,))
             conn.execute("COMMIT")
         if row is None or row["expires_at"] < _iso(now):
-            raise FailClosedError("the passkey request expired or was already used")
+            raise SignatureError("the passkey request expired or was already used")
         value: str = row["challenge"]
         return value
+
+    def name_for(self, credential_digest: str) -> str:
+        """The enrolled name behind a passkey digest, or empty if it is gone."""
+        with self._connection() as conn:
+            rows = conn.execute(_Q_NAMES).fetchall()
+        for row in rows:
+            if hmac.compare_digest(_digest(row["credential_id"]), credential_digest):
+                return str(row["approver"])
+        return ""
+
+    def is_active(self, credential_digest: str) -> bool:
+        """True while the passkey behind a session is enrolled and not revoked."""
+        return bool(self.name_for(credential_digest))
+
+    def revoke(
+        self,
+        approver: str,
+        now: datetime,
+        record: Callable[[sqlite3.Connection, int], None] | None = None,
+    ) -> int:
+        """Revoke every active passkey of one approver; returns how many.
+
+        ``record`` runs inside the same transaction, so a revocation and its
+        audit entry are written together or not at all.
+        """
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            committed = False
+            try:
+                count = conn.execute(_Q_REVOKE, (_iso(now), approver)).rowcount
+                if count and record is not None:
+                    record(conn, count)
+                conn.execute("COMMIT")
+                committed = True
+            finally:
+                if not committed:
+                    conn.execute("ROLLBACK")
+        return int(count)
 
     def has_passkeys(self) -> bool:
         """True once at least one approver has enrolled."""
@@ -239,7 +295,7 @@ class PasskeyRegistry:
         with self._connection() as conn:
             row = conn.execute(_Q_GET_PASSKEY, (credential_id,)).fetchone()
         if row is None:
-            raise FailClosedError("this passkey is not enrolled")
+            raise SignatureError("this passkey is not enrolled")
         try:
             verified = verify_authentication_response(
                 credential=credential,
@@ -251,7 +307,7 @@ class PasskeyRegistry:
                 require_user_verification=True,
             )
         except _VERIFY_ERRORS as exc:
-            raise FailClosedError("the approval signature is not valid") from exc
+            raise SignatureError("the approval signature is not valid") from exc
         with self._connection() as conn:
             conn.execute(_Q_SET_COUNT, (verified.new_sign_count, credential_id))
         return Approver(

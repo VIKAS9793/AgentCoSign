@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -26,15 +25,6 @@ class ToolAction(StrEnum):
     PAYOUT = "payout"
 
 
-class ApprovalStatus(StrEnum):
-    """Status of human co-sign requests."""
-
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    EXPIRED = "expired"
-
-
 @dataclass(frozen=True)
 class PolicyResult:
     """Result of policy evaluation for a proposed action.
@@ -50,22 +40,3 @@ class PolicyResult:
     triggered_rules: tuple[str, ...] = ()
     metadata: dict[str, Any] | None = None
     release_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class AuditEntry:
-    """Immutable entry in the append-only hash-chained audit ledger."""
-
-    entry_id: str
-    timestamp: datetime
-    previous_hash: str
-    entry_hash: str
-    action: ToolAction
-    decision: Decision
-    rule_id: str
-    actor: str
-    amount: Decimal
-    currency: str
-    payload: dict[str, Any]
-    paypal_transaction_id: str | None = None
-    approver_assurance: str | None = None  # "passkey" | "session" | None

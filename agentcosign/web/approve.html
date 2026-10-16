@@ -3,42 +3,104 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="build" content="">
   <meta name="color-scheme" content="only light">
   <meta name="theme-color" content="#f4f1ea">
-  <title>Refund requests</title>
+  <title>Refunds</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/assets/approve.css">
 </head>
 <body>
   <main>
     <header class="brand">
-      <span class="wordmark">AgentCoSign</span>
-      <span class="mode-pill">Sandbox only</span>
+      <div class="brand-row">
+        <span class="wordmark">AgentCoSign</span>
+        <span class="mode-pill">Test mode</span>
+      </div>
+      <p id="identity" class="identity" hidden></p>
     </header>
-    <h1>Refund requests</h1>
     <p id="status" role="status" class="status" hidden></p>
 
-    <section id="enrol" class="card" hidden>
-      <h2>Set up this phone to OK refunds</h2>
-      <p>Your fingerprint or screen lock is how you OK money leaving your PayPal account. It never leaves this phone.</p>
+    <section id="enrol" class="view" hidden>
+      <p class="eyebrow">Set up</p>
+      <h1>Set up this phone for your refunds</h1>
+      <p class="lead">Your fingerprint or screen lock becomes how you approve money leaving your PayPal account. It never leaves this phone.</p>
       <label for="enrol-name">Your name</label>
       <input id="enrol-name" type="text" autocomplete="name" maxlength="64" value="">
       <button id="enrol-button" type="button" class="primary">Set up with fingerprint or screen lock</button>
+      <p class="footnote">Test mode: no real money moves</p>
     </section>
 
-    <section id="signin" class="card" hidden>
-      <h2>Your AI assistant may need your OK</h2>
-      <p>Confirm it's you to see what is waiting. Nothing is sent until you decide.</p>
-      <button id="signin-button" type="button" class="primary">Open with fingerprint or screen lock</button>
+    <section id="signin" class="view" hidden>
+      <h1>Refund requests from your AI assistant</h1>
+      <p class="lead">Confirm it's you to see them. No money moves until you approve.</p>
+      <div id="signin-card" class="card who" hidden>
+        <p id="signin-who" class="who-name"></p>
+        <p id="signin-account" class="muted small"></p>
+      </div>
+      <button id="signin-button" type="button" class="primary">Open with fingerprint</button>
+      <p class="footnote">Prompt didn't appear? Try again or use your screen lock. New phone? Ask for a new setup link.</p>
+      <p class="footnote caution-text">Test mode: no real money moves</p>
     </section>
 
-    <section id="queue" hidden>
-      <h2 id="queue-title">Waiting for you</h2>
-      <p id="empty" class="note" hidden>Your assistant has not asked for anything. You can close this page.</p>
-      <div id="requests"></div>
-      <button id="refresh-button" type="button" class="link">Check for new requests</button>
+    <section id="home" class="view" hidden>
+      <h1 id="greeting">Hello</h1>
+      <div id="home-loading" role="status">
+        <p class="muted">Checking PayPal</p>
+        <div class="skeleton" aria-hidden="true"></div>
+        <div class="skeleton" aria-hidden="true"></div>
+        <div class="skeleton short" aria-hidden="true"></div>
+      </div>
+      <div id="home-body" hidden>
+        <div id="stop-banner" class="card caution-box" role="status" hidden></div>
+        <p id="home-count" class="muted"></p>
+        <p id="freshness" class="muted small"></p>
+        <p id="live-line" class="muted small" role="status"></p>
+        <div id="notices"></div>
+        <h2 class="section-title">Waiting for your approval</h2>
+        <p id="empty" class="muted" hidden>No refund requests right now. Your assistant will ask when one needs you.</p>
+        <div id="requests"></div>
+        <div id="cant-send-section" hidden>
+          <h2 class="section-title">Can't be refunded</h2>
+          <div id="cant-send-list"></div>
+        </div>
+        <div id="paused-section" hidden>
+          <h2 class="section-title">On hold</h2>
+          <div id="paused-list"></div>
+        </div>
+        <h2 id="today-title" class="section-title">Your day</h2>
+        <div id="today" class="card"></div>
+        <div id="done-section" hidden>
+          <h2 class="section-title">Recent refunds</h2>
+          <div id="done-list" class="card list"></div>
+        </div>
+        <h2 class="section-title">Your settings</h2>
+        <div id="settings" class="card list"></div>
+        <div id="stop-control"></div>
+        <button id="refresh-button" type="button" class="secondary">Check for new requests</button>
+      </div>
     </section>
+
+    <section id="review" class="view" hidden></section>
+    <section id="final" class="view" hidden></section>
+    <section id="sending" class="view" hidden>
+      <div class="sending">
+        <span class="spinner" aria-hidden="true"></span>
+        <h1>Refunding</h1>
+        <p class="lead">Keep this page open.</p>
+      </div>
+      <ol id="tracker" class="tracker card">
+        <li data-step="approved">Approved by you</li>
+        <li data-step="rechecked">Order checked again with PayPal</li>
+        <li data-step="paypal_completed">Refunded by PayPal</li>
+      </ol>
+    </section>
+    <section id="outcome" class="view" hidden></section>
+    <section id="paused-view" class="view" hidden></section>
+    <section id="activity" class="view" hidden></section>
+    <section id="history" class="view" hidden></section>
   </main>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
   <script src="/assets/approve.js" defer></script>
 </body>
 </html>

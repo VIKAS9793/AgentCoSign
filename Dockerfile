@@ -10,4 +10,4 @@ USER app
 # Render injects PORT (default 10000); locally and in plain Docker it falls back to 8000.
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s CMD python -c "import os,urllib.request as u; u.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8000'), timeout=2)"
-CMD ["sh", "-c", "exec uvicorn agentcosign.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "exec uvicorn agentcosign.main:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-graceful-shutdown 5"]

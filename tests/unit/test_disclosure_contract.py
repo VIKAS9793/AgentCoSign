@@ -98,5 +98,5 @@ def test_the_repeat_refund_line_is_true_for_every_count_that_fires_it(
     limit = rules.velocity_max_refunds_24h
     # the claim is "has reached your limit": true exactly when prior >= limit
     assert prior >= limit
-    assert f"reached your limit of {limit}" in line
+    assert f"past your limit of {limit}" in line
     assert "more than" not in line

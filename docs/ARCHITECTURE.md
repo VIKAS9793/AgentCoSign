@@ -145,24 +145,33 @@ The hosted demo is public and runs on free tiers, so protection is layered from 
 
 | Table | Purpose |
 |---|---|
-| `proposals` | request_id (PK, idempotency), tool, canonical payload, payload_hash, state, created/expires |
-| `reservations` | request_id, amount, currency, expires — counts toward R4/R10 until executed or released |
-| `audit_ledger` | seq, ts, request_id, event, rule ids, decision, actor, amount (TEXT decimal), prev_hash, entry_hash, hmac, approver_sig, assurance, paypal_id |
-| `evidence_cache` | PayPal facts snapshot (hash) used at decision time, for R14 comparison |
+| `proposals` | One row per request: request_id (primary key, idempotency), payload_hash (a reused id with different contents is refused), tool, order, customer and payee keys, amount (decimal text), currency, state, decision, deciding and triggered rules, evidence snapshot, decided and release times, PayPal refund id and status. Money held for open requests is a state of the row (waiting, on hold, sending), so limits count it without a separate table |
+| `audit` | Append-only chain: seq, created_at, request_id, event, body (canonical JSON), prev_hash, entry_hash, mac (HMAC with a key kept outside the database) |
+| `passkeys` | Approver passkeys: credential id, public key, sign count, approver name |
+| `passkey_challenges` | One-time WebAuthn challenges by purpose, with expiry |
 
-Amounts are stored as decimal strings. Parameterised queries only. The hosted demo re-seeds deterministically on boot; recorded evidence lives in the repo under `docs/evidence/`.
+Amounts are stored as decimal strings. Parameterised queries only. The hosted demo re-seeds deterministically on boot.
 
 ## 7. API surface (v1)
 
+Built:
+
 | Method | Path | Principal | Purpose |
 |---|---|---|---|
-| POST | `/v1/proposals` | agent | Submit an action proposal |
-| GET | `/v1/proposals/{id}` | agent | Poll outcome |
-| GET | `/v1/approvals` | approver | Pending co-sign requests |
-| POST | `/v1/approvals/{id}/decision` | approver | Approve (WebAuthn assertion) / reject |
-| GET | `/v1/audit` · `/v1/audit/verify` · `/v1/audit/head` | operator | Read ledger, verify chain, signed head hash |
-| POST | `/v1/webhooks/paypal` | PayPal (signature-verified) | Outcome linking |
-| GET | `/health` · `/api/v1/config/policy` | public | Liveness + modes; policy limits |
+| POST | `/v1/proposals` | agent key | Submit a refund request |
+| GET | `/v1/proposals/{id}` | agent key | Outcome and the customer line to send |
+| POST | `/v1/approver/enrolment/options`, `/v1/approver/enrolment` | operator key or one-time setup link | Enrol an approver passkey |
+| POST | `/v1/approver/session/options`, `/v1/approver/session` | approver passkey | Open a 10-minute session |
+| GET | `/v1/approvals/home` | approver session | Everything the merchant's home shows; the server decides each request's section and whether it can be refunded |
+| GET | `/v1/approvals/stream` | approver session | Live "something changed" hints (server-sent events, no money details) |
+| GET | `/v1/approvals/done` | approver session | Requests that ended in the last 24 hours |
+| GET | `/v1/approvals/{id}/history` | approver session | One request's history and whether the chain verifies |
+| POST | `/v1/approvals/{id}/options`, `/approve`, `/reject` | approver session plus a per-decision passkey signature bound to the request | Decide one request |
+| GET | `/health`, `/api/v1/config/policy` | public | Liveness and modes; policy limits |
+
+All `/v1` and `/api` responses are `Cache-Control: no-store`.
+
+Planned (not built yet): operator audit endpoints with a published chain head, `POST /v1/webhooks/paypal` (signature-verified), and an emergency stop.
 
 ## 7b. PayPal API surface (and what we deliberately do not use)
 

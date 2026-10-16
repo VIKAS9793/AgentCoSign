@@ -478,7 +478,9 @@ SOURCE = {
     "tests/unit/test_x.py": (
         "def test_real_one() -> None:\n    assert True\n\n\n"
         "@pytest.mark.edge\ndef test_race() -> None:\n    assert True\n"
-    )
+    ),
+    # the rules the engine defines, which commit messages may name
+    guardrails.ENGINE_MODULE: 'A = "R4"\nB = "R16"\n',
 }
 GOOD = (
     "fix(policy): x\n\n"
@@ -512,7 +514,7 @@ def test_non_product_commits_need_no_trace() -> None:
             ["agentcosign/a.py"],
             "Constraints",
         ),
-        (GOOD.replace("R4, H1", "R99"), ["agentcosign/a.py"], "unknown id"),
+        (GOOD.replace("R4, H1", "R99"), ["agentcosign/a.py"], "no such rule"),
         (
             GOOD.replace("test_real_one", "test_made_up"),
             ["agentcosign/a.py"],
@@ -578,12 +580,7 @@ def test_stale_readme_numbers_are_caught(tmp_path: Path) -> None:
 
 
 # --- golden rule: fixes and features must name edge-case tests --------------------
-EDGE_SOURCE = {
-    "tests/unit/test_x.py": (
-        "def test_real_one() -> None:\n    assert True\n\n\n"
-        "@pytest.mark.edge\ndef test_race() -> None:\n    assert True\n"
-    )
-}
+EDGE_SOURCE = SOURCE
 TRACED = GOOD + "Edge cases: tests/unit/test_x.py::test_race\n"
 
 
@@ -618,3 +615,144 @@ def test_removing_edge_tests_below_the_floor_is_caught(tmp_path: Path) -> None:
     report = guardrails.Report()
     guardrails.check_edge_floor(tmp_path, report)
     assert "edge-tests-below-floor" in report.violations
+
+
+# --- hard-coding and fake data in shipped code ------------------------------------
+def _hardcoding(root: Path) -> dict[str, list[str]]:
+    report = guardrails.Report()
+    guardrails.check_no_hardcoding(root, report)
+    violations: dict[str, list[str]] = report.violations
+    return violations
+
+
+HARDCODING_CASES = [
+    ("agentcosign/core/x.py", "# TODO tidy this\n", "placeholder-in-code"),
+    (
+        "agentcosign/web/approve.html",
+        "<p>[YOUR STORE NAME]</p>\n",
+        "placeholder-in-code",
+    ),
+    (
+        "agentcosign/core/x.py",
+        'URL = "https://example.com/hook"\n',
+        "placeholder-in-code",
+    ),
+    ("agentcosign/core/x.py", 'NAME = "Jane Buyer"\n', "fake-data-in-code"),
+    ("agentcosign/core/x.py", 'CARD = "4111 1111 1111 1111"\n', "fake-data-in-code"),
+    ("agentcosign/core/x.py", 'WHO = "merchant@shop.com"\n', "fake-data-in-code"),
+    ("agentcosign/core/x.py", 'ORDER = "ORD-1"\n', "fake-data-in-code"),
+    (
+        "agentcosign/web/approve.js",
+        'say("Signed out after 10 minutes.");\n',
+        "duration-in-copy",
+    ),
+    (
+        "agentcosign/web/approve.js",
+        'el("p", "Refunds over $25.00 need approval");\n',
+        "money-in-copy",
+    ),
+    ("agentcosign/web/approve.js", "var wait = 30000;\n", "bare-number-in-script"),
+    (
+        "agentcosign/services/customer_copy.py",
+        'LINE = "We will reply within 2 hours."\n',
+        "duration-in-copy",
+    ),
+    (
+        "agentcosign/services/approval_view.py",
+        'TITLE = "On hold: the 24-hour refund limit"\n',
+        "duration-in-copy",
+    ),
+]
+
+
+@pytest.mark.parametrize(("rel", "body", "rule"), HARDCODING_CASES)
+def test_hardcoding_and_fake_data_are_caught(
+    tmp_path: Path, rel: str, body: str, rule: str
+) -> None:
+    root = _write(tmp_path, rel, body)
+    violations = _hardcoding(root)
+    assert rule in violations, f"{rule} not detected; got {sorted(violations)}"
+
+
+def test_values_from_the_server_and_named_constants_pass(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "agentcosign/web/approve.js",
+        "var RECONNECT_MAX_MS = 30000;\n"
+        'say("Signed out after " + minutes + " minutes.");\n'
+        'el("p", "Refunds over " + money(limit) + " need approval");\n',
+    )
+    _write(
+        tmp_path,
+        "agentcosign/services/customer_copy.py",
+        'def line(hours: int) -> str:\n    return f"within {hours} hours"\n',
+    )
+    assert _hardcoding(tmp_path) == {}
+
+
+def test_a_reviewed_exception_is_allowed(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "agentcosign/core/x.py",
+        'NAME = "Jane Buyer"  # guardrail: allow fake-data-in-code -- docs sample\n',
+    )
+    assert _hardcoding(tmp_path) == {}
+
+
+def test_numbers_inside_script_strings_are_left_to_the_copy_rules(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "agentcosign/web/approve.js",
+        'var svgNs = "http://www.w3.org/2000/svg";\n',
+    )
+    assert "bare-number-in-script" not in _hardcoding(tmp_path)
+
+
+# --- rule ids are read from the engine, never capped by a number in a pattern ------
+def test_a_comment_citing_any_rule_number_is_caught(tmp_path: Path) -> None:
+    _write(tmp_path, "agentcosign/core/x.py", "X = 1  # refused when R16 applies\n")
+    report = guardrails.Report()
+    guardrails.check_comment_hygiene(tmp_path, report)
+    assert "internal-reference-in-comment" in report.violations
+
+
+def test_a_comment_in_plain_words_passes(tmp_path: Path) -> None:
+    _write(tmp_path, "agentcosign/core/x.py", "X = 1  # refused while refunds stop\n")
+    report = guardrails.Report()
+    guardrails.check_comment_hygiene(tmp_path, report)
+    assert report.violations == {}
+
+
+def test_every_engine_rule_needs_a_test_however_high_its_number(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "agentcosign/services/policy_engine.py", 'RULE_X = "R16"\n')
+    _write(tmp_path, "tests/unit/test_x.py", "def test_x() -> None:\n    assert True\n")
+    report = guardrails.Report()
+    guardrails.check_policy_coverage(tmp_path, report)
+    assert report.violations == {"policy-rule-without-test": ["R16"]}
+
+
+def test_commits_may_only_name_rules_the_engine_defines() -> None:
+    source = {**SOURCE, guardrails.ENGINE_MODULE: 'A = "R4"\nB = "R16"\n'}
+    files = ["agentcosign/services/x.py"]
+
+    def trace(message: str) -> list[str]:
+        problems: list[str] = guardrails.check_traceability(
+            message, files, source.get, lambda _spec: True
+        )
+        return problems
+
+    assert trace(GOOD.replace("Constraints: R4, H1", "Constraints: R16, H1")) == []
+    refused = trace(GOOD.replace("Constraints: R4, H1", "Constraints: R99, H1"))
+    assert any("no such rule 'R99'" in problem for problem in refused)
+
+
+def test_rule_ids_are_refused_when_the_engine_cannot_be_read() -> None:
+    no_engine = {k: v for k, v in SOURCE.items() if k != guardrails.ENGINE_MODULE}
+    problems: list[str] = guardrails.check_traceability(
+        GOOD, ["agentcosign/services/x.py"], no_engine.get, lambda _spec: True
+    )
+    assert any("cannot be checked" in problem for problem in problems)

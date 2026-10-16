@@ -55,6 +55,7 @@ class Admission:
 
     allowed: bool
     counted: bool = False  # True when release() must be called afterwards
+    stream: bool = False  # counted against the open-stream cap, not request slots
     status: int = 200
     reason: str = ""
     retry_after_seconds: int = 0
@@ -180,6 +181,7 @@ class TrafficGuard:
         self._limits = limits
         self._clients: OrderedDict[str, _Client] = OrderedDict()
         self._inflight = 0
+        self._streams = 0
         self._pools: dict[tuple[WorkKind, Tier], _Pool] = {
             (WorkKind.LIVE_LLM, Tier.PUBLIC): _Pool(limits.live_llm_budget.public),
             (WorkKind.LIVE_LLM, Tier.REVIEWER): _Pool(limits.live_llm_budget.reviewer),
@@ -199,8 +201,9 @@ class TrafficGuard:
         """Decide whether a request may run. Call release() if ``counted``."""
         if path in self._limits.exempt_paths:
             return Admission(allowed=True)
+        stream = path in self._limits.streaming_paths
         if client_key == UNKNOWN_CLIENT:
-            return self._admit_unidentified()
+            return self._admit_unidentified(stream)
         client = self._client(client_key)
         if client.blocked_until_ms > now_ms:
             wait = client.blocked_until_ms - now_ms
@@ -210,10 +213,7 @@ class TrafficGuard:
                 reason="blocked",
                 retry_after_seconds=_seconds_up(wait),
             )
-        ceiling = self._limits.max_concurrent_requests
-        if tier is not Tier.REVIEWER:
-            ceiling -= self._limits.reviewer_reserved_concurrency
-        if self._inflight >= ceiling:
+        if self._full(tier, stream):
             return Admission(False, status=503, reason="busy", retry_after_seconds=2)
         wait_ms = self._spend(client, tier, WorkKind.GENERAL, now_ms)
         if wait_ms is not None:
@@ -224,26 +224,41 @@ class TrafficGuard:
                 reason="rate_limited",
                 retry_after_seconds=_seconds_up(wait_ms),
             )
-        self._inflight += 1
-        return Admission(allowed=True, counted=True)
+        return self._take(stream)
 
-    def _admit_unidentified(self) -> Admission:
+    def _full(self, tier: Tier, stream: bool) -> bool:
+        """True when no slot of the kind this request needs is free."""
+        if stream:
+            return self._streams >= self._limits.max_open_streams
+        ceiling = self._limits.max_concurrent_requests
+        if tier is not Tier.REVIEWER:
+            ceiling -= self._limits.reviewer_reserved_concurrency
+        return self._inflight >= ceiling
+
+    def _take(self, stream: bool) -> Admission:
+        if stream:
+            self._streams += 1
+        else:
+            self._inflight += 1
+        return Admission(allowed=True, counted=True, stream=stream)
+
+    def _admit_unidentified(self, stream: bool) -> Admission:
         """Admit a caller whose address could not be resolved.
 
         Unrelated callers would share one per-client bucket and one penalty, so
         a single abuser could block everybody. Only the global in-flight cap
         applies instead; the daily pools still bound the expensive work.
         """
-        if self._inflight >= self._limits.max_concurrent_requests - (
-            self._limits.reviewer_reserved_concurrency
-        ):
+        if self._full(Tier.PUBLIC, stream):
             return Admission(False, status=503, reason="busy", retry_after_seconds=2)
-        self._inflight += 1
-        return Admission(allowed=True, counted=True)
+        return self._take(stream)
 
-    def release(self) -> None:
-        """Mark one admitted request as finished."""
-        self._inflight = max(0, self._inflight - 1)
+    def release(self, admission: Admission) -> None:
+        """Mark one admitted request or stream as finished."""
+        if admission.stream:
+            self._streams = max(0, self._streams - 1)
+        else:
+            self._inflight = max(0, self._inflight - 1)
 
     def penalize(self, client_key: str, now_ms: int) -> None:
         """Count a misbehaving request (for example a wrong token) as a strike."""

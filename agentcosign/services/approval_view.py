@@ -16,6 +16,7 @@ from agentcosign.services.policy_engine import (
     ESCALATE_PRIORITY,
     RULE_EVIDENCE,
     RULE_SCREENING_DOWN,
+    VELOCITY_WINDOW,
 )
 
 UNKNOWN_NAME = "the customer"
@@ -25,25 +26,27 @@ def plain_reason(rule_id: str, policy: PolicySettings) -> str:
     """One sentence saying why this request needs the owner."""
     auto = f"${policy.refund_auto_limit:,.2f}"
     velocity = policy.velocity_max_refunds_24h
+    window = int(VELOCITY_WINDOW.total_seconds() // 3600)
     reasons = {
-        "R2": f"Refunds over {auto} need your OK.",
-        "R5": f"This customer has reached your limit of {velocity} refunds "
-        "in 24 hours.",
-        "R6": "This order is in a dispute. If you send this refund, you may still "
-        "lose the dispute.",
-        "R7": "Accepting a dispute gives up the money. This always needs your OK.",
-        "R8": "These payout details are new or changed. Check them before sending.",
-        "R14": "This order changed after your assistant checked it. Please look again.",
-        "R15": "We could not run our safety check. Please look at this one yourself.",
+        "R2": f"Refunds over {auto} need your approval.",
+        "R5": "This would take this customer past your limit of "
+        f"{velocity} refunds in {window} hours.",
+        "R6": "This order is in a dispute. If you refund it, you may still lose "
+        "the dispute.",
+        "R7": "Accepting a dispute gives up the money. This always needs your "
+        "approval.",
+        "R8": "These payout details are new or changed. Check them before you approve.",
+        "R14": "This order changed after your assistant checked it. Review it again.",
+        "R15": "We couldn't scan the customer's messages for misuse.",
     }
-    return reasons.get(rule_id, "This one needs your OK.")
+    return reasons.get(rule_id, "This one needs your approval.")
 
 
 SAFETY_PASSED = "passed"
 SAFETY_UNAVAILABLE = "unavailable"
 ONLY_SAFETY_REASON = (
-    "Your assistant could usually send this on its own. It needs your OK because "
-    "our safety check did not run."
+    "This would normally be refunded on its own, but we couldn't scan the "
+    "customer's messages for misuse."
 )
 
 
@@ -66,6 +69,16 @@ def business_reasons(triggered: Sequence[str], policy: PolicySettings) -> list[s
     return lines or [plain_reason("", policy)]
 
 
+def scan_note(triggered: Sequence[str], policy: PolicySettings) -> str:
+    """The scan line shown beside other reasons; empty when the scan ran or when
+    the scan is already the only reason given."""
+    business = [r for r in ESCALATE_PRIORITY if r != RULE_SCREENING_DOWN]
+    others = any(rule in triggered for rule in [*business, RULE_EVIDENCE])
+    if RULE_SCREENING_DOWN in triggered and others:
+        return plain_reason(RULE_SCREENING_DOWN, policy)
+    return ""
+
+
 def refundable_now(facts: Mapping[str, str]) -> Decimal | None:
     """What PayPal says can still be refunded on the order, or None if unknown."""
     if not facts.get("paid"):
@@ -79,22 +92,191 @@ def left_after(facts: Mapping[str, str], amount: str) -> str:
     return "" if now is None else f"{now - Decimal(amount):.2f}"
 
 
-def money_view(facts: Mapping[str, str], amount: str) -> dict[str, str]:
+def short_flag(triggered: Sequence[str], policy: PolicySettings) -> str:
+    """A few words for a collapsed card: the most serious reason it needs you."""
+    auto = f"${policy.refund_auto_limit:,.2f}"
+    flags = {
+        "R7": "Dispute claim",
+        "R6": "Open dispute",
+        "R8": "New payout details",
+        "R14": "Order changed",
+        "R2": f"Over your {auto} limit",
+    }
+    for rule in ("R7", "R6", "R8", "R14", "R2"):
+        if rule in triggered:
+            return flags[rule]
+    return "Safety check didn't run" if RULE_SCREENING_DOWN in triggered else ""
+
+
+def money_view(
+    facts: Mapping[str, str], amount: str, waiting: Decimal = Decimal("0")
+) -> dict[str, str]:
     """The refundable amounts the approver sees, and whether this one still fits.
 
     The order can change while a request waits (for example a refund made in
     PayPal directly). The server re-checks before sending either way; this only
     stops the screen from offering a refund larger than what is left.
     """
-    now = refundable_now(facts)
-    if now is None:
-        return {"refundable_now": "", "left_after": "", "fits": "unknown"}
+    paypal_now = refundable_now(facts)
+    if paypal_now is None:
+        return {
+            "refundable_now": "",
+            "left_after": "",
+            "fits": "unknown",
+            "waiting_on_order": "",
+        }
+    # other refunds already waiting on this order are money promised too
+    now = paypal_now - waiting
     fits = "yes" if Decimal(amount) <= now else "no"
     return {
         "refundable_now": f"{now:.2f}",
-        "left_after": left_after(facts, amount),
+        "left_after": f"{now - Decimal(amount):.2f}",
         "fits": fits,
+        "waiting_on_order": f"{waiting:.2f}",
     }
+
+
+FAILURE_DETAILS = {
+    "paypal_failed_later": "It didn't go through at PayPal. No money moved",
+    "paypal_failed": "It didn't go through at PayPal. No money moved",
+    "paypal_refused": "PayPal refused it. No money moved",
+    "exceeds_refundable": "It was more than was left on the order",
+    "evidence_changed": "The order changed, so it was stopped. No money moved",
+}
+
+
+def outcome_title(state: str) -> str:
+    """How a decision reads in the request's history, or empty if it has none.
+
+    The on-hold title names the rule's own window, so it can never disagree
+    with the rule.
+    """
+    window = int(VELOCITY_WINDOW.total_seconds() // 3600)
+    titles = {
+        "pending_approval": "Sent to you for approval",
+        "paused": f"On hold: this customer reached the {window}-hour refund limit",
+        "executing": "Allowed by your settings",
+        "denied": "Not refunded: outside your settings",
+    }
+    return titles.get(state, "")
+
+
+def order_ending(order_id: str | None) -> str:
+    """The last four characters of an order id, enough to tell orders apart."""
+    return (order_id or "")[-4:]
+
+
+def _decided_events(body: dict[str, Any]) -> list[dict[str, str]]:
+    amount = f"${Decimal(str(body['amount'])):,.2f}"
+    ending = order_ending(body.get("order_id"))
+    events = [
+        {
+            "step": "asked",
+            "title": "Your AI assistant asked",
+            "detail": f"{amount} refund, order ending {ending}",
+        }
+    ]
+    title = outcome_title(str(body.get("state")))
+    if title:
+        events.append({"step": "routed", "title": title, "detail": ""})
+    return events
+
+
+def display_name(name: str) -> str:
+    """A name as people read it: all capitals or all lower case becomes title
+    case; anything else is kept as typed, so names like McKay stay right."""
+    if name.isupper() or name.islower():
+        return " ".join(part.capitalize() for part in name.split())
+    return name
+
+
+def _changed_event(body: dict[str, Any]) -> dict[str, str]:
+    to = body.get("to")
+    approver = display_name(str(body.get("approver") or ""))
+    if approver and to == "executing":
+        return {
+            "step": "approved",
+            "title": f"{approver} approved",
+            "detail": "Confirmed with fingerprint or screen lock",
+        }
+    if approver and to == "denied":
+        return {
+            "step": "declined",
+            "title": f"{approver} declined",
+            "detail": "No money moved",
+        }
+    if to == "executed":
+        done = body.get("paypal_status") == "COMPLETED"
+        title = "Refunded by PayPal" if done else "Processing at PayPal"
+        return {
+            "step": "paypal_completed" if done else "paypal_accepted",
+            "title": title,
+            "detail": f"Reference {body.get('paypal_id', '')}",
+        }
+    if to == "failed":
+        reason = str(body.get("reason", ""))
+        return {
+            "step": "failed",
+            "title": "Not refunded",
+            "detail": FAILURE_DETAILS.get(reason, "No money moved"),
+        }
+    if to == "expired":
+        return {
+            "step": "expired",
+            "title": "Time ran out",
+            "detail": "No money moved",
+        }
+    if to == "pending_approval":
+        return {
+            "step": "changed",
+            "title": "The order changed",
+            "detail": "Sent back to you to review again",
+        }
+    return {"step": "closed", "title": "Closed", "detail": "No money moved"}
+
+
+def history_events(rows: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
+    """The audit trail for one request in owner words, oldest first.
+
+    Only what the record shows: it never claims the customer was told anything,
+    because the assistant's messages are not part of this record.
+    """
+    events: list[dict[str, str]] = []
+    for row in rows:
+        at = str(row["at"])
+        kind = row["event"]
+        found: list[dict[str, str]] = []
+        if kind == "decided":
+            found = _decided_events(row)
+        elif kind == "state_changed":
+            found = [_changed_event(row)]
+        elif kind == "execution_attempt":
+            found = [
+                {
+                    "step": "rechecked",
+                    "title": "Checked with PayPal again",
+                    "detail": "Right before sending",
+                }
+            ]
+        elif kind == "released":
+            title = outcome_title(str(row.get("state"))) or "Decided again"
+            found = [
+                {
+                    "step": "released",
+                    "title": "Checked again after the pause",
+                    "detail": title,
+                }
+            ]
+        elif kind == "paypal_status" and row.get("paypal_status") == "COMPLETED":
+            found = [
+                {
+                    "step": "paypal_completed",
+                    "title": "Refunded by PayPal",
+                    "detail": "",
+                }
+            ]
+        events.extend({"at": at, **item} for item in found)
+    return events
 
 
 def decide_by(created_at: str, ttl_seconds: int) -> str:
@@ -155,3 +337,76 @@ def unavailable_facts() -> dict[str, str]:
         "paid": "",
         "already_refunded": "",
     }
+
+
+SECTIONS = ("needs_decision", "cant_send", "paused", "sending", "failed")
+_SECTION_OF_STATUS = {"paused": "paused", "sending": "sending", "failed_late": "failed"}
+RECENT_DONE = 3
+
+
+def placement(
+    view: Mapping[str, Any], now: datetime, *, stopped: bool = False
+) -> dict[str, str]:
+    """Where a request belongs on the merchant's home and whether it can be sent.
+
+    Only a waiting request with PayPal's facts in hand, an amount that still
+    fits and time left can be sent; everything else is shown but never sendable.
+    """
+    status = str(view.get("status", ""))
+    if status != "waiting":
+        return {
+            "section": _SECTION_OF_STATUS.get(status, "cant_send"),
+            "can_send": "no",
+            "cant_send_reason": "",
+        }
+    reason = ""
+    if stopped:
+        reason = "stopped"
+    elif not view.get("paid"):
+        reason = "paypal_unavailable"
+    elif view.get("fits") != "yes":
+        reason = "not_enough_left"
+    elif now >= datetime.fromisoformat(str(view["decide_by"])):
+        reason = "time_up"
+    if reason:
+        return {"section": "cant_send", "can_send": "no", "cant_send_reason": reason}
+    return {"section": "needs_decision", "can_send": "yes", "cant_send_reason": ""}
+
+
+def waiting_note(view: Mapping[str, Any]) -> str:
+    """Says when other open requests hold money on the same order."""
+    held = Decimal(str(view.get("waiting_on_order") or "0"))
+    return f"${held:,.2f} waiting on another request" if held > 0 else ""
+
+
+def read_mark(facts: Mapping[str, str], at: datetime | None) -> dict[str, str]:
+    """Records whether this card's facts really came from PayPal, and when.
+
+    Only a successful read carries a check time, so no card can claim to be up
+    to date with PayPal when its read failed.
+    """
+    if at is not None and facts.get("paid"):
+        return {"paypal_read": "yes", "checked_at": at.isoformat()}
+    return {"paypal_read": "no", "checked_at": ""}
+
+
+def paypal_checked(views: Sequence[Mapping[str, Any]]) -> str:
+    """Whether every card that needed PayPal's facts got them.
+
+    Returns yes, partial or no, and none when no card needed a read, so an
+    empty home or one with only refunds already at PayPal claims no check.
+    """
+    tried = [v for v in views if v.get("paypal_read") in ("yes", "no")]
+    if not tried:
+        return "none"
+    read = sum(1 for v in tried if v["paypal_read"] == "yes")
+    if read == len(tried):
+        return "yes"
+    return "partial" if read else "no"
+
+
+def checked_time(views: Sequence[Mapping[str, Any]], checked: str) -> str:
+    """The oldest successful read, given only when every card that needed one got it."""
+    if checked != "yes":
+        return ""
+    return min(str(v["checked_at"]) for v in views if v.get("paypal_read") == "yes")

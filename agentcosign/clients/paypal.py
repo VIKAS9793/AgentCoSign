@@ -28,6 +28,8 @@ from agentcosign.models.policy import REQUEST_ID_PATTERN
 SANDBOX_BASE = "https://api-m.sandbox.paypal.com"  # sandbox only; not configurable
 REQUEST_ID_HEADER = "PayPal-Request-Id"
 TIMEOUT_SECONDS = 15
+VERIFIED = "SUCCESS"
+NOT_VERIFIED = "FAILURE"
 TOKEN_REFRESH_MARGIN_MS = 300_000
 PAYPAL_ID = re.compile(r"^[A-Z0-9-]{1,64}$")
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
@@ -72,6 +74,12 @@ class PayPalClient(Protocol):
 
     async def accept_claim(self, dispute_id: str, request_id: str) -> JsonObject:
         """Accept a dispute claim, conceding the disputed amount."""
+        ...
+
+    async def verify_webhook(
+        self, headers: Mapping[str, str], event: JsonObject, webhook_id: str
+    ) -> bool:
+        """True only when PayPal says the webhook's signature verifies."""
         ...
 
 
@@ -224,6 +232,30 @@ class LivePayPalClient:
         )
         return result
 
+    async def verify_webhook(
+        self, headers: Mapping[str, str], event: JsonObject, webhook_id: str
+    ) -> bool:
+        """Ask PayPal whether a webhook's signature verifies.
+
+        Only ``verification_status == SUCCESS`` in the body counts; an HTTP 200
+        alone does not.
+        """
+        body = {
+            "auth_algo": headers["paypal-auth-algo"],
+            "cert_url": headers["paypal-cert-url"],
+            "transmission_id": headers["paypal-transmission-id"],
+            "transmission_sig": headers["paypal-transmission-sig"],
+            "transmission_time": headers["paypal-transmission-time"],
+            "webhook_id": webhook_id,
+            "webhook_event": event,
+        }
+        result = await self._send(
+            "POST", "/v1/notifications/verify-webhook-signature", body=body
+        )
+        return isinstance(result, dict) and (
+            result.get("verification_status") == VERIFIED
+        )
+
 
 # Shown in the customer's PayPal history and emails with the refund.
 REFUND_NOTE_TO_PAYER = (
@@ -262,6 +294,8 @@ class RecordedPayPalClient:
         }
         self._disputes = {key: list(value) for key, value in (disputes or {}).items()}
         self._writes: dict[str, JsonObject] = {}
+        # a simulator must never vouch for a real event: tests opt in explicitly
+        self._webhook_status: str | None = NOT_VERIFIED
 
     @classmethod
     def from_directory(cls, root: Path) -> "RecordedPayPalClient":
@@ -274,6 +308,18 @@ class RecordedPayPalClient:
             for p in root.glob("disputes/*.json")
         }
         return cls(orders, disputes)
+
+    def set_webhook_verification(self, status: str | None) -> None:
+        """What PayPal answers to webhook checks; None means PayPal is unreachable."""
+        self._webhook_status = status
+
+    async def verify_webhook(
+        self, headers: Mapping[str, str], event: JsonObject, webhook_id: str
+    ) -> bool:
+        """Answer as PayPal would: verified, not verified, or unreachable."""
+        if self._webhook_status is None:
+            raise PayPalClientError("PayPal could not be reached", {"retryable": True})
+        return self._webhook_status == VERIFIED
 
     async def get_order(self, order_id: str) -> JsonObject:
         """Return the recorded order, including refunds made since."""

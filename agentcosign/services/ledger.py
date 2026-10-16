@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -40,9 +41,16 @@ from agentcosign.models.policy import (
     Signals,
 )
 from agentcosign.services.identity import payee_key
-from agentcosign.services.policy_engine import evaluate
+from agentcosign.services.policy_engine import VELOCITY_WINDOW, evaluate
+from agentcosign.services.reconciliation import Known, OurRefund
 
 GENESIS_HASH = "0" * 64
+# the emergency stop is recorded in the chain under this id, so it is provable
+CONTROL_REQUEST = "control:refunds"
+RECONCILE_REQUEST = "control:reconciliation"
+WEBHOOK_REQUEST = "control:webhooks"
+STOP_CONTROL = "refunds_stopped"
+STOP_EVENTS = {"refunds_stopped": "yes", "refunds_resumed": "no"}
 BUSY_TIMEOUT_SECONDS = 5
 CENT = Decimal("0.01")
 
@@ -60,6 +68,8 @@ class ProposalState(StrEnum):
 
 
 S = ProposalState
+# requests whose refund was sent or is being sent to PayPal
+_SENT_STATES = frozenset({S.EXECUTING.value, S.EXECUTED.value})
 # A paused refund keeps its money set aside so nothing else can promise it, but
 # it is not yet one of the customer's refunds: paused requests never hold each
 # other back, and each is counted once it is released.
@@ -75,7 +85,7 @@ ALLOWED_TRANSITIONS: dict[ProposalState, frozenset[ProposalState]] = {
     # PayPal can report a pending refund as failed or cancelled later.
     S.EXECUTED: frozenset({S.FAILED}),
 }
-SETTLED_STATUSES = ("COMPLETED",)
+COMPLETED_STATUS = "COMPLETED"
 UNSETTLED_STATUSES = ("PENDING",)
 LATE_FAILURE_STATUSES = ("FAILED", "CANCELLED")
 STATE_FOR_DECISION = {
@@ -121,6 +131,16 @@ CREATE TABLE IF NOT EXISTS audit (
     entry_hash TEXT NOT NULL,
     mac TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS webhook_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    received_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS controls (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 _Q_GET = "SELECT * FROM proposals WHERE request_id = ?"
@@ -145,6 +165,13 @@ _Q_CUSTOMER_ASKS = (
     "AND created_at >= ?"
 )
 _Q_STAMP = "UPDATE proposals SET decided_at = ?, release_at = ? WHERE request_id = ?"
+# A counted refund dropping out (declined, expired, failed) can bring the
+# customer back under the limit, so their pauses are re-checked on the next pass.
+_Q_RECHECK_PAUSES = (
+    "UPDATE proposals SET release_at = ? WHERE state = ? AND customer_key = ? "
+    "AND release_at > ?"
+)
+DROPPED_OUT = (S.DENIED, S.EXPIRED, S.FAILED)
 _Q_REDECIDE = (
     "UPDATE proposals SET state = ?, decision = ?, rule_id = ?, explanation = ?, "
     "triggered = ?, evidence_json = ?, decided_at = ?, release_at = ?, attempts = 0, "
@@ -156,7 +183,7 @@ _Q_RELEASE_DUE = (
 )
 _Q_PAUSED = (
     "SELECT request_id, tool, amount, currency, order_id, customer_key, release_at, "
-    "created_at FROM proposals WHERE state = ? ORDER BY release_at"
+    "created_at, greeting_named FROM proposals WHERE state = ? ORDER BY release_at"
 )
 _Q_SAME_PAUSED = (
     "SELECT request_id FROM proposals WHERE state = ? AND order_id = ? AND tool = ? "
@@ -180,7 +207,9 @@ _Q_REBASE = (
 )
 # the approval window runs from when the request reached the person, which
 # for a released pause is the release, not the original request
-_Q_DUE = "SELECT request_id FROM proposals WHERE state = ? AND updated_at < ?"
+_Q_DUE = (
+    "SELECT request_id, customer_key FROM proposals WHERE state = ? AND updated_at < ?"
+)
 _Q_STALE = (
     "SELECT request_id FROM proposals WHERE state = ? AND updated_at < ? "
     "ORDER BY updated_at"
@@ -201,7 +230,11 @@ _MIGRATIONS = {
     "release_at": "ALTER TABLE proposals ADD COLUMN release_at TEXT",
     "paypal_id": "ALTER TABLE proposals ADD COLUMN paypal_id TEXT",
     "paypal_status": "ALTER TABLE proposals ADD COLUMN paypal_status TEXT",
+    # whether the line given at a pause greeted the customer by name (yes or no);
+    # the name itself is never stored
+    "greeting_named": "ALTER TABLE proposals ADD COLUMN greeting_named TEXT",
 }
+_Q_GREETING = "UPDATE proposals SET greeting_named = ? WHERE request_id = ?"
 _Q_PAYPAL = (
     "UPDATE proposals SET paypal_id = ?, paypal_status = ?, updated_at = ? "
     "WHERE request_id = ?"
@@ -209,6 +242,27 @@ _Q_PAYPAL = (
 _Q_UNSETTLED = (
     "SELECT request_id FROM proposals WHERE state = ? AND paypal_status = ? "
     "ORDER BY updated_at"
+)
+_Q_VERSION = "SELECT COALESCE(MAX(seq), 0) FROM audit"
+_Q_WAITING = "SELECT amount FROM proposals WHERE decided_at >= ? AND state IN (?, ?, ?)"
+_Q_EVENTS = (
+    "SELECT created_at, event, body FROM audit WHERE request_id = ? ORDER BY seq"
+)
+_Q_APP_REFUNDED = (
+    "SELECT amount FROM proposals WHERE order_id = ? AND tool = ? AND state = ?"
+)
+_Q_RECENT = (
+    "SELECT request_id, tool, amount, currency, order_id, state, updated_at, "
+    "paypal_status FROM proposals WHERE state IN (?, ?, ?, ?) AND updated_at >= ? "
+    "ORDER BY updated_at DESC LIMIT ?"
+)
+RECENT_LIMIT = 20
+_Q_RECENT_COUNT = (
+    "SELECT COUNT(*) FROM proposals WHERE state IN (?, ?, ?, ?) AND updated_at >= ?"
+)
+_Q_DAY = (
+    "SELECT amount, decision, state, paypal_status FROM proposals "
+    "WHERE tool = ? AND updated_at >= ?"
 )
 _Q_LATE_FAILURES = (
     "SELECT request_id, tool, amount, currency, order_id, updated_at FROM proposals "
@@ -222,15 +276,52 @@ _Q_PENDING = (
     "ORDER BY created_at"
 )
 _Q_ALL_PROPOSALS = "SELECT request_id, tool, amount, decision, state FROM proposals"
+_Q_ONE_PROPOSAL = (
+    "SELECT request_id, tool, amount, decision, state FROM proposals "
+    "WHERE request_id = ?"
+)
+_Q_PREV_HASH = "SELECT entry_hash FROM audit WHERE seq < ? ORDER BY seq DESC LIMIT 1"
 _Q_LAST_HASH = "SELECT entry_hash FROM audit ORDER BY seq DESC LIMIT 1"
+_Q_HEAD = "SELECT seq, entry_hash, created_at FROM audit ORDER BY seq DESC LIMIT 1"
+_Q_AT_SEQ = "SELECT entry_hash FROM audit WHERE seq = ?"
+_Q_CONTROL_GET = "SELECT value FROM controls WHERE name = ?"
+_Q_RULE = "SELECT rule_id FROM proposals WHERE request_id = ?"
+_Q_WEBHOOK_SEEN = (
+    "INSERT OR IGNORE INTO webhook_events (event_id, event_type, received_at) "
+    "VALUES (?, ?, ?)"
+)
+_Q_RECONCILE_OURS = (
+    "SELECT request_id, order_id, amount, paypal_id, updated_at FROM proposals "
+    "WHERE tool = ? AND state = ? AND updated_at >= ?"
+)
+# an order is checked when any request on it was asked or changed in the window,
+# so a request asked earlier but sent inside the window is never skipped
+_Q_RECONCILE_ORDERS = (
+    "SELECT DISTINCT order_id FROM proposals "
+    "WHERE order_id IS NOT NULL AND order_id != '' "
+    "AND (created_at >= ? OR updated_at >= ?)"
+)
+_Q_RECONCILE_KNOWN = (
+    "SELECT request_id, state, paypal_id FROM proposals "
+    "WHERE tool = ? AND order_id IN (SELECT value FROM json_each(?))"
+)
+_Q_CONTROL_SET = (
+    "INSERT INTO controls (name, value, updated_at) VALUES (?, ?, ?) "
+    "ON CONFLICT(name) DO UPDATE SET value = excluded.value, "
+    "updated_at = excluded.updated_at"
+)
 _Q_APPEND = (
     "INSERT INTO audit (created_at, request_id, event, body, prev_hash, entry_hash, "
     "mac) VALUES (?, ?, ?, ?, ?, ?, ?)"
 )
-_Q_CHAIN = (
+_CHAIN_COLUMNS = (
     "SELECT seq, created_at, request_id, event, body, prev_hash, entry_hash, mac "
-    "FROM audit ORDER BY seq"
+    "FROM audit "
 )
+_Q_CHAIN = _CHAIN_COLUMNS + "ORDER BY seq"
+_Q_CHAIN_AFTER = _CHAIN_COLUMNS + "WHERE seq > ? ORDER BY seq"
+_Q_CHAIN_AT = _CHAIN_COLUMNS + "WHERE seq = ?"
+_Q_REQUEST_CHAIN = _CHAIN_COLUMNS + "WHERE request_id = ? ORDER BY seq"
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +399,15 @@ def _reused_id_result() -> PolicyResult:
     )
 
 
+def _require_time_left(changed: str, decide_within: int | None, now: datetime) -> None:
+    """Refuses an approval with no deadline given, or at or after its deadline."""
+    if decide_within is None:
+        raise FailClosedError("an approval must be checked against its deadline")
+    deadline = datetime.fromisoformat(changed) + timedelta(seconds=decide_within)
+    if now >= deadline:
+        raise FailClosedError("the time to decide this request has passed")
+
+
 class Ledger:
     """SQLite-backed ledger. One write transaction per decision or transition."""
 
@@ -324,6 +424,10 @@ class Ledger:
         self._secret = secret
         self._policy = policy
         self._account = expected_account_id
+        # the newest chain entry already checked, so a request's history checks
+        # only what was added since; the scheduled full check covers the rest
+        self._checked: tuple[int, str] | None = None
+        self._check_lock = threading.Lock()
         with self._connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
@@ -332,6 +436,11 @@ class Ledger:
                 if column not in columns:
                     conn.execute(statement)
             conn.execute(_Q_BACKFILL)
+
+    @property
+    def account_id(self) -> str:
+        """The PayPal merchant account every decision is checked against."""
+        return self._account
 
     # ------------------------------------------------------------ connections
 
@@ -346,6 +455,22 @@ class Ledger:
         finally:
             conn.close()
 
+    @property
+    def path(self) -> str:
+        """The database file holding the ledger."""
+        return self._path
+
+    def append_event(
+        self,
+        conn: sqlite3.Connection,
+        request_id: str,
+        event: str,
+        body: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        """Add an entry to the chain inside a transaction the caller holds."""
+        self._append(conn, request_id, event, body, now)
+
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         """An immediate write transaction: concurrent writers wait their turn."""
@@ -359,6 +484,100 @@ class Ledger:
             finally:
                 if not committed:
                     conn.execute("ROLLBACK")
+
+    # ----------------------------------------------------------- emergency stop
+
+    @staticmethod
+    def _stopped(conn: sqlite3.Connection) -> bool:
+        row = conn.execute(_Q_CONTROL_GET, (STOP_CONTROL,)).fetchone()
+        return row is not None and row["value"] == "yes"
+
+    def rule_of(self, request_id: str) -> str | None:
+        """The rule that decided a request, or None if it is unknown."""
+        with self._connection() as conn:
+            row = conn.execute(_Q_RULE, (request_id,)).fetchone()
+        return str(row["rule_id"]) if row is not None else None
+
+    def reconciliation_inputs(
+        self, since: datetime
+    ) -> tuple[list[OurRefund], list[str], Known]:
+        """Refunds we sent since a moment, every order touched since then, and
+        every refund request ever made on those orders, so our own older or
+        unsent requests are never mistaken for refunds made in PayPal directly."""
+        refund_tool = ToolAction.CREATE_REFUND.value
+        params = (refund_tool, S.EXECUTED.value, _iso(since))
+        with self._connection() as conn:
+            rows = conn.execute(_Q_RECONCILE_OURS, params).fetchall()
+            orders = conn.execute(
+                _Q_RECONCILE_ORDERS, (_iso(since), _iso(since))
+            ).fetchall()
+            order_ids = [str(row["order_id"]) for row in orders]
+            made = conn.execute(
+                _Q_RECONCILE_KNOWN, (refund_tool, json.dumps(order_ids))
+            ).fetchall()
+        sent = [
+            OurRefund(
+                request_id=str(row["request_id"]),
+                order_id=str(row["order_id"] or ""),
+                amount=Decimal(row["amount"]),
+                paypal_id=str(row["paypal_id"] or ""),
+                sent_at=datetime.fromisoformat(row["updated_at"]),
+            )
+            for row in rows
+        ]
+        counted = {str(r["request_id"]) for r in made if r["state"] in _SENT_STATES}
+        known = Known(
+            counted=frozenset(counted),
+            not_sent=frozenset(str(r["request_id"]) for r in made) - counted,
+            paypal_ids=frozenset(str(r["paypal_id"]) for r in made if r["paypal_id"]),
+        )
+        return sent, order_ids, known
+
+    def record_webhook(
+        self, event_id: str, event_type: str, resource_id: str, now: datetime
+    ) -> bool:
+        """Record a verified PayPal event once; False if it was seen before."""
+        with self._transaction() as conn:
+            seen = conn.execute(_Q_WEBHOOK_SEEN, (event_id, event_type, _iso(now)))
+            if seen.rowcount == 0:
+                return False
+            body = {
+                "event_id": event_id,
+                "event_type": event_type,
+                "resource_id": resource_id,
+            }
+            self._append(conn, WEBHOOK_REQUEST, "webhook_received", body, now)
+            return True
+
+    def record_reconciliation(self, summary: dict[str, Any], now: datetime) -> None:
+        """Record one run's counts in the chain."""
+        with self._transaction() as conn:
+            self._append(conn, RECONCILE_REQUEST, "reconciled", summary, now)
+
+    def last_reconciliation(self) -> dict[str, Any] | None:
+        """The most recent reconciliation run, from the chain, or None."""
+        runs = self.events(RECONCILE_REQUEST)
+        return runs[-1] if runs else None
+
+    def refunds_stopped(self) -> bool:
+        """True while the merchant has stopped all refunds."""
+        with self._connection() as conn:
+            return self._stopped(conn)
+
+    def set_refunds_stopped(self, stopped: bool, by: str, now: datetime) -> bool:
+        """Stop or resume all refunds; returns False when nothing changed.
+
+        The change is written to the chain in the same transaction, so the
+        stored state can always be proven from the audit trail.
+        """
+        with self._transaction() as conn:
+            if self._stopped(conn) == stopped:
+                return False
+            value = "yes" if stopped else "no"
+            conn.execute(_Q_CONTROL_SET, (STOP_CONTROL, value, _iso(now)))
+            event = "refunds_stopped" if stopped else "refunds_resumed"
+            self._append(conn, CONTROL_REQUEST, event, {"by": by}, now)
+            return True
 
     # --------------------------------------------------------------- decisions
 
@@ -428,7 +647,7 @@ class Ledger:
         so a request never counts against itself.
         """
         own = proposal.request_id
-        day_ago = _iso(now - timedelta(hours=24))
+        day_ago = _iso(now - VELOCITY_WINDOW)
         refund = ToolAction.CREATE_REFUND.value
         reserved = _sum(
             conn.execute(
@@ -452,6 +671,7 @@ class Ledger:
         refunds = len(times)
         known, duplicate = self._payee_facts(conn, proposal, now)
         return LedgerContext(
+            refunds_stopped=self._stopped(conn),
             expected_account_id=self._account,
             reserved_for_order=reserved,
             refunds_24h_for_customer=refunds,
@@ -551,14 +771,25 @@ class Ledger:
         to_state: ProposalState,
         now: datetime,
         detail: dict[str, str] | None = None,
+        *,
+        decide_within: int | None = None,
     ) -> None:
-        """Move a proposal along its lifecycle; anything not allowed is refused."""
+        """Move a proposal along its lifecycle; anything not allowed is refused.
+
+        An approval must name the time allowed to decide and is refused once it
+        has passed, inside the same transaction, so a late answer never sends
+        money even before the expiry job has run.
+        """
         now = _utc(now)
         with self._transaction() as conn:
             row = conn.execute(_Q_GET, (request_id,)).fetchone()
             if row is None:
                 raise FailClosedError("unknown request id", {"request_id": request_id})
             current = ProposalState(row["state"])
+            if to_state is S.EXECUTING and self._stopped(conn):
+                raise FailClosedError("refunds are stopped, so nothing can be sent")
+            if current is S.PENDING_APPROVAL and to_state is S.EXECUTING:
+                _require_time_left(row["updated_at"], decide_within, now)
             if to_state not in ALLOWED_TRANSITIONS.get(current, frozenset()):
                 raise FailClosedError(
                     "transition not allowed",
@@ -567,6 +798,26 @@ class Ledger:
             conn.execute(_Q_SET_STATE, (to_state.value, _iso(now), request_id))
             body = {"from": current.value, "to": to_state.value, **(detail or {})}
             self._append(conn, request_id, "state_changed", body, now)
+            if to_state in DROPPED_OUT and current in CUSTOMER_REFUNDS:
+                self._recheck_pauses(conn, row["customer_key"], now)
+
+    def _recheck_pauses(
+        self, conn: sqlite3.Connection, customer: str | None, now: datetime
+    ) -> None:
+        if customer:
+            stamp = _iso(now)
+            conn.execute(_Q_RECHECK_PAUSES, (stamp, S.PAUSED.value, customer, stamp))
+
+    def reserved_on_order(self, order_id: str, exclude: str) -> Decimal:
+        """Money other requests on this order are waiting to send."""
+        refund = ToolAction.CREATE_REFUND.value
+        concession = ToolAction.ACCEPT_DISPUTE_CLAIM.value
+        with self._connection() as conn:
+            rows = conn.execute(
+                _Q_ORDER_RESERVED,
+                (order_id, refund, concession, *RESERVING, exclude),
+            )
+            return _sum(rows)
 
     def send_back_for_approval(
         self,
@@ -666,11 +917,95 @@ class Ledger:
 
     def late_failures(self, now: datetime) -> list[dict[str, str]]:
         """Refunds PayPal failed or cancelled after accepting them, last 24 hours."""
-        day_ago = _iso(_utc(now) - timedelta(hours=24))
+        day_ago = _iso(_utc(now) - VELOCITY_WINDOW)
         params = (S.FAILED.value, *LATE_FAILURE_STATUSES, day_ago)
         with self._connection() as conn:
             rows = conn.execute(_Q_LATE_FAILURES, params).fetchall()
         return [{k: str(v or "") for k, v in dict(row).items()} for row in rows]
+
+    def version(self) -> int:
+        """A number that grows with every recorded change, for live updates."""
+        with self._connection() as conn:
+            return int(conn.execute(_Q_VERSION).fetchone()[0])
+
+    def events(self, request_id: str) -> list[dict[str, Any]]:
+        """The audit entries for one request, oldest first, bodies decoded."""
+        with self._connection() as conn:
+            rows = conn.execute(_Q_EVENTS, (request_id,)).fetchall()
+        return [
+            {"at": row["created_at"], "event": row["event"], **json.loads(row["body"])}
+            for row in rows
+        ]
+
+    def refunded_through_app(self, order_id: str) -> Decimal:
+        """Refunds on this order that this gateway sent and PayPal accepted."""
+        refund = ToolAction.CREATE_REFUND.value
+        with self._connection() as conn:
+            rows = conn.execute(_Q_APP_REFUNDED, (order_id, refund, S.EXECUTED.value))
+            return _sum(rows)
+
+    def recent_outcomes(self, now: datetime) -> list[dict[str, str]]:
+        """Requests that ended in the last 24 hours, newest first."""
+        day_ago = _iso(_utc(now) - VELOCITY_WINDOW)
+        ended = (S.EXECUTED.value, S.DENIED.value, S.EXPIRED.value, S.FAILED.value)
+        with self._connection() as conn:
+            rows = conn.execute(_Q_RECENT, (*ended, day_ago, RECENT_LIMIT)).fetchall()
+        return [{k: str(v or "") for k, v in dict(row).items()} for row in rows]
+
+    def recent_count(self, now: datetime) -> int:
+        """How many requests ended in the last 24 hours, with no list limit."""
+        day_ago = _iso(_utc(now) - VELOCITY_WINDOW)
+        ended = (S.EXECUTED.value, S.DENIED.value, S.EXPIRED.value, S.FAILED.value)
+        with self._connection() as conn:
+            return int(conn.execute(_Q_RECENT_COUNT, (*ended, day_ago)).fetchone()[0])
+
+    def day_summary(self, now: datetime) -> dict[str, str]:
+        """The merchant's last 24 hours of refunds, from this gateway's record.
+
+        A refund counts as refunded only once PayPal confirmed it; one PayPal is
+        still finishing is counted apart, so the day never claims money moved
+        early. "By your assistant" means sent without a person because it was
+        within the automatic limit.
+        """
+        day_ago = _iso(_utc(now) - VELOCITY_WINDOW)
+        refund = ToolAction.CREATE_REFUND.value
+        sent = by_assistant = processing = Decimal("0")
+        counts = {
+            "sent": 0,
+            "by_assistant": 0,
+            "by_you": 0,
+            "not_sent": 0,
+            "processing": 0,
+        }
+        with self._connection() as conn:
+            rows = conn.execute(_Q_DAY, (refund, day_ago)).fetchall()
+            outflow = _sum(conn.execute(_Q_OUTFLOW, (day_ago, *OUTFLOW, "")))
+            waiting = _sum(conn.execute(_Q_WAITING, (day_ago, *RESERVING)))
+        for row in rows:
+            state = ProposalState(row["state"])
+            amount = Decimal(row["amount"])
+            if state is S.EXECUTED and row["paypal_status"] != COMPLETED_STATUS:
+                counts["processing"] += 1
+                processing += amount
+            elif state is S.EXECUTED:
+                counts["sent"] += 1
+                sent += amount
+                if row["decision"] == Decision.ALLOW.value:
+                    counts["by_assistant"] += 1
+                    by_assistant += amount
+                else:
+                    counts["by_you"] += 1
+            elif state in (S.DENIED, S.EXPIRED, S.FAILED):
+                counts["not_sent"] += 1
+        return {
+            **{f"{key}_count": str(value) for key, value in counts.items()},
+            "sent_total": f"{sent:.2f}",
+            "by_assistant_total": f"{by_assistant:.2f}",
+            "processing_total": f"{processing:.2f}",
+            "limit_used": f"{outflow:.2f}",
+            # money set aside for requests still open, already counted in the limit
+            "waiting_total": f"{waiting:.2f}",
+        }
 
     def releases_due(self, now: datetime) -> list[str]:
         """Paused requests whose release time has come, oldest pause first."""
@@ -698,6 +1033,8 @@ class Ledger:
             row = conn.execute(_Q_GET, (request_id,)).fetchone()
             if row is None or ProposalState(row["state"]) is not S.PAUSED:
                 raise FailClosedError("only a paused request can be released")
+            if self._stopped(conn):
+                raise FailClosedError("refunds are stopped, so it stays on hold")
             proposal = proposal_from_dict(json.loads(row["proposal_json"]))
             if evidence is not None and evidence.order_id != proposal.order_id:
                 raise FailClosedError("release evidence is for a different order")
@@ -728,7 +1065,7 @@ class Ledger:
     def paused(self, now: datetime) -> list[dict[str, str]]:
         """Paused requests for the merchant, with the customer's refunds and asks in
         the last 24 hours."""
-        day_ago = _iso(_utc(now) - timedelta(hours=24))
+        day_ago = _iso(_utc(now) - VELOCITY_WINDOW)
         refund = ToolAction.CREATE_REFUND.value
         items: list[dict[str, str]] = []
         with self._connection() as conn:
@@ -747,6 +1084,11 @@ class Ledger:
                 item["refunds_24h"] = str(refunds)
                 items.append(item)
         return items
+
+    def record_greeting(self, request_id: str, named: bool) -> None:
+        """Keep whether the customer was greeted by name; never the name."""
+        with self._connection() as conn:
+            conn.execute(_Q_GREETING, ("yes" if named else "no", request_id))
 
     def same_paused_request(self, proposal: Proposal) -> str | None:
         """An existing pause for the same order, action and amount, if any."""
@@ -773,6 +1115,7 @@ class Ledger:
                 conn.execute(_Q_SET_STATE, (S.EXPIRED.value, _iso(now), request_id))
                 body = {"from": S.PENDING_APPROVAL.value, "to": S.EXPIRED.value}
                 self._append(conn, request_id, "state_changed", body, now)
+                self._recheck_pauses(conn, row["customer_key"], now)
                 expired.append(request_id)
         return expired
 
@@ -863,15 +1206,17 @@ class Ledger:
             AuditIntegrityError: at the first entry that was edited, removed,
                 reordered or recomputed without the key.
         """
-        prev = GENESIS_HASH
-        count = 0
         with self._connection() as conn:
             rows = conn.execute(_Q_CHAIN).fetchall()
+        self._verify_rows(rows)
+        return len(rows)
+
+    def _verify_rows(self, rows: list[sqlite3.Row]) -> None:
+        """Check a whole chain, read once, from the first entry to the last."""
+        prev = GENESIS_HASH
         for row in rows:
             self._verify_entry(row, prev)
             prev = row["entry_hash"]
-            count += 1
-        return count
 
     def _verify_entry(self, row: sqlite3.Row, prev: str) -> None:
         seq = row["seq"]
@@ -896,31 +1241,119 @@ class Ledger:
             AuditIntegrityError: when the chain is broken or a row disagrees
                 with the audit trail.
         """
-        self.verify_chain()
         with self._connection() as conn:
             audit = conn.execute(_Q_CHAIN).fetchall()
             proposals = conn.execute(_Q_ALL_PROPOSALS).fetchall()
+        # the same rows are checked and then marked as checked, so an entry
+        # added meanwhile is never counted as checked
+        self._verify_rows(audit)
         facts = _replayed_facts(audit)
         for row in proposals:
-            expected = facts.get(row["request_id"])
-            actual = {
-                "tool": row["tool"],
-                "amount": _normal_amount(row["amount"]),
-                "decision": row["decision"],
-                "state": row["state"],
-            }
-            if expected is None or expected != actual:
-                raise AuditIntegrityError(
-                    "a recorded decision differs from the audit trail",
-                    {"request_id": row["request_id"]},
-                )
+            _check_proposal(row, facts.get(row["request_id"]))
+        self._verify_stop_state(audit)
+        if audit:
+            with self._check_lock:
+                self._checked = (int(audit[-1]["seq"]), str(audit[-1]["entry_hash"]))
         return len(proposals)
 
-    def head_hash(self) -> str:
-        """Hash of the latest audit entry, for publishing the chain head."""
+    def verify_request(self, request_id: str) -> None:
+        """Check one request's record without re-reading the whole chain.
+
+        Its own entries are checked every time, the chain only from the newest
+        entry already checked (which is checked again), and its stored row
+        against its own entries. An edit to an older entry of another request is
+        left to the scheduled full check in ``verify_records``.
+
+        Raises:
+            AuditIntegrityError: when anything this request relies on changed.
+        """
+        with self._check_lock, self._connection() as conn:
+            self._verify_new_entries(conn)
+            own = conn.execute(_Q_REQUEST_CHAIN, (request_id,)).fetchall()
+            for row in own:
+                self._verify_entry(row, self._prev_hash(conn, int(row["seq"])))
+            proposal = conn.execute(_Q_ONE_PROPOSAL, (request_id,)).fetchone()
+        if proposal is not None:
+            _check_proposal(proposal, _replayed_facts(own).get(request_id))
+
+    def _verify_new_entries(self, conn: sqlite3.Connection) -> None:
+        """Check the chain from the newest entry already checked to the end."""
+        prev, after = GENESIS_HASH, 0
+        if self._checked is not None:
+            after, prev = self._checked
+            point = conn.execute(_Q_CHAIN_AT, (after,)).fetchone()
+            if point is None or not hmac.compare_digest(point["entry_hash"], prev):
+                raise AuditIntegrityError("an entry already checked was changed")
+            self._verify_entry(point, self._prev_hash(conn, after))
+        for row in conn.execute(_Q_CHAIN_AFTER, (after,)).fetchall():
+            self._verify_entry(row, prev)
+            prev, after = row["entry_hash"], int(row["seq"])
+        self._checked = (after, prev) if after else None
+
+    @staticmethod
+    def _prev_hash(conn: sqlite3.Connection, seq: int) -> str:
+        row = conn.execute(_Q_PREV_HASH, (seq,)).fetchone()
+        return str(row["entry_hash"]) if row else GENESIS_HASH
+
+    def _verify_stop_state(self, audit: list[sqlite3.Row]) -> None:
+        """The stored stop switch must match the last stop or resume in the chain."""
+        expected = "no"
+        for row in audit:
+            if row["request_id"] == CONTROL_REQUEST and row["event"] in STOP_EVENTS:
+                expected = STOP_EVENTS[row["event"]]
+        actual = "yes" if self.refunds_stopped() else "no"
+        if expected != actual:
+            raise AuditIntegrityError("the refund stop switch differs from the audit")
+
+    def head(self) -> dict[str, Any]:
+        """The latest chain entry, to publish where this service cannot edit it."""
         with self._connection() as conn:
-            last = conn.execute(_Q_LAST_HASH).fetchone()
-        return last["entry_hash"] if last is not None else GENESIS_HASH
+            last = conn.execute(_Q_HEAD).fetchone()
+        if last is None:
+            return {"seq": 0, "entry_hash": GENESIS_HASH, "created_at": ""}
+        return {
+            "seq": int(last["seq"]),
+            "entry_hash": str(last["entry_hash"]),
+            "created_at": str(last["created_at"]),
+        }
+
+    def verify_against_head(self, seq: int, entry_hash: str) -> int:
+        """Check the chain still contains a head published earlier.
+
+        A chain rebuilt by someone holding the audit key is internally valid,
+        but it cannot reproduce a hash that was published before the rewrite.
+
+        Raises:
+            AuditIntegrityError: when the chain is broken, shorter than the
+                published head, or rewritten since it was published.
+        """
+        count = self.verify_chain()
+        with self._connection() as conn:
+            row = conn.execute(_Q_AT_SEQ, (seq,)).fetchone()
+        if row is None:
+            raise AuditIntegrityError(
+                "the chain no longer has the published entry", {"seq": seq}
+            )
+        if not hmac.compare_digest(str(row["entry_hash"]), entry_hash):
+            raise AuditIntegrityError(
+                "the chain was rewritten since this head was published", {"seq": seq}
+            )
+        return count
+
+
+def _check_proposal(row: sqlite3.Row, expected: dict[str, str] | None) -> None:
+    """A stored request must match what its authenticated audit entries say."""
+    actual = {
+        "tool": row["tool"],
+        "amount": _normal_amount(row["amount"]),
+        "decision": row["decision"],
+        "state": row["state"],
+    }
+    if expected is None or expected != actual:
+        raise AuditIntegrityError(
+            "a recorded decision differs from the audit trail",
+            {"request_id": row["request_id"]},
+        )
 
 
 def _normal_amount(value: str) -> str:
@@ -945,6 +1378,10 @@ def _replayed_facts(rows: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
             }
         elif row["event"] == "state_changed" and request_id in facts:
             facts[request_id]["state"] = str(body["to"])
+        elif row["event"] == "released" and request_id in facts:
+            # a paused request decided again: its decision and state change
+            facts[request_id]["decision"] = str(body["decision"])
+            facts[request_id]["state"] = str(body["state"])
     return facts
 
 

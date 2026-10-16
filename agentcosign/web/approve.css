@@ -1,34 +1,45 @@
 :root {
-  /* Fixed light palette in two layers. Brand colours (paper, ink, accent) are for
-     recognition only; meaning colours (ok, caution, danger) are for money state
-     only, always with a symbol and words. Contrast on white: ink 14.9:1,
-     muted 7.4:1, ok on its tint 5.6:1, caution on its ochre tint 6.1:1, danger
-     on its tint 6.1:1, sandbox pill 5.9:1 (all measured). Meaning colours are
-     warm earth tones so they sit with the paper and ink; caution is ochre,
-     a different hue from the terracotta brand accent. */
+  /* Fixed light palette in two layers. Brand colours (paper, ink, primary) are
+     for recognition only; meaning colours (ok, caution, danger) are for money
+     state only, always with a symbol and words. Contrast: ink on surface 14.9:1,
+     muted 7.4:1, white on primary 14.9:1, ok on its tint 5.6:1, caution on its
+     tint 6.1:1, danger on its tint 6.1:1. */
   color-scheme: only light;
   --paper: #f4f1ea;
   --surface: #fdfcf9;
   --ink: #1f2a24;
   --ink-muted: #4b5563;
   --rule: #e3ded3;
-  --accent: #c2410c;
-  --accent-tint: #f6e3d8;
-  --accent-deep: #9a3412;
-  --on-ink: #ffffff;
+  --primary: #1f2a24;
+  --on-primary: #ffffff;
+  --focus: #c2410c;
   --ok: #1e6b43;
   --ok-bg: #e7f0e8;
+  --ok-line: #7fae8f;
   --caution: #7a4f05;
   --caution-bg: #f8eccb;
   --caution-line: #c9952b;
   --danger: #a3261c;
   --danger-bg: #f9e6e2;
+  --danger-line: #d98b80;
+  --neutral-bg: #e9e5dc;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", "Roboto Mono", "SF Mono", monospace;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* hidden always wins over a component's own display */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  /* a pull at the top never reloads the page and ends the session */
+  overscroll-behavior-y: contain;
 }
 
 body {
@@ -39,42 +50,71 @@ body {
 }
 
 main {
-  max-width: 34rem;
+  max-width: 30rem;
   margin: 0 auto;
-  padding: 12px 16px 40px;
+  padding: 8px 16px 32px;
 }
 
-/* brand bar: who this is and that it is the sandbox, always visible */
+p {
+  margin: 6px 0;
+}
+
+/* brand bar: whose refunds these are, and that no real money moves */
 .brand {
+  padding: 8px 0 10px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.brand-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 0 12px;
-  border-bottom: 1px dashed var(--rule);
 }
 
 .wordmark {
   font-weight: 800;
-  font-size: 1.1rem;
+  font-size: 1.15rem;
   letter-spacing: -0.02em;
 }
 
 .mode-pill {
-  font: 600 14px/1 var(--mono);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 6px 10px;
+  font: 700 14px/1 var(--sans);
+  padding: 6px 12px;
   border-radius: 999px;
-  background: var(--accent-tint);
-  color: var(--accent-deep);
+  background: var(--caution-bg);
+  color: var(--caution);
+}
+
+.identity {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* every screen starts clear of the header */
+.view {
+  padding-top: 8px;
+}
+
+.status {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  font-weight: 600;
 }
 
 h1 {
   font-size: 1.6rem;
   font-weight: 800;
+  line-height: 1.2;
   letter-spacing: -0.02em;
-  margin: 16px 0 4px;
+  margin: 14px 0 6px;
 }
 
 h2 {
@@ -82,128 +122,268 @@ h2 {
   margin: 12px 0 8px;
 }
 
-#queue-title {
-  font: 600 14px/1.4 var(--mono);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
+.question {
+  font-size: 1.45rem;
+  margin: 10px 0 4px;
 }
 
-.status {
-  min-height: 1.5em;
-  color: var(--ink-muted);
-}
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: 16px;
-  padding: 8px 16px 16px;
-  margin: 12px 0;
-}
-
-.question,
-.result-title {
-  font-size: 1.4rem;
-  font-weight: 800;
-  line-height: 1.25;
-  letter-spacing: -0.015em;
-  margin: 8px 0 6px;
-}
-
-.result-title:focus {
+.question:focus {
   outline: none;
 }
 
-.order-line {
-  margin: 0 0 10px;
-  color: var(--ink-muted);
-}
-
-.why {
-  margin: 10px 0;
-}
-
 .eyebrow {
-  margin: 8px 0 0;
-  font: 600 14px/1.4 var(--mono);
+  margin: 14px 0 0;
+  font: 700 14px/1.4 var(--sans);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  color: var(--ok);
+}
+
+.lead {
   color: var(--ink-muted);
 }
 
-/* safety check: passed is a quiet line; not run is a caution box */
-.safety {
-  margin: 10px 0;
+.footnote {
+  margin-top: 16px;
+  font-size: 14px;
+  color: var(--ink-muted);
 }
 
-.safety.passed {
-  color: var(--ok);
-  font-weight: 600;
+.muted {
+  color: var(--ink-muted);
 }
 
-.safety.missing {
-  padding: 4px 12px;
-  border: 2px solid var(--caution-line);
-  border-radius: 10px;
-  background: var(--caution-bg);
-  color: var(--ink);
+.small {
+  font-size: 14px;
 }
 
-.safety-title {
+.strong {
   font-weight: 700;
+}
+
+.center {
+  text-align: center;
+}
+
+.ok-text {
+  color: var(--ok);
+}
+
+.caution-text {
   color: var(--caution);
 }
 
-.safety-ask {
-  font-weight: 600;
+.danger-text {
+  color: var(--danger);
 }
 
-/* details from PayPal: the banner's guide lines, given a job */
-.details {
-  margin: 8px 0 4px;
+.big-number {
+  margin: 4px 0;
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
-.details summary {
-  cursor: pointer;
-  min-height: 44px;
+.reference {
+  font: 700 16px/1.4 var(--mono);
+  letter-spacing: 0.02em;
+}
+
+/* cards */
+.card {
+  display: block;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+
+.who-name {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.box-title {
+  margin: 0 0 4px;
+  font-weight: 700;
+}
+
+.caution-box {
+  background: var(--caution-bg);
+  border: 1.5px solid var(--caution-line);
+}
+
+.caution-box .box-title {
+  color: var(--caution);
+}
+
+.danger-box {
+  background: var(--danger-bg);
+  border: 1.5px solid var(--danger-line);
+}
+
+.danger-box .box-title {
+  color: var(--danger);
+}
+
+.ok-box {
+  background: var(--ok-bg);
+  border: 1.5px solid var(--ok-line);
+}
+
+.held {
+  background: var(--neutral-bg);
+}
+
+/* pills: one meaning each, always with words */
+.pill {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font: 700 14px/1.4 var(--sans);
+  white-space: nowrap;
+}
+
+.ok-pill {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.caution-pill {
+  background: var(--caution-bg);
+  color: var(--caution);
+}
+
+.danger-pill {
+  background: var(--surface);
+  color: var(--danger);
+  border: 1.5px solid var(--danger-line);
+}
+
+.neutral-pill {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* home */
+.section-title {
+  margin: 22px 0 6px;
+  font: 700 14px/1.4 var(--sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+button.request-card {
   display: flex;
-  align-items: center;
-  font-weight: 600;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-height: 0;
+  text-align: left;
+  font-weight: 400;
+  color: var(--ink);
+  cursor: pointer;
 }
 
-.fact {
+.card-top {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  padding: 7px 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.card-amount {
+  font-variant-numeric: tabular-nums;
+}
+
+.notice .pill {
+  margin-bottom: 4px;
+}
+
+/* label and value lines */
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
   border-bottom: 1px dashed var(--rule);
   font-variant-numeric: tabular-nums;
 }
 
-.fact span:first-child {
+.row:last-child {
+  border-bottom: none;
+}
+
+.row-label {
   color: var(--ink-muted);
 }
 
-.consequence {
-  font-size: 15px;
-  color: var(--ink-muted);
-  margin: 4px 0 12px;
+.row-value {
+  text-align: right;
+  font-weight: 600;
 }
 
-.deadline {
-  margin: 12px 0 0;
-  font-size: 15px;
-  color: var(--ink-muted);
+button.row-button {
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 9px 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed var(--rule);
+  border-radius: 0;
+  font-weight: 400;
+  color: var(--ink);
+  text-align: left;
 }
 
-.note {
-  color: var(--ink-muted);
+/* payment details expand in place, without leaving the decision */
+.details summary {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 48px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.details summary::after {
+  content: "Show";
+  align-self: flex-end;
+  margin-top: -40px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.details[open] summary::after {
+  content: "Hide";
+}
+
+.details[open] summary {
+  margin-bottom: 6px;
+}
+
+/* the decision stays under the thumb while the facts scroll */
+.actions {
+  position: sticky;
+  bottom: 0;
+  margin: 16px -16px 0;
+  padding: 8px 16px 12px;
+  background: var(--paper);
+  border-top: 1px solid var(--rule);
 }
 
 label {
   display: block;
-  margin: 8px 0 4px;
+  margin: 12px 0 4px;
+  font-weight: 600;
 }
 
 input {
@@ -221,7 +401,7 @@ button {
   display: block;
   width: 100%;
   min-height: 56px;
-  margin-top: 12px;
+  margin-top: 10px;
   font: inherit;
   font-weight: 700;
   border-radius: 12px;
@@ -229,9 +409,9 @@ button {
 }
 
 button.primary {
-  background: var(--ink);
-  color: var(--on-ink);
-  border: 1.5px solid var(--ink);
+  background: var(--primary);
+  color: var(--on-primary);
+  border: 1.5px solid var(--primary);
 }
 
 button.secondary {
@@ -240,12 +420,25 @@ button.secondary {
   border: 1.5px solid var(--ink);
 }
 
-button.link {
+button.link,
+button.back {
+  width: auto;
+  min-height: 48px;
+  margin: 4px 0 0;
+  padding: 0;
   background: transparent;
   border: none;
   color: var(--ink);
-  text-decoration: underline;
-  font-weight: 600;
+  font-weight: 700;
+  text-align: left;
+}
+
+button.link {
+  color: var(--primary);
+}
+
+button.back {
+  color: var(--ink-muted);
 }
 
 button:disabled {
@@ -256,16 +449,16 @@ button:disabled {
 button:focus-visible,
 input:focus-visible,
 summary:focus-visible {
-  outline: 3px solid var(--accent);
+  outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 
-/* progress and problems shown inside the card being looked at */
+/* progress and problems shown where the eyes are, above the buttons */
 .progress {
   margin: 12px 0 0;
   padding: 10px 12px;
   border-radius: 10px;
-  background: var(--paper);
+  background: var(--surface);
   border: 1px solid var(--rule);
   font-weight: 600;
 }
@@ -276,71 +469,263 @@ summary:focus-visible {
   border-color: var(--danger);
 }
 
-/* results: meaning colours, each with a badge word */
-.result-card {
-  border-width: 2px;
+.quote {
+  margin: 6px 0 12px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--rule);
+  background: var(--surface);
+  border-radius: 0 10px 10px 0;
 }
 
-.result-card.sent {
-  border-color: var(--ok);
-  background: var(--ok-bg);
+/* the record, oldest first */
+.timeline {
+  list-style: none;
+  margin: 16px 0;
+  padding: 0;
 }
 
-.result-card.stopped {
-  border-color: var(--rule);
+.timeline-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 0 18px 24px;
+  border-left: 2px solid var(--rule);
+  margin-left: 5px;
 }
 
-.result-card.paused {
-  border-color: var(--rule);
-  border-style: dashed;
-}
-
-.result-card.problem {
-  border-color: var(--danger);
-  background: var(--danger-bg);
-}
-
-.problem .result-badge {
-  background: var(--danger);
-  color: var(--on-ink);
-}
-
-.result-card.check {
-  border-color: var(--caution-line);
-  background: var(--caution-bg);
-}
-
-.result-badge {
-  display: inline-block;
-  margin: 12px 0 0;
-  padding: 3px 10px;
+.timeline-item::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 4px;
+  width: 12px;
+  height: 12px;
   border-radius: 999px;
-  font: 700 14px/1.4 var(--mono);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  background: var(--rule);
-  color: var(--ink);
+  background: var(--ink);
 }
 
-.sent .result-badge {
-  background: #2f6b4a;
-  color: var(--on-ink);
+.timeline-item:last-child {
+  border-left-color: transparent;
 }
 
-.check .result-badge {
-  background: var(--caution-line);
-  color: var(--ink);
+/* sending: an honest wait for PayPal's answer, no invented steps */
+.sending {
+  text-align: center;
+  padding: 48px 0;
 }
 
-.result-detail {
+.spinner {
+  display: inline-block;
+  width: 56px;
+  height: 56px;
+  border: 5px solid var(--rule);
+  border-top-color: var(--ink);
+  border-radius: 999px;
+  animation: turn 1s linear infinite;
+}
+
+@keyframes turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+.reference-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reference-row .link {
+  margin: 0;
+}
+
+.card.center .pill {
+  margin-bottom: 4px;
+}
+
+#freshness,
+#live-line {
+  margin: 2px 0;
+}
+
+/* loading placeholders: card shapes only, never figures */
+.skeleton {
+  height: 84px;
+  margin: 12px 0;
+  border-radius: 16px;
+  background: linear-gradient(90deg, var(--rule) 0%, var(--surface) 50%, var(--rule) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton.short {
+  height: 56px;
+  width: 70%;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* the send tracker: done is ticked, the current step is marked, the rest wait */
+.tracker {
+  list-style: none;
+  padding: 8px 16px;
+}
+
+.tracker li {
+  position: relative;
+  padding: 10px 0 10px 32px;
   color: var(--ink-muted);
 }
 
-.result {
-  font-weight: 600;
-  margin-top: 10px;
+.tracker li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid var(--rule);
+  box-sizing: border-box;
 }
 
-.result.failed {
-  color: var(--danger);
+.tracker li.active {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.tracker li.done {
+  color: var(--ok);
+  font-weight: 700;
+}
+
+.tracker li.done::before,
+.tracker li.active::before {
+  display: none;
+}
+
+/* notices about server-reported changes, clear of the decision buttons */
+.toasts {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(30rem, calc(100% - 32px));
+  z-index: 10;
+}
+
+.toast {
+  margin: 0 0 8px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--ink);
+  color: var(--on-primary);
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(31, 42, 36, 0.2);
+  animation: rise 0.2s ease-out;
+}
+
+button.busy {
+  opacity: 0.85;
+}
+
+.view:not([hidden]) {
+  animation: rise 0.16s ease-out;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .tracker li.active::before,
+  .toast,
+  .view:not([hidden]) {
+    animation: none;
+  }
+}
+
+/* Material icons drawn inline; size follows the text around them */
+.icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: currentColor;
+}
+
+.has-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+p.has-icon,
+.box-title.has-icon {
+  display: flex;
+}
+
+button.has-icon {
+  display: flex;
+  justify-content: center;
+}
+
+button.back.has-icon,
+button.link.has-icon {
+  display: inline-flex;
+  justify-content: flex-start;
+}
+
+.pill .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.row-value.has-icon {
+  justify-content: flex-end;
+}
+
+.tracker li .icon {
+  position: absolute;
+  left: 0;
+  top: 11px;
+}
+
+.tracker li.done .icon {
+  color: var(--ok);
+}
+
+.icon.spin {
+  animation: turn 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon.spin {
+    animation: none;
+  }
 }

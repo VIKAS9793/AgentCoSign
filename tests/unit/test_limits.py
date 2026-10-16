@@ -4,6 +4,7 @@ import pytest
 
 from agentcosign.core.config import LimitSettings
 from agentcosign.core.limits import (
+    UNKNOWN_CLIENT,
     CapacityMode,
     Tier,
     TrafficGuard,
@@ -24,6 +25,8 @@ def make_limits(**overrides: object) -> LimitSettings:
         "reviewer_reserved_concurrency": 0,
         "max_tracked_clients": 100,
         "exempt_paths": ["/health"],
+        "streaming_paths": ["/stream"],
+        "max_open_streams": 2,
         "public": {
             "general": {"capacity": 3, "refill_seconds": 10},
             "live_llm": {"capacity": 2, "refill_seconds": 60},
@@ -104,7 +107,7 @@ def test_unidentified_callers_are_not_limited_per_client_or_penalised() -> None:
     for _ in range(200):
         result = guard.admit("unknown", Tier.PUBLIC, "/api/x", T0)
         assert result.allowed
-        guard.release()
+        guard.release(result)
     guard.penalize("unknown", T0)  # must not create a shared penalty
     assert guard.admit("unknown", Tier.PUBLIC, "/api/x", T0).allowed
 
@@ -192,7 +195,7 @@ def test_inflight_cap_returns_fast_503_and_recovers_on_release() -> None:
     third = guard.admit("c", Tier.PUBLIC, "/api/x", T0)
     assert (first.allowed, second.allowed) == (True, True)
     assert (third.allowed, third.status) == (False, 503)
-    guard.release()
+    guard.release(first)
     assert guard.admit("c", Tier.PUBLIC, "/api/x", T0).allowed
     assert guard.inflight == 2
 
@@ -216,9 +219,51 @@ def test_reserve_must_leave_room_for_the_public() -> None:
 
 def test_release_never_goes_negative() -> None:
     guard = TrafficGuard(make_limits())
-    guard.release()
-    guard.release()
+    admitted = admit(guard, T0)
+    guard.release(admitted)
+    guard.release(admitted)
     assert guard.inflight == 0
+
+
+# Open live streams: they last for minutes, so they get their own small cap and
+# never use the request slots everyone else needs.
+def stream(guard: TrafficGuard, key: str, tier: Tier = Tier.PUBLIC):  # noqa: ANN201
+    return guard.admit(key, tier, "/stream", T0)
+
+
+@pytest.mark.edge
+def test_open_streams_never_take_request_slots() -> None:
+    guard = TrafficGuard(make_limits(max_concurrent_requests=2, max_open_streams=3))
+    assert all(stream(guard, f"s{n}").allowed for n in range(3))
+    assert admit(guard, T0, "a").allowed and admit(guard, T0, "b").allowed
+    assert guard.inflight == 2
+
+
+@pytest.mark.edge
+def test_streams_have_their_own_cap_and_free_it_on_close() -> None:
+    guard = TrafficGuard(make_limits(max_open_streams=2))
+    first, second = stream(guard, "s1"), stream(guard, "s2")
+    third = stream(guard, "s3")
+    assert (first.allowed, second.allowed) == (True, True)
+    assert (third.allowed, third.status) == (False, 503)
+    guard.release(first)
+    assert stream(guard, "s3").allowed
+    assert guard.inflight == 0  # closing a stream frees no request slot
+
+
+@pytest.mark.edge
+def test_a_blocked_client_cannot_open_a_stream() -> None:
+    guard = TrafficGuard(make_limits())
+    for _ in range(3):
+        guard.penalize("bad", T0)
+    assert stream(guard, "bad").status == 429
+
+
+@pytest.mark.edge
+def test_an_unidentified_caller_is_held_to_the_stream_cap() -> None:
+    guard = TrafficGuard(make_limits(max_open_streams=1))
+    assert stream(guard, UNKNOWN_CLIENT).allowed
+    assert stream(guard, UNKNOWN_CLIENT).status == 503
 
 
 def test_tracked_clients_are_bounded() -> None:
@@ -226,8 +271,10 @@ def test_tracked_clients_are_bounded() -> None:
         make_limits(max_tracked_clients=100, max_concurrent_requests=1)
     )
     for index in range(1_000):
-        guard.admit(f"10.0.{index // 250}.{index % 250}", Tier.PUBLIC, "/api/x", T0)
-        guard.release()
+        admitted = guard.admit(
+            f"10.0.{index // 250}.{index % 250}", Tier.PUBLIC, "/api/x", T0
+        )
+        guard.release(admitted)
     assert len(guard._clients) <= 100  # noqa: SLF001 -- asserting the memory bound
 
 

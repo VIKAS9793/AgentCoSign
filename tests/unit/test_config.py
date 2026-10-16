@@ -42,9 +42,13 @@ def test_approval_window_is_ten_minutes_and_capped() -> None:
 
     assert get_settings().approval.ttl_seconds == 600
     with pytest.raises(ValidationError):
-        ApprovalSettings(ttl_seconds=601, allowed_assurance=["passkey"])
+        ApprovalSettings(
+            ttl_seconds=601, session_seconds=600, enrolment_link_seconds=600
+        )
     with pytest.raises(ValidationError):
-        ApprovalSettings(ttl_seconds=900, allowed_assurance=["passkey"])
+        ApprovalSettings(
+            ttl_seconds=900, session_seconds=600, enrolment_link_seconds=600
+        )
 
 
 def test_money_is_decimal_not_float() -> None:

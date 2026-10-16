@@ -83,6 +83,8 @@ class LedgerContext:
     outflow_24h: Decimal = Decimal("0")
     known_payee: bool = False
     duplicate_payout_in_window: bool = False
+    # the merchant pressed stop: nothing moves until they turn refunds back on
+    refunds_stopped: bool = False
 
 
 @dataclass(frozen=True, slots=True)

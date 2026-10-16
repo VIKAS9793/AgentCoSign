@@ -17,6 +17,7 @@ from tests.scenarios.policy_scenarios import NOW, policy, screening
 from tests.unit.paypal_fixtures import ACCOUNT, dispute_json, order_json
 
 SECRET = b"s" * 32
+WINDOW = 600  # seconds allowed to decide
 
 
 def refund(request_id: str, amount: str) -> Proposal:
@@ -110,7 +111,8 @@ class RefusingClient(RecordedPayPalClient):
 async def test_a_definite_refusal_releases_the_reservation(ledger: Ledger) -> None:
     client = RefusingClient(retryable=False)
     decided = await decide(ledger, client, refund("r1", "60.00"))
-    ledger.transition("r1", ProposalState.EXECUTING, NOW)  # approved
+    # approved
+    ledger.transition("r1", ProposalState.EXECUTING, NOW, decide_within=WINDOW)
     outcome = await execute(
         refund("r1", "60.00"), decided, client, ledger, now=NOW, secret=SECRET
     )
@@ -125,7 +127,7 @@ async def test_an_unknown_outcome_keeps_the_reservation_for_a_safe_retry(
 ) -> None:
     client = RefusingClient(retryable=True)
     decided = await decide(ledger, client, refund("r1", "60.00"))
-    ledger.transition("r1", ProposalState.EXECUTING, NOW)
+    ledger.transition("r1", ProposalState.EXECUTING, NOW, decide_within=WINDOW)
     outcome = await execute(
         refund("r1", "60.00"), decided, client, ledger, now=NOW, secret=SECRET
     )
@@ -149,6 +151,12 @@ async def test_dispute_concession_executes_after_approval(ledger: Ledger) -> Non
     )
     decided = await decide(ledger, client, claim)
     assert ledger.state_of("d1") is ProposalState.PENDING_APPROVAL
-    ledger.transition("d1", ProposalState.EXECUTING, NOW, {"assurance": "passkey"})
+    ledger.transition(
+        "d1",
+        ProposalState.EXECUTING,
+        NOW,
+        {"assurance": "passkey"},
+        decide_within=WINDOW,
+    )
     outcome = await execute(claim, decided, client, ledger, now=NOW, secret=SECRET)
     assert outcome.state is ProposalState.EXECUTED

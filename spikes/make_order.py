@@ -3,7 +3,7 @@
 Prints the order id, the capture id and your sandbox merchant id (the value for
 PAYPAL_MERCHANT_ID). Sandbox only, sandbox test cards only; no real money.
 
-Run:  python spikes/make_order.py 50.00
+Run:  python spikes/make_order.py 50.00 ["Cardholder Name"]
 """
 
 import sys
@@ -13,7 +13,9 @@ import httpx
 from s1_s2_order_refund import BASE, BILLING, CANDIDATE_CARDS, get_token, hdrs
 
 
-def create_captured_order(client: httpx.Client, token: str, amount: str) -> dict | None:
+def create_captured_order(
+    client: httpx.Client, token: str, amount: str, name: str = "Test Buyer"
+) -> dict | None:
     """Create and capture an order, trying the sandbox test cards in turn."""
     for _brand, number in CANDIDATE_CARDS:
         body = {
@@ -29,7 +31,7 @@ def create_captured_order(client: httpx.Client, token: str, amount: str) -> dict
                     "number": number,
                     "expiry": "2030-12",
                     "security_code": "123",
-                    "name": "Test Buyer",
+                    "name": name,
                     "billing_address": BILLING,
                 }
             },
@@ -46,9 +48,10 @@ def create_captured_order(client: httpx.Client, token: str, amount: str) -> dict
 
 def main() -> None:
     amount = sys.argv[1] if len(sys.argv) > 1 else "50.00"
+    name = sys.argv[2] if len(sys.argv) > 2 else "Test Buyer"
     with httpx.Client(timeout=30) as client:
         token = get_token(client)
-        order = create_captured_order(client, token, amount)
+        order = create_captured_order(client, token, amount, name)
     if order is None:
         sys.exit("No sandbox test card was accepted.")
     unit = order["purchase_units"][0]

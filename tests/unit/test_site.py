@@ -1,10 +1,13 @@
 """The public pages: landing page, static assets and the API reference."""
 
+import json
 import re
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agentcosign.main import app
+from tests.unit.web_js import run_js
 
 EDGE = {"cf-connecting-ip": "203.0.113.90"}
 
@@ -64,3 +67,19 @@ def test_api_reference_nonce_changes_on_every_response() -> None:
 
 def test_redoc_is_not_exposed() -> None:
     assert get("/redoc").status_code == 404
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("execution", "says", "never"),
+    [
+        ("recorded", "recorded PayPal results", "sandbox"),
+        ("sandbox", "PayPal sandbox", "recorded"),
+    ],
+)
+def test_the_landing_page_names_the_mode_the_server_reports(
+    execution: str, says: str, never: str
+) -> None:
+    health = {"paypal_execution": execution, "capacity": "normal"}
+    text = run_js(["describe"], f"describe({json.dumps(health)})", "landing.js")
+    assert says in text and never not in text

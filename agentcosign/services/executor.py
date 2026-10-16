@@ -167,6 +167,10 @@ async def execute(
         return stopped
     if landed is not None:
         return await _record_success(ledger, request_id, now, *landed)
+    if await asyncio.to_thread(ledger.refunds_stopped):
+        # nothing new is sent while stopped; it is retried with the same request
+        # id after refunds resume, so it can never go out twice
+        return Execution(request_id, ProposalState.EXECUTING, "held_by_stop")
     try:
         response = await _call_paypal(client, proposal, current)
     except PayPalClientError as exc:
