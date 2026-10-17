@@ -952,7 +952,52 @@
     go("final", item.request_id);
     if (stale) {
       removeSendButtons();
+      return;
     }
+    confirmFresh(item);
+  }
+
+  // How the figures read now compare with the ones on screen.
+  function freshVerdict(before, after) {
+    if (!after) {
+      return "closed";
+    }
+    if (after.paypal_read !== "yes") {
+      return "unchecked";
+    }
+    return fingerprint(after) === fingerprint(before) ? "same" : "changed";
+  }
+
+  // The figures under the fingerprint button must be PayPal's current ones, so the
+  // final screen reads again as it opens and the button waits for that read.
+  function confirmFresh(item) {
+    var screen = document.getElementById("final");
+    var send = screen.querySelector(".decision .primary");
+    if (send) {
+      send.disabled = true;
+    }
+    setProgress(screen, "Checking the latest figures with PayPal", false);
+    readHome().then(function () {
+      if (current.view !== "final" || current.requestId !== item.request_id) {
+        return;
+      }
+      var latest = findItem(item.request_id);
+      var verdict = freshVerdict(item, latest);
+      if (verdict === "same") {
+        setProgress(screen, latest.checked_at ? "Up to date with PayPal " + when(latest.checked_at) : "", false);
+        setButtons(screen, true);
+      } else if (verdict === "unchecked") {
+        setProgress(screen, "Couldn't check the latest figures with PayPal. No money moved. Go back and try again.", true);
+      } else if (verdict === "closed") {
+        changeBanner("final", "This refund request is already closed. No money will move from this screen.", null);
+      } else {
+        changeBanner("final", "This refund request changed. Review the new figures before you approve.", findItem(item.request_id));
+      }
+    }).catch(function () {
+      if (current.view === "final") {
+        setProgress(screen, "Couldn't check the latest figures with PayPal. No money moved. Go back and try again.", true);
+      }
+    });
   }
 
   // --- deciding ----------------------------------------------------------------------

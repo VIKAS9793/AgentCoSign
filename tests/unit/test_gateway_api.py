@@ -1310,6 +1310,51 @@ def test_the_phone_re_reads_when_the_soonest_request_closes(
     assert wait == expected
 
 
+_SEEN = {
+    "section": "needs_decision",
+    "can_send": "yes",
+    "amount": "60.00",
+    "paid": "100.00",
+    "already_refunded": "0.00",
+    "refundable_now": "100.00",
+    "waiting_on_order": "0.00",
+    "paypal_read": "yes",
+}
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("latest", "verdict"),
+    [
+        (_SEEN, "same"),
+        # refunded in PayPal directly while the screen was open
+        ({**_SEEN, "already_refunded": "20.00", "refundable_now": "80.00"}, "changed"),
+        ({**_SEEN, "can_send": "no", "section": "cant_send"}, "changed"),
+        (None, "closed"),  # decided or expired elsewhere
+        ({**_SEEN, "paypal_read": "no"}, "unchecked"),  # PayPal did not answer
+    ],
+)
+def test_the_final_screen_checks_its_figures_with_paypal_before_the_fingerprint(
+    latest: dict[str, str] | None, verdict: str
+) -> None:
+    found = _run_js(
+        ["freshVerdict", "fingerprint"],
+        f"freshVerdict({json.dumps(_SEEN)}, {json.dumps(latest)})",
+    )
+    assert found == verdict
+
+
+@pytest.mark.edge
+def test_the_fingerprint_button_waits_for_the_fresh_check() -> None:
+    """Wiring only: the verdicts are tested by running them above."""
+    final = _script_function("openFinal")
+    assert "confirmFresh(item)" in final
+    fresh = _script_function("confirmFresh")
+    assert "send.disabled = true" in fresh
+    assert "freshVerdict(item, latest)" in fresh
+    assert "latest = findItem(item.request_id)" in fresh
+
+
 @pytest.mark.edge
 def test_every_home_render_waits_for_the_soonest_deadline() -> None:
     """Wiring only: the timing itself is tested by running it above."""
