@@ -49,11 +49,13 @@ policy:
 # Human approval (co-sign)
 # ------------------------------------------------------------------------------
 approval:
-  # Pending requests expire (and release their reserved budget) after this long.
-  # 10 minutes. Reference points: Monzo's in-app 3DS approval window is 10
-  # minutes; out-of-band OTP lifetimes are commonly capped at 10 minutes (SMS/phone)
-  # and 5 minutes (time-based devices). Capped at 600 in code: it cannot be raised here.
-  ttl_seconds: 600
+  # A request waits this long for the owner, then expires and releases the money
+  # set aside for it. 4 hours covers an interrupted working day; every approval
+  # re-checks PayPal and every rule before sending, so a long wait never acts on
+  # old facts. Capped at 86400 (24 hours) in code: it cannot be raised here.
+  open_seconds: 14400
+  # One fingerprint prompt can be answered for this long. Capped at 300 in code.
+  fingerprint_seconds: 120
   # A signed-in phone is signed out after this long. Every decision still needs
   # its own fingerprint signature. Capped at 600 in code.
   session_seconds: 600

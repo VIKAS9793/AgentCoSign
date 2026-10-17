@@ -345,13 +345,28 @@ def test_unsanitised_evidence_is_caught(tmp_path: Path) -> None:
     assert "evidence-not-sanitised" not in _repo_violations(tmp_path)
 
 
-def test_approval_window_cap_cannot_be_raised(tmp_path: Path) -> None:
-    config = (
-        'paypal_mode: Literal["sandbox"]\nextra="forbid"\n'
-        "ttl_seconds: int = Field(ge=30, le=900)\n"
-    )
-    _write(tmp_path, "agentcosign/core/config.py", config)
-    assert "approval-window-cap-missing-or-raised" in _repo_violations(tmp_path)
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("open_cap", "prompt_cap", "caught"),
+    [
+        ("86_400", "300", False),  # exactly the ceilings
+        ("86_401", "300", True),  # open window raised by a second
+        ("86_400", "301", True),  # fingerprint prompt raised by a second
+        (None, "300", True),  # open window cap removed
+        ("86_400", None, True),  # prompt cap removed
+    ],
+)
+def test_approval_window_caps_cannot_be_raised(
+    tmp_path: Path, open_cap: str | None, prompt_cap: str | None, caught: bool
+) -> None:
+    lines = ['paypal_mode: Literal["sandbox"]', 'extra="forbid"']
+    if open_cap is not None:
+        lines.append(f"open_seconds: int = Field(ge=300, le={open_cap})")
+    if prompt_cap is not None:
+        lines.append(f"fingerprint_seconds: int = Field(ge=30, le={prompt_cap})")
+    _write(tmp_path, "agentcosign/core/config.py", "\n".join(lines) + "\n")
+    found = "approval-window-cap-missing-or-raised" in _repo_violations(tmp_path)
+    assert found is caught
 
 
 def test_policy_rule_without_test_is_caught(tmp_path: Path) -> None:

@@ -179,7 +179,7 @@ def _register_policy_routes(app: FastAPI, settings: Settings) -> None:
             "refund_max_limit": str(policy.refund_max_limit),
             "velocity_max_refunds_24h": policy.velocity_max_refunds_24h,
             "daily_outflow_cap": str(policy.daily_outflow_cap),
-            "approval_ttl_seconds": settings.approval.ttl_seconds,
+            "approval_open_seconds": settings.approval.open_seconds,
         }
 
 

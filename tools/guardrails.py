@@ -36,6 +36,9 @@ MAX_TRACKED_BYTES = 1_000_000
 
 PACKAGE = "agentcosign"
 CONFIG_MODULE = "agentcosign/core/config.py"
+# The longest a request may stay open (a day) and a fingerprint prompt may be
+# answered (five minutes); config may lower them, never raise them.
+APPROVAL_WINDOW_CEILINGS = {"open_seconds": 86_400, "fingerprint_seconds": 300}
 ENGINE_MODULE = "agentcosign/services/policy_engine.py"
 
 # Which package layers may import which.
@@ -822,9 +825,10 @@ def check_config_pins(root: Path, report: Report) -> None:
         report.add("paypal-mode-not-pinned-to-sandbox", CONFIG_MODULE)
     if 'extra="forbid"' not in source:
         report.add("config-accepts-unknown-keys", CONFIG_MODULE)
-    cap = re.search(r"ttl_seconds\b[^\n]*\ble\s*=\s*(\d+)", source)
-    if cap is None or int(cap.group(1)) > 600:  # 10 minute ceiling
-        report.add("approval-window-cap-missing-or-raised", CONFIG_MODULE)
+    for name, ceiling in APPROVAL_WINDOW_CEILINGS.items():
+        cap = re.search(rf"\b{name}\b[^\n]*\ble\s*=\s*([\d_]+)", source)
+        if cap is None or int(cap.group(1).replace("_", "")) > ceiling:
+            report.add("approval-window-cap-missing-or-raised", CONFIG_MODULE)
 
 
 def check_web_assets(root: Path, report: Report) -> None:

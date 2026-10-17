@@ -392,13 +392,86 @@ async def test_a_refund_made_in_paypal_while_waiting_cannot_overspend(env: Env) 
     env.enrol()
     session = env.session()
     first, _ = env.decide("r1", "approve", session)
-    # the order changed, so the approver is asked again with today's figures
-    assert first.json()["state"] == "pending_approval"
+    # the approval checks PayPal again first: 200.00 does not fit now, so nothing
+    # is sent and the owner is told why in their words
+    assert first.json()["state"] == "denied"
+    assert "isn't enough left" in first.json()["merchant_reason"]
     assert await env.refunded() == Decimal("400.00")
+
+
+def _decide_by(env: Env, session: dict[str, str]) -> str:
+    return str(
+        next(i for i in _listed(env, session) if i["request_id"] == "r1")["decide_by"]
+    )
+
+
+@pytest.mark.edge
+async def test_a_change_that_still_fits_asks_again_with_a_fresh_window(
+    env: Env,
+) -> None:
+    # 500.00 paid; 200.00 asked; 100.00 refunded in PayPal directly while it waits
+    env.propose("r1", "200.00")
+    env.enrol()
+    session = env.session()
+    before = _decide_by(env, session)
+    await env.paypal.refund_capture("CAP-1", Decimal("100.00"), "USD", "outside-1")
+    first, _ = env.decide("r1", "approve", session)
+    assert first.json()["state"] == "pending_approval"  # asked again, nothing sent
+    assert await env.refunded() == Decimal("100.00")
+    assert _decide_by(env, session) > before  # the new question gets its own time
     second, _ = env.decide("r1", "approve", session)
-    # approving again cannot return more than was paid
-    assert second.json()["state"] == "failed"
-    assert await env.refunded() == Decimal("400.00")
+    assert second.json()["state"] == "executed"
+    assert await env.refunded() == Decimal("300.00")
+
+
+@pytest.mark.edge
+async def test_an_approval_paypal_cannot_check_sends_nothing_and_stays_open(
+    env: Env,
+) -> None:
+    env.propose("r1", "30.00")
+    env.enrol()
+    session = env.session()
+    order = env.paypal._orders.pop("ORD-1")  # type: ignore[attr-defined]
+    response, _ = env.decide("r1", "approve", session)
+    env.paypal._orders["ORD-1"] = order  # type: ignore[attr-defined]
+    assert response.status_code == 409
+    assert _gateway(env)._ledger.state_of("r1").value == "pending_approval"
+    assert await env.refunded() == Decimal("0")
+    again, _ = env.decide("r1", "approve", session)  # PayPal is back: try again
+    assert again.json()["state"] == "executed"
+
+
+@pytest.mark.edge
+async def test_a_refusal_at_approval_reads_as_owner_words_in_the_history(
+    env: Env,
+) -> None:
+    env.propose("r1", "200.00")
+    await env.paypal.refund_capture("CAP-1", Decimal("400.00"), "USD", "outside-1")
+    env.enrol()
+    session = env.session()
+    outcome, _ = env.decide("r1", "approve", session)
+    assert not re.search(r"\bR\d+\b", outcome.json()["merchant_reason"])
+    record = env.client.get("/v1/approvals/r1/history", headers=session).json()
+    steps = {event["step"]: event for event in record["events"]}
+    assert "declined" not in steps  # the owner approved; they did not decline
+    assert steps["refused_on_recheck"]["title"].startswith("Vikas approved")
+    assert "No money moved" in steps["refused_on_recheck"]["detail"]
+
+
+@pytest.mark.edge
+def test_a_stop_while_a_request_waits_does_not_move_its_deadline(env: Env) -> None:
+    env.propose("r1", "30.00")
+    env.enrol()
+    session = env.session()
+    before = _decide_by(env, session)
+    ledger = _gateway(env)._ledger
+    ledger.set_refunds_stopped(True, "Vikas", datetime.now(UTC))
+    refused = env.client.post(
+        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+    )
+    assert refused.status_code == 409  # no fingerprint is even asked for
+    ledger.set_refunds_stopped(False, "Vikas", datetime.now(UTC))
+    assert _decide_by(env, session) == before
 
 
 class LosesFirstRefundReply(RecordedPayPalClient):
@@ -885,7 +958,7 @@ def test_done_today_lists_what_ended_with_its_outcome(env: Env) -> None:
 def test_an_expired_request_never_tells_the_customer_no(env: Env) -> None:
     env.propose("r1", "10.00")
     gateway = _gateway(env)
-    later = datetime.now(UTC) + timedelta(hours=1)
+    later = datetime.now(UTC) + timedelta(seconds=gateway._open_seconds + 1)
     gateway._clock = lambda: later
     gateway.expire()
     status = env.client.get("/v1/proposals/r1", headers=env.key("agent_api_key"))
@@ -1036,7 +1109,7 @@ def test_home_past_the_deadline_is_not_sendable_before_expiry_runs(env: Env) -> 
     env.enrol()
     session = env.session()
     gateway = _gateway(env)
-    gateway._ttl = 0  # the window to decide has already closed
+    gateway._open_seconds = 0  # the window to decide has already closed
     home = _home(env, session)
     item = next(i for s in home["sections"].values() for i in s)
     assert item["can_send"] == "no"
@@ -1049,7 +1122,7 @@ def test_no_fingerprint_is_asked_for_an_approval_past_its_deadline(env: Env) -> 
     env.propose("r1", "30.00")
     env.enrol()
     session = env.session()
-    _gateway(env)._ttl = 0  # the window has closed; the expiry job has not run
+    _gateway(env)._open_seconds = 0  # the window has closed; the expiry job has not run
     options = env.client.post(
         "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
     )
@@ -1068,7 +1141,7 @@ async def test_a_fingerprint_that_arrives_after_the_deadline_sends_nothing(
     ).text
     signed = env.phone.sign(options)  # signed in time
     gateway = _gateway(env)
-    gateway._ttl = 0  # the answer arrives after the deadline, before expiry runs
+    gateway._open_seconds = 0  # answer arrives after the deadline, before expiry
     response = env.client.post(
         "/v1/approvals/r1/approve", json={"credential": signed}, headers=session
     )
@@ -1089,7 +1162,7 @@ async def test_the_deadline_is_checked_again_where_the_approval_is_written(
     ).text
     signed = env.phone.sign(options)
     gateway = _gateway(env)
-    gateway._ttl = 0
+    gateway._open_seconds = 0
     # the deadline passes between the early check and the write
     monkeypatch.setattr(gateway, "_past_deadline", lambda request_id: False)
     response = env.client.post(
@@ -1153,6 +1226,16 @@ async def test_a_fingerprint_that_cannot_be_accepted_is_not_a_closed_request(
             {"cant_send_reason": "not_enough_left"},
             "This refund request is already closed.",
         ),
+        (  # PayPal could not be read for the check at approval
+            {"refunds_stopped": "no"},
+            {"cant_send_reason": "paypal_unavailable"},
+            "Couldn't reach PayPal. No money moved.",
+        ),
+        (  # PayPal answered again by the time the phone re-read
+            {"refunds_stopped": "no"},
+            {"status": "waiting", "can_send": "yes"},
+            "That didn't go through. No money moved.",
+        ),
     ],
 )
 def test_a_refused_decision_says_why_from_a_fresh_read(
@@ -1160,6 +1243,130 @@ def test_a_refused_decision_says_why_from_a_fresh_read(
 ) -> None:
     expression = f"refusedOutcome({json.dumps(home)}, {json.dumps(latest)})"
     assert _run_js(["refusedOutcome"], expression)[1] == title
+
+
+# --- deadlines on the phone: a time of day, no countdown, exact at the end -------
+DEADLINE_MS = 1_800_000_000_000  # a fixed moment, so the tests never race a clock
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("seconds_left", "starts"),
+    [
+        (3_600, "Decide by"),
+        (89, "Decide by"),
+        (30, "Decide by"),  # rounding once showed "1 min left" here
+        (29, "Decide by"),  # and "Time ran out" here, with time still left
+        (1, "Decide by"),
+        (0, "Time ran out"),  # closed at its last moment, like the server
+        (-1, "Time ran out"),
+    ],
+)
+def test_a_card_says_when_it_closes_and_flips_exactly_at_the_end(
+    seconds_left: int, starts: str
+) -> None:
+    deadline = datetime.fromtimestamp(DEADLINE_MS / 1000, UTC).isoformat()
+    now = DEADLINE_MS - seconds_left * 1000
+    text = _run_js(
+        ["deadlineText", "closingTime", "clock"],
+        f"deadlineText({json.dumps(deadline)}, {now})",
+        constants=("MS_PER_DAY",),
+    )
+    assert text.startswith(starts)
+    assert "min left" not in text
+
+
+@pytest.mark.edge
+def test_a_card_closing_tomorrow_says_so() -> None:
+    deadline = datetime.fromtimestamp(DEADLINE_MS / 1000, UTC)
+    now = (deadline - timedelta(days=1)).timestamp() * 1000
+    text = _run_js(
+        ["deadlineText", "closingTime", "clock"],
+        f"deadlineText({json.dumps(deadline.isoformat())}, {now})",
+        constants=("MS_PER_DAY",),
+    )
+    assert text.startswith("Decide by tomorrow")
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("offsets", "expected"),
+    [
+        ([-5_000, 5_000, 1_000], 1_000),  # the soonest still open, past ones ignored
+        ([-1, 0], None),  # nothing left to wait for
+        ([], None),
+    ],
+)
+def test_the_phone_re_reads_when_the_soonest_request_closes(
+    offsets: list[int], expected: int | None
+) -> None:
+    items = [
+        {"decide_by": datetime.fromtimestamp((DEADLINE_MS + o) / 1000, UTC).isoformat()}
+        for o in offsets
+    ]
+    wait = _run_js(
+        ["msUntilSoonest"], f"msUntilSoonest({json.dumps(items)}, {DEADLINE_MS})"
+    )
+    assert wait == expected
+
+
+@pytest.mark.edge
+def test_every_home_render_waits_for_the_soonest_deadline() -> None:
+    """Wiring only: the timing itself is tested by running it above."""
+    assert "scheduleFlip(data.sections.needs_decision)" in _script_function(
+        "renderHome"
+    )
+    flip = _script_function("scheduleFlip")
+    assert "msUntilSoonest(items, serverNow())" in flip
+    assert "setTimeout(somethingChanged, wait)" in flip
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("minutes", "words"),
+    [
+        (240, "4 hours"),
+        (60, "1 hour"),
+        (90, "1 hour 30 minutes"),
+        (10, "10 minutes"),
+        (1, "1 minute"),
+        (1_440, "24 hours"),
+    ],
+)
+def test_the_time_to_decide_reads_in_hours_and_minutes(
+    minutes: int, words: str
+) -> None:
+    found = _run_js(
+        ["durationWords"], f"durationWords({minutes})", constants=("MINUTES_PER_HOUR",)
+    )
+    assert found == words
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("outcome", "title"),
+    [
+        (
+            {"state": "denied", "merchant_reason": "There isn't enough left."},
+            "Not refunded. No money moved.",
+        ),
+        (
+            {"state": "paused", "merchant_reason": "This customer reached it."},
+            "On hold. No money moved.",
+        ),
+        ({"state": "executed", "paypal_status": "COMPLETED"}, None),
+        ({"state": "denied"}, None),  # no reason given: the general wording stays
+    ],
+)
+def test_an_approval_stopped_by_the_fresh_check_says_why(
+    outcome: dict[str, str], title: str | None
+) -> None:
+    found = _run_js(["recheckOutcome"], f"recheckOutcome({json.dumps(outcome)})")
+    if title is None:
+        assert found is None
+        return
+    assert found[1] == title
+    assert outcome["merchant_reason"] in found[2]
 
 
 @pytest.mark.edge
@@ -1221,7 +1428,7 @@ def test_a_decline_past_the_deadline_is_still_accepted(env: Env) -> None:
     env.propose("r1", "30.00")
     env.enrol()
     session = env.session()
-    _gateway(env)._ttl = 0
+    _gateway(env)._open_seconds = 0
     response, _ = env.decide("r1", "reject", session)
     assert response.status_code == 200
     assert response.json()["state"] == "denied"
@@ -2127,9 +2334,18 @@ async def test_a_stuck_send_is_not_sent_while_stopped_and_finishes_once_after(
     env.propose("r1", "30.00")
     env.enrol()
     session = env.session()
-    order = env.paypal._orders.pop("ORD-1")  # PayPal unreadable at send time
+    # PayPal answers the check at approval, then cannot be read at send time
+    reads = iter([True])
+    real_get = env.paypal.get_order
+
+    async def flaky(order_id: str) -> Any:
+        if next(reads, False):
+            return await real_get(order_id)
+        raise PayPalClientError("unreachable")
+
+    env.paypal.get_order = flaky  # type: ignore[method-assign]
     env.decide("r1", "approve", session)
-    env.paypal._orders["ORD-1"] = order
+    env.paypal.get_order = real_get  # type: ignore[method-assign]
     gateway = _gateway(env)
     gateway._ledger.set_refunds_stopped(True, "Vikas", datetime.now(UTC))
     later = datetime.now(UTC) + timedelta(seconds=RETRY_QUIET_SECONDS + 5)

@@ -40,7 +40,7 @@ from webauthn.helpers.structs import (
 
 from agentcosign.core.exceptions import FailClosedError, SignatureError
 
-CHALLENGE_TTL_SECONDS = 120
+MS_PER_SECOND = 1000
 BUSY_TIMEOUT_SECONDS = 5
 APPROVER_NAME_MAX = 64
 INTENTS = frozenset({"approve", "reject", "view", "stop", "resume"})
@@ -115,10 +115,14 @@ def bound_challenge(intent: str, action_digest: str, nonce: str) -> bytes:
 class PasskeyRegistry:
     """Stores approver passkeys and verifies registrations and approvals."""
 
-    def __init__(self, path: Path | str, rp_id: str, origin: str) -> None:
+    def __init__(
+        self, path: Path | str, rp_id: str, origin: str, *, prompt_seconds: int
+    ) -> None:
         self._path = str(path)
         self._rp_id = rp_id
         self._origin = origin
+        # how long one fingerprint prompt can be answered, on the phone and here
+        self._prompt_seconds = prompt_seconds
         with self._connection() as conn:
             conn.executescript(_SCHEMA)
             columns = {row["name"] for row in conn.execute(_Q_COLUMNS).fetchall()}
@@ -143,7 +147,7 @@ class PasskeyRegistry:
             conn.close()
 
     def _put_challenge(self, purpose: str, value: str, now: datetime) -> None:
-        expires = _iso(now + timedelta(seconds=CHALLENGE_TTL_SECONDS))
+        expires = _iso(now + timedelta(seconds=self._prompt_seconds))
         with self._connection() as conn:
             conn.execute(_Q_PUT_CHALLENGE, (purpose, value, expires))
 
@@ -154,7 +158,7 @@ class PasskeyRegistry:
             row = conn.execute(_Q_TAKE_CHALLENGE, (purpose,)).fetchone()
             conn.execute(_Q_DROP_CHALLENGE, (purpose,))
             conn.execute("COMMIT")
-        if row is None or row["expires_at"] < _iso(now):
+        if row is None or row["expires_at"] <= _iso(now):
             raise SignatureError("the passkey request expired or was already used")
         value: str = row["challenge"]
         return value
@@ -212,6 +216,7 @@ class PasskeyRegistry:
         options = generate_registration_options(
             rp_id=self._rp_id,
             rp_name="AgentCoSign",
+            timeout=self._prompt_seconds * MS_PER_SECOND,
             user_name=name,
             user_id=hashlib.sha256(name.encode("utf-8")).digest(),
             authenticator_selection=AuthenticatorSelectionCriteria(
@@ -275,6 +280,7 @@ class PasskeyRegistry:
         options = generate_authentication_options(
             rp_id=self._rp_id,
             challenge=bound_challenge(intent, action_digest, nonce),
+            timeout=self._prompt_seconds * MS_PER_SECOND,
             allow_credentials=descriptors,
             user_verification=UserVerificationRequirement.REQUIRED,
         )

@@ -86,11 +86,16 @@ stateDiagram-v2
     Proposed --> Evaluating: schema OK, evidence fetched from PayPal
     Proposed --> Denied: schema invalid (R12)
     Evaluating --> Denied: R3/R4/R9/R10/R11/R12/R13/R14
-    Evaluating --> PendingApproval: R2/R5/R6/R7/R8/R15 (budget RESERVED)
+    Evaluating --> PendingApproval: R2/R6/R7/R8/R15 (budget RESERVED)
+    Evaluating --> Paused: R5 (budget RESERVED)
+    Paused --> Evaluating: release time reached, decided again from fresh facts
+    Paused --> Denied: declined by the owner
     Evaluating --> Executing: R1 clean (budget RESERVED)
-    PendingApproval --> Executing: passkey co-sign, evidence re-validated (R14)
-    PendingApproval --> Denied: rejected
-    PendingApproval --> Expired: TTL elapsed (reservation released)
+    PendingApproval --> Executing: passkey co-sign, then every rule re-run on fresh PayPal facts
+    PendingApproval --> PendingApproval: co-sign, but the order changed and still fits (fresh window)
+    PendingApproval --> Denied: rejected, or co-sign refused by the fresh re-check
+    PendingApproval --> Paused: co-sign, but the customer is now over the repeat limit
+    PendingApproval --> Expired: open window elapsed (reservation released)
     Executing --> Executed: PayPal ID returned
     Executing --> Failed: PayPal error (reservation released; retry only with the same key)
     Executed --> Confirmed: webhook (signature verified) or poll

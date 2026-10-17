@@ -1,5 +1,6 @@
 """Approver passkeys: enrolment and approvals bound to one exact action."""
 
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -13,11 +14,14 @@ from tests.unit.soft_authenticator import SoftAuthenticator
 RP_ID = "localhost"
 ORIGIN = "http://localhost:8000"
 ACTION = "a" * 64
+PROMPT_SECONDS = 120
 
 
 @pytest.fixture
 def registry(tmp_path: Path) -> PasskeyRegistry:
-    return PasskeyRegistry(tmp_path / "ledger.db", RP_ID, ORIGIN)
+    return PasskeyRegistry(
+        tmp_path / "ledger.db", RP_ID, ORIGIN, prompt_seconds=PROMPT_SECONDS
+    )
 
 
 @pytest.fixture
@@ -98,13 +102,34 @@ def test_a_signature_for_another_request_is_refused(
         registry.verify_approval("r2", "approve", ACTION, phone.sign(options), NOW)
 
 
-def test_an_expired_request_is_refused(
-    registry: PasskeyRegistry, phone: SoftAuthenticator
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("seconds", "accepted"),
+    [(PROMPT_SECONDS - 1, True), (PROMPT_SECONDS, False), (PROMPT_SECONDS + 1, False)],
+)
+def test_a_fingerprint_prompt_works_only_inside_its_window(
+    registry: PasskeyRegistry, phone: SoftAuthenticator, seconds: int, accepted: bool
 ) -> None:
+    """The prompt closes at its last moment, like the request's own deadline."""
     options = registry.approval_options("r1", "approve", ACTION, NOW)
-    later = NOW + timedelta(seconds=121)
+    signed = phone.sign(options)
+    at = NOW + timedelta(seconds=seconds)
+    if accepted:
+        assert registry.verify_approval("r1", "approve", ACTION, signed, at).name
+        return
     with pytest.raises(FailClosedError):
-        registry.verify_approval("r1", "approve", ACTION, phone.sign(options), later)
+        registry.verify_approval("r1", "approve", ACTION, signed, at)
+
+
+@pytest.mark.edge
+def test_the_phone_is_told_the_same_prompt_window(registry: PasskeyRegistry) -> None:
+    """The browser gives up when the server does, never earlier or later."""
+    device = SoftAuthenticator(RP_ID, ORIGIN)
+    enrol = json.loads(registry.registration_options("Vikas", NOW))
+    assert enrol["timeout"] == PROMPT_SECONDS * 1000
+    registry.register("Vikas", device.register(json.dumps(enrol)), NOW)
+    sign = json.loads(registry.approval_options("r1", "approve", ACTION, NOW))
+    assert sign["timeout"] == PROMPT_SECONDS * 1000
 
 
 def test_approval_without_biometric_or_pin_is_refused(
@@ -183,7 +208,7 @@ def test_an_older_database_gains_revocation_without_losing_passkeys(
             "created_at TEXT NOT NULL)"
         )
         db.execute("INSERT INTO passkeys VALUES ('id-1', 'key', 0, 'Vikas', 'now')")
-    registry = PasskeyRegistry(path, RP_ID, ORIGIN)
+    registry = PasskeyRegistry(path, RP_ID, ORIGIN, prompt_seconds=PROMPT_SECONDS)
     assert registry.has_passkeys()
     assert registry.revoke("Vikas", NOW) == 1
     assert not registry.has_passkeys()

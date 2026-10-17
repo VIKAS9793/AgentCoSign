@@ -68,6 +68,7 @@ class OutcomeOut(BaseModel):
     paypal_status: str | None = None
     customer_message: str | None = None
     update_by: str | None = None
+    merchant_reason: str | None = None
 
 
 class IntentIn(BaseModel):

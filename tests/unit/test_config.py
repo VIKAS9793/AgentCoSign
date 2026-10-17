@@ -36,19 +36,43 @@ def test_settings_load_from_yaml() -> None:
     assert settings.policy.daily_outflow_cap == Decimal("1000.00")
 
 
-def test_approval_window_is_ten_minutes_and_capped() -> None:
-    """Approvals expire after 10 minutes; configuration cannot extend it."""
+def _approval(open_seconds: int, fingerprint_seconds: int) -> object:
     from agentcosign.core.config import ApprovalSettings
 
-    assert get_settings().approval.ttl_seconds == 600
+    return ApprovalSettings(
+        open_seconds=open_seconds,
+        fingerprint_seconds=fingerprint_seconds,
+        session_seconds=600,
+        enrolment_link_seconds=600,
+    )
+
+
+def test_requests_stay_open_four_hours_and_prompts_two_minutes() -> None:
+    approval = get_settings().approval
+    assert approval.open_seconds == 14_400
+    assert approval.fingerprint_seconds == 120
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("open_seconds", "fingerprint_seconds", "accepted"),
+    [
+        (86_400, 300, True),  # both exactly at their caps
+        (86_401, 120, False),  # open window one second over a day
+        (14_400, 301, False),  # fingerprint prompt one second over five minutes
+        (299, 120, False),  # open window too short to be answered
+        (14_400, 29, False),  # prompt too short for a fingerprint
+    ],
+)
+def test_configuration_cannot_stretch_the_approval_windows(
+    open_seconds: int, fingerprint_seconds: int, accepted: bool
+) -> None:
+    """The caps live in code, so editing the config file cannot raise them."""
+    if accepted:
+        _approval(open_seconds, fingerprint_seconds)
+        return
     with pytest.raises(ValidationError):
-        ApprovalSettings(
-            ttl_seconds=601, session_seconds=600, enrolment_link_seconds=600
-        )
-    with pytest.raises(ValidationError):
-        ApprovalSettings(
-            ttl_seconds=900, session_seconds=600, enrolment_link_seconds=600
-        )
+        _approval(open_seconds, fingerprint_seconds)
 
 
 def test_money_is_decimal_not_float() -> None:

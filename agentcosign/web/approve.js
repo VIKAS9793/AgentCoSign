@@ -12,7 +12,8 @@
   var stream = null;
   var RECONNECT_FIRST_MS = 1000;
   var RECONNECT_MAX_MS = 30000;
-  var MS_PER_MINUTE = 60000;
+  var MINUTES_PER_HOUR = 60;
+  var flipTimer = null;
   var MS_PER_DAY = 86400000;
   var TOAST_SHOW_MS = 6000;
   var retryDelay = RECONNECT_FIRST_MS;
@@ -211,12 +212,61 @@
     return Date.now() + skew;
   }
 
-  function timeLeft(iso) {
-    var minutes = Math.round((new Date(iso).getTime() - serverNow()) / MS_PER_MINUTE);
-    if (minutes <= 0) {
+  // When a waiting request closes, as a time of day: no countdown to watch. It
+  // closes at its last moment, exactly as the server refuses it.
+  function deadlineText(iso, nowMs) {
+    if (nowMs >= new Date(iso).getTime()) {
       return "Time ran out";
     }
-    return "Approve by " + clock(iso) + " (" + minutes + " min left)";
+    return "Decide by " + closingTime(iso, nowMs);
+  }
+
+  function closingTime(iso, nowMs) {
+    var moment = new Date(iso);
+    var today = new Date(nowMs);
+    var tomorrow = new Date(nowMs + MS_PER_DAY);
+    if (moment.toDateString() === today.toDateString()) {
+      return clock(iso);
+    }
+    if (moment.toDateString() === tomorrow.toDateString()) {
+      return "tomorrow, " + clock(iso);
+    }
+    return moment.toLocaleDateString([], { day: "numeric", month: "short" }) + ", " + clock(iso);
+  }
+
+  // How long until the soonest open request closes, or null when none is open.
+  function msUntilSoonest(items, nowMs) {
+    var soonest = null;
+    items.forEach(function (item) {
+      var left = new Date(item.decide_by).getTime() - nowMs;
+      if (left > 0 && (soonest === null || left < soonest)) {
+        soonest = left;
+      }
+    });
+    return soonest;
+  }
+
+  // Reads the server again the moment the soonest request closes, so no screen
+  // offers a refund after its time is up.
+  function scheduleFlip(items) {
+    window.clearTimeout(flipTimer);
+    var wait = msUntilSoonest(items, serverNow());
+    if (wait !== null) {
+      flipTimer = window.setTimeout(somethingChanged, wait);
+    }
+  }
+
+  function durationWords(minutes) {
+    var hours = Math.floor(minutes / MINUTES_PER_HOUR);
+    var rest = minutes % MINUTES_PER_HOUR;
+    var parts = [];
+    if (hours) {
+      parts.push(hours + (hours === 1 ? " hour" : " hours"));
+    }
+    if (rest || !hours) {
+      parts.push(rest + (rest === 1 ? " minute" : " minutes"));
+    }
+    return parts.join(" ");
   }
 
   function ordinal(n) {
@@ -517,6 +567,7 @@
     reconciliationNotices(data.reconciliation || {}).forEach(function (card) { notices.appendChild(card); });
 
     fill("requests", data.sections.needs_decision, requestCard);
+    scheduleFlip(data.sections.needs_decision);
     fill("cant-send-list", data.sections.cant_send, requestCard);
     fill("paused-list", data.sections.paused, pausedCard);
     show("empty", data.sections.needs_decision.length === 0);
@@ -565,7 +616,7 @@
     card.appendChild(top);
     card.appendChild(el("span", paymentLine(item), "muted small"));
     if (item.can_send === "yes") {
-      card.appendChild(withIcon("time", el("span", timeLeft(item.decide_by), "caution-text small strong")));
+      card.appendChild(withIcon("time", el("span", deadlineText(item.decide_by, serverNow()), "caution-text small strong")));
     } else {
       card.appendChild(withIcon("blocked", el("span", CANT_SEND_WORDS[item.cant_send_reason] || "Can't be refunded", "danger-text small strong")));
     }
@@ -684,7 +735,7 @@
     box.appendChild(row("Needs your approval up to", money(settings.max_limit)));
     box.appendChild(row("Refunds per customer in " + settings.window_hours + " hours", settings.repeat_limit));
     box.appendChild(row("Daily refund limit", money(settings.daily_cap)));
-    box.appendChild(row("Time to approve", settings.decide_minutes + " minutes"));
+    box.appendChild(row("Time to decide", durationWords(Number(settings.decide_minutes))));
     box.appendChild(el("p", "You can't change these in the app yet.", "muted small"));
   }
 
@@ -764,7 +815,7 @@
       : item.customer + " · " + money(item.amount), "question"));
     view.appendChild(el("p", paymentLine(item), "muted small"));
     var fresh = item.checked_at ? "Up to date with PayPal " + when(item.checked_at) : "";
-    var meta = sendable ? [fresh, timeLeft(item.decide_by)] : [fresh];
+    var meta = sendable ? [fresh, deadlineText(item.decide_by, serverNow())] : [fresh];
     view.appendChild(el("p", meta.filter(Boolean).join(" · "), "muted small"));
     view.appendChild(el("div", "", "change-banner-slot"));
     view.appendChild(sendable ? whyBox(item) : stopBox(item));
@@ -781,7 +832,7 @@
       actions.appendChild(button("Decline", "secondary", function () {
         decide(item, "reject", view);
       }, "reject"));
-      actions.appendChild(el("p", "If you do nothing, no money moves.", "muted small center"));
+      actions.appendChild(el("p", "If you do nothing by then, no money moves.", "muted small center"));
     } else if (item.cant_send_reason === "not_enough_left" || item.cant_send_reason === "stopped") {
       actions.appendChild(button("Decline request", "primary", function () {
         decide(item, "reject", view);
@@ -1038,11 +1089,31 @@
       showChanged(item);
       return;
     }
+    var rechecked = recheckOutcome(outcome);
+    if (rechecked) {
+      showOutcome(rechecked[0], rechecked[1], rechecked[2], item);
+      return;
+    }
     if (outcome.state === "executing") {
       showOutcome("check", "Waiting for PayPal", ["It can't go out twice. You'll see the result in your refund requests as soon as PayPal answers."], item);
       return;
     }
     showOutcome("stopped", "Couldn't refund. No money moved.", ["Ask your assistant to try again."], item);
+  }
+  // PayPal is checked again right after an approval; when the request does not
+  // fit any more, say so in the server's words. Null when the approval went ahead.
+  // fits, say so in the server's words. Null when the approval went ahead.
+  function recheckOutcome(outcome) {
+    if (!outcome.merchant_reason) {
+      return null;
+    }
+    if (outcome.state === "paused") {
+      return ["stopped", "On hold. No money moved.", [outcome.merchant_reason, "It's checked again on its own when the customer is back under your limit."]];
+    }
+    if (outcome.state === "denied") {
+      return ["stopped", "Not refunded. No money moved.", [outcome.merchant_reason, "PayPal was checked again right after your approval."]];
+    }
+    return null;
   }
 
   // The order moved under the merchant: show then and now, and ask again.
@@ -1116,6 +1187,12 @@
     }
     if (latest && latest.cant_send_reason === "time_up") {
       return ["stopped", "Time ran out. No money moved.", ["Your assistant can ask again if it's still needed."]];
+    }
+    if (latest && latest.cant_send_reason === "paypal_unavailable") {
+      return ["check", "Couldn't reach PayPal. No money moved.", ["Try again in a moment."]];
+    }
+    if (latest && latest.status === "waiting") {
+      return ["check", "That didn't go through. No money moved.", ["It's still waiting for you. Try again."]];
     }
     return ["check", "This refund request is already closed.", ["No money will move from this screen."]];
   }

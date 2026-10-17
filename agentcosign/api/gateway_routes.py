@@ -107,6 +107,7 @@ def _out(outcome: Outcome) -> OutcomeOut:
         paypal_status=outcome.paypal_status,
         customer_message=outcome.customer_message,
         update_by=outcome.update_by,
+        merchant_reason=outcome.merchant_reason,
     )
 
 

@@ -64,6 +64,7 @@ from agentcosign.services.approval_view import (
     paypal_checked,
     placement,
     read_mark,
+    refused_at_approval,
     safety_check,
     scan_note,
     short_flag,
@@ -113,6 +114,8 @@ class Outcome:
     paypal_status: str | None = None
     customer_message: str | None = None
     update_by: str | None = None
+    # why an approved request could not go out after a fresh check, in owner words
+    merchant_reason: str | None = None
 
 
 def _utc_now() -> datetime:
@@ -222,7 +225,7 @@ class Gateway:
         self._policy = policy
         self._screening = screening
         self._secret = secret
-        self._ttl = approval.ttl_seconds
+        self._open_seconds = approval.open_seconds
         self._session_seconds = approval.session_seconds
         self._reconciliation = reconciliation
         self._full_check_every = timedelta(hours=audit.full_check_hours)
@@ -263,7 +266,7 @@ class Gateway:
             if existing is not None:
                 return await self._already_paused(existing, proposal, now)
         evidence = await self._evidence(proposal, now)
-        signals = Signals(screening=ScreeningVerdict.UNAVAILABLE)
+        signals = self._signals()
         recorded = await asyncio.to_thread(
             self._ledger.decide, proposal, evidence, signals, self._screening, now
         )
@@ -346,7 +349,7 @@ class Gateway:
             evidence = await self._evidence(proposal, now)
             if evidence is None:
                 continue
-            signals = Signals(screening=ScreeningVerdict.UNAVAILABLE)
+            signals = self._signals()
             try:
                 recorded = await asyncio.to_thread(
                     self._ledger.release,
@@ -427,7 +430,7 @@ class Gateway:
         if state is ProposalState.PAUSED:
             return datetime.fromisoformat(release) if release else self._clock()
         if state is ProposalState.PENDING_APPROVAL:
-            return datetime.fromisoformat(decide_by(changed, self._ttl))
+            return datetime.fromisoformat(decide_by(changed, self._open_seconds))
         return None
 
     async def _customer_line(
@@ -613,7 +616,7 @@ class Gateway:
                     "flag": short_flag(triggered, self._policy),
                     **money_view(facts, item["amount"], waiting),
                     "asked_at": item["created_at"],
-                    "decide_by": decide_by(item["updated_at"], self._ttl),
+                    "decide_by": decide_by(item["updated_at"], self._open_seconds),
                     **await self._refund_split(item["order_id"], facts),
                     **facts,
                 }
@@ -694,7 +697,7 @@ class Gateway:
             "max_limit": f"{policy.refund_max_limit:.2f}",
             "daily_cap": f"{policy.daily_outflow_cap:.2f}",
             "repeat_limit": str(policy.velocity_max_refunds_24h),
-            "decide_minutes": str(self._ttl // 60),
+            "decide_minutes": str(self._open_seconds // 60),
             "window_hours": str(int(VELOCITY_WINDOW.total_seconds() // 3600)),
         }
 
@@ -929,7 +932,7 @@ class Gateway:
 
     def expire(self) -> list[str]:
         """Expire approvals that waited longer than the approval window."""
-        return self._ledger.expire_due(self._clock(), self._ttl)
+        return self._ledger.expire_due(self._clock(), self._open_seconds)
 
     # ------------------------------------------------------------- approvals
 
@@ -952,7 +955,7 @@ class Gateway:
         timing = self._ledger.timing(request_id)
         if timing is None:
             return True
-        deadline = datetime.fromisoformat(decide_by(timing[2], self._ttl))
+        deadline = datetime.fromisoformat(decide_by(timing[2], self._open_seconds))
         return self._clock() >= deadline
 
     def approval_options(self, request_id: str, intent: str) -> str:
@@ -1009,29 +1012,73 @@ class Gateway:
             "approver": approver.name,
             "passkey": approver.credential_digest,
         }
-        target = (
-            ProposalState.EXECUTING if intent == "approve" else ProposalState.DENIED
-        )
+        if intent == "approve":
+            return await self._approve(request_id, approver.name, detail, now)
         await asyncio.to_thread(
-            partial(self._ledger.transition, decide_within=self._ttl),
+            partial(self._ledger.transition, decide_within=self._open_seconds),
             request_id,
-            target,
+            ProposalState.DENIED,
             now,
             detail,
         )
-        loaded = await asyncio.to_thread(self._ledger.load, request_id)
-        base = Outcome(
+        # a decline can bring the customer back under the limit: re-decide
+        # their pauses now rather than on the next background pass
+        await self.release_due()
+        return Outcome(
             request_id=request_id,
-            decision="approved" if intent == "approve" else "rejected",
+            decision="rejected",
             rule_id="",
-            explanation=f"{'Approved' if intent == 'approve' else 'Rejected'} by "
-            f"{approver.name} with a passkey.",
-            state=target.value,
+            explanation=f"Rejected by {approver.name} with a passkey.",
+            state=ProposalState.DENIED.value,
             triggered=(),
         )
-        if intent != "approve" or loaded is None or loaded[1] is None:
-            # a decline can bring the customer back under the limit: re-decide
-            # their pauses now rather than on the next background pass
+
+    async def _approve(
+        self, request_id: str, name: str, detail: dict[str, str], now: datetime
+    ) -> Outcome:
+        """Decide the request again from PayPal's current record, then send it if
+        the rules still allow it or still ask a person (the approval answers that).
+        """
+        loaded = await asyncio.to_thread(self._ledger.load, request_id)
+        if loaded is None:
+            raise FailClosedError("unknown request id")
+        proposal = loaded[0]
+        evidence = await self._evidence(proposal, now)
+        if proposal.order_id and evidence is None:
+            raise FailClosedError("PayPal could not be reached, so nothing was sent")
+        recorded = await asyncio.to_thread(
+            partial(self._ledger.approve, decide_within=self._open_seconds),
+            request_id,
+            evidence,
+            self._signals(),
+            self._screening,
+            now,
+            detail,
+        )
+        state = recorded.state or ProposalState.DENIED
+        base = Outcome(
+            request_id=request_id,
+            decision="approved",
+            rule_id="",
+            explanation=f"Approved by {name} with a passkey.",
+            state=state.value,
+            triggered=(),
+        )
+        if state is ProposalState.EXECUTING:
+            return (
+                base if evidence is None else await self._run(proposal, evidence, base)
+            )
+        result = recorded.result
+        if state in (ProposalState.DENIED, ProposalState.PAUSED):
             await self.release_due()
-            return base
-        return await self._run(loaded[0], loaded[1], base)
+        return replace(
+            base,
+            rule_id=result.rule_id,
+            triggered=result.triggered_rules,
+            merchant_reason=refused_at_approval(result.rule_id, self._policy),
+        )
+
+    def _signals(self) -> Signals:
+        """Screening and extraction results for a decision. The safety scan is not
+        built yet, so it always reports that it could not run."""
+        return Signals(screening=ScreeningVerdict.UNAVAILABLE)

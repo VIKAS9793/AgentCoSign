@@ -91,7 +91,7 @@ def test_pending_reservation_counts_against_the_captured_amount(ledger: Ledger) 
 def test_denied_and_expired_requests_do_not_reserve(ledger: Ledger) -> None:
     decide(ledger, refund("r1", "300.00"))  # denied
     decide(ledger, refund("r2", "60.00"))  # pending
-    ledger.expire_due(NOW + timedelta(seconds=601), ttl_seconds=600)
+    ledger.expire_due(NOW + timedelta(seconds=601), open_seconds=600)
     third = ledger.decide(
         refund("r3", "60.00"),
         replace_time(evidence(), NOW + timedelta(seconds=601)),
@@ -255,8 +255,8 @@ def test_unknown_request_cannot_transition(ledger: Ledger) -> None:
 
 def test_expiry_only_touches_requests_past_the_window(ledger: Ledger) -> None:
     decide(ledger, refund("r1", "60.00"))
-    assert ledger.expire_due(NOW + timedelta(seconds=599), ttl_seconds=600) == []
-    assert ledger.expire_due(NOW + timedelta(seconds=601), ttl_seconds=600) == ["r1"]
+    assert ledger.expire_due(NOW + timedelta(seconds=599), open_seconds=600) == []
+    assert ledger.expire_due(NOW + timedelta(seconds=601), open_seconds=600) == ["r1"]
     assert ledger.state_of("r1") is ProposalState.EXPIRED
 
 
@@ -582,3 +582,140 @@ def test_nothing_moves_into_sending_while_refunds_are_stopped(ledger: Ledger) ->
     with pytest.raises(FailClosedError):
         ledger.transition("r1", ProposalState.EXECUTING, NOW, decide_within=WINDOW)
     assert ledger.state_of("r1") is ProposalState.PENDING_APPROVAL
+
+
+# --- an approval re-decides the request from fresh facts ----------
+APPROVER = {"assurance": "passkey", "approver": "Vikas", "passkey": "p" * 16}
+
+
+def approve(ledger: Ledger, request_id: str, at, ev: OrderEvidence | None = None):  # noqa: ANN001, ANN201
+    fresh = replace_time(ev or evidence(), at)
+    return ledger.approve(
+        request_id, fresh, Signals(), SCREEN, at, APPROVER, decide_within=WINDOW
+    )
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("seconds", "accepted"), [(WINDOW - 1, True), (WINDOW, False), (WINDOW + 1, False)]
+)
+def test_an_approval_re_checked_with_paypal_still_respects_the_deadline(
+    ledger: Ledger, seconds: int, accepted: bool
+) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    at = NOW + timedelta(seconds=seconds)
+    if accepted:
+        assert approve(ledger, "r1", at).state is ProposalState.EXECUTING
+        return
+    with pytest.raises(FailClosedError):
+        approve(ledger, "r1", at)
+    assert ledger.state_of("r1") is ProposalState.PENDING_APPROVAL
+
+
+@pytest.mark.edge
+def test_an_approval_needs_its_deadline(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    with pytest.raises(FailClosedError):
+        ledger.approve(
+            "r1", evidence(), Signals(), SCREEN, NOW, APPROVER, decide_within=None
+        )
+
+
+@pytest.mark.edge
+def test_a_refund_that_no_longer_fits_is_refused_at_approval(ledger: Ledger) -> None:
+    # 100.00 paid; 60.00 asked; 50.00 refunded in PayPal directly while it waited
+    decide(ledger, refund("r1", "60.00"))
+    at = NOW + timedelta(seconds=60)
+    recorded = approve(ledger, "r1", at, evidence(refunded="50.00"))
+    assert recorded.state is ProposalState.DENIED
+    assert recorded.result.rule_id == "R4"
+    assert ledger.state_of("r1") is ProposalState.DENIED
+
+
+@pytest.mark.edge
+def test_a_changed_order_that_still_fits_goes_back_to_the_owner(ledger: Ledger) -> None:
+    # 100.00 paid; 60.00 asked; 20.00 refunded in PayPal directly: it still fits,
+    # but the owner approved figures that are not true any more
+    decide(ledger, refund("r1", "60.00"))
+    at = NOW + timedelta(seconds=60)
+    recorded = approve(ledger, "r1", at, evidence(refunded="20.00"))
+    assert recorded.state is ProposalState.PENDING_APPROVAL
+    timing = ledger.timing("r1")
+    assert timing is not None and timing[2] > NOW.isoformat()  # a fresh window
+    again = approve(
+        ledger, "r1", at + timedelta(seconds=30), evidence(refunded="20.00")
+    )
+    assert again.state is ProposalState.EXECUTING
+
+
+@pytest.mark.edge
+def test_a_lowered_daily_cap_refuses_at_approval(tmp_path: Path) -> None:
+    first = Ledger(tmp_path / "ledger.db", SECRET, policy(), ACCOUNT)
+    for n in range(4):
+        ev = evidence(order=f"ORD-{n}", captured="500.00")
+        first.decide(refund(f"r{n}", "250.00", f"ORD-{n}"), ev, Signals(), SCREEN, NOW)
+    # the owner lowers the daily cap while the requests wait
+    lowered = Ledger(
+        tmp_path / "ledger.db", SECRET, policy(daily_outflow_cap="500.00"), ACCOUNT
+    )
+    at = NOW + timedelta(seconds=60)
+    recorded = approve(lowered, "r0", at, evidence(order="ORD-0", captured="500.00"))
+    assert recorded.state is ProposalState.DENIED
+    assert recorded.result.rule_id == "R10"
+
+
+@pytest.mark.edge
+def test_a_customer_over_the_repeat_limit_goes_on_hold_at_approval(
+    tmp_path: Path,
+) -> None:
+    first = Ledger(tmp_path / "ledger.db", SECRET, policy(), ACCOUNT)
+    for n in range(3):
+        ev = evidence(order=f"ORD-{n}", captured="500.00")
+        first.decide(refund(f"r{n}", "60.00", f"ORD-{n}"), ev, Signals(), SCREEN, NOW)
+    # the owner lowers the repeat limit while the requests wait
+    lowered = Ledger(
+        tmp_path / "ledger.db", SECRET, policy(velocity_max_refunds_24h=1), ACCOUNT
+    )
+    at = NOW + timedelta(seconds=60)
+    recorded = approve(lowered, "r2", at, evidence(order="ORD-2", captured="500.00"))
+    assert recorded.state is ProposalState.PAUSED
+    assert recorded.result.release_at is not None
+
+
+@pytest.mark.edge
+def test_an_approval_with_another_orders_facts_is_refused(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    with pytest.raises(FailClosedError):
+        approve(ledger, "r1", NOW + timedelta(seconds=60), evidence(order="ORD-9"))
+    assert ledger.state_of("r1") is ProposalState.PENDING_APPROVAL
+
+
+@pytest.mark.edge
+def test_the_second_of_two_approvals_changes_nothing(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    at = NOW + timedelta(seconds=60)
+    assert approve(ledger, "r1", at).state is ProposalState.EXECUTING
+    with pytest.raises(FailClosedError):
+        approve(ledger, "r1", at)
+
+
+@pytest.mark.edge
+def test_nothing_is_approved_while_refunds_are_stopped(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    ledger.set_refunds_stopped(True, "Vikas", NOW)
+    with pytest.raises(FailClosedError):
+        approve(ledger, "r1", NOW + timedelta(seconds=60))
+    assert ledger.state_of("r1") is ProposalState.PENDING_APPROVAL
+
+
+@pytest.mark.edge
+def test_a_changed_captured_amount_is_refused_even_when_the_refund_fits(
+    ledger: Ledger,
+) -> None:
+    # decided on 100.00 captured; PayPal now shows 90.00: the order itself changed
+    decide(ledger, refund("r1", "60.00"))
+    recorded = approve(
+        ledger, "r1", NOW + timedelta(seconds=60), evidence(captured="90.00")
+    )
+    assert recorded.state is ProposalState.DENIED
+    assert recorded.result.rule_id == "R14"

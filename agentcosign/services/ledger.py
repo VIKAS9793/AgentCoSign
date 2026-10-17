@@ -41,7 +41,11 @@ from agentcosign.models.policy import (
     Signals,
 )
 from agentcosign.services.identity import payee_key
-from agentcosign.services.policy_engine import VELOCITY_WINDOW, evaluate
+from agentcosign.services.policy_engine import (
+    VELOCITY_WINDOW,
+    check_execution_drift,
+    evaluate,
+)
 from agentcosign.services.reconciliation import Known, OurRefund
 
 GENESIS_HASH = "0" * 64
@@ -397,6 +401,26 @@ def _reused_id_result() -> PolicyResult:
         triggered_rules=("R12",),
         metadata={"hits": [{"rule": "R12", "decision": "deny", "code": "id_reused"}]},
     )
+
+
+def _approval_outcome(
+    fresh: PolicyResult, drift: PolicyResult | None
+) -> tuple[ProposalState, PolicyResult]:
+    """Where an approved request goes: the strictest of the fresh decision and the
+    change in the order since it was decided.
+
+    The owner's approval answers "ask a person", so a fresh allow or ask goes ahead;
+    a refusal or a hold always wins over the approval.
+    """
+    if fresh.decision is Decision.DENY:
+        return S.DENIED, fresh
+    if drift is not None and drift.decision is Decision.DENY:
+        return S.DENIED, drift
+    if fresh.decision is Decision.PAUSE:
+        return S.PAUSED, fresh
+    if drift is not None:
+        return S.PENDING_APPROVAL, drift
+    return S.EXECUTING, fresh
 
 
 def _require_time_left(changed: str, decide_within: int | None, now: datetime) -> None:
@@ -801,6 +825,112 @@ class Ledger:
             if to_state in DROPPED_OUT and current in CUSTOMER_REFUNDS:
                 self._recheck_pauses(conn, row["customer_key"], now)
 
+    def approve(
+        self,
+        request_id: str,
+        evidence: OrderEvidence | None,
+        signals: Signals,
+        screening: ScreeningSettings,
+        now: datetime,
+        detail: dict[str, str],
+        *,
+        decide_within: int | None,
+    ) -> Recorded:
+        """Apply the owner's approval after deciding the request again from fresh facts.
+
+        A request can wait hours, so the approval is checked against PayPal's record
+        and our refunds as they are now, in the same transaction that checks the stop
+        and the deadline. If the rules now refuse or hold it, the approval moves no
+        money. If the order changed but the refund still fits, the owner is asked
+        again with the new figures, because they approved figures that are gone.
+        """
+        now = _utc(now)
+        with self._transaction() as conn:
+            row = conn.execute(_Q_GET, (request_id,)).fetchone()
+            if row is None or ProposalState(row["state"]) is not S.PENDING_APPROVAL:
+                raise FailClosedError("this request is not waiting for approval")
+            if self._stopped(conn):
+                raise FailClosedError("refunds are stopped, so nothing can be sent")
+            _require_time_left(row["updated_at"], decide_within, now)
+            proposal, state, result = self._decide_again(
+                conn, row, evidence, signals, screening, now
+            )
+            self._apply_approval(conn, row, proposal, evidence, result, state, now)
+            body = {
+                "from": S.PENDING_APPROVAL.value,
+                "to": state.value,
+                **({} if state is S.EXECUTING else {"recheck": result.rule_id}),
+                **detail,
+            }
+            self._append(conn, request_id, "state_changed", body, now)
+            if state in DROPPED_OUT or state is S.PAUSED:
+                self._recheck_pauses(conn, row["customer_key"], now)
+        return Recorded(request_id, state, result)
+
+    def _decide_again(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        evidence: OrderEvidence | None,
+        signals: Signals,
+        screening: ScreeningSettings,
+        now: datetime,
+    ) -> tuple[Proposal, ProposalState, PolicyResult]:
+        """Every rule on today's facts, plus what changed since the decision."""
+        proposal = proposal_from_dict(json.loads(row["proposal_json"]))
+        if evidence is not None and evidence.order_id != proposal.order_id:
+            raise FailClosedError("approval evidence is for a different order")
+        context = self._context(conn, proposal, evidence, now)
+        fresh = evaluate(
+            proposal, evidence, context, signals, self._policy, screening, now
+        )
+        decided = row["evidence_json"]
+        drift = (
+            check_execution_drift(evidence_from_dict(json.loads(decided)), evidence)
+            if decided and evidence is not None
+            else None
+        )
+        return (proposal, *_approval_outcome(fresh, drift))
+
+    def _apply_approval(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        proposal: Proposal,
+        evidence: OrderEvidence | None,
+        result: PolicyResult,
+        state: ProposalState,
+        now: datetime,
+    ) -> None:
+        snapshot = canonical_json(evidence_to_dict(evidence)) if evidence else None
+        if state in (S.EXECUTING, S.PENDING_APPROVAL):
+            # the decision stands; the facts it is sent on are now PayPal's latest
+            conn.execute(
+                _Q_REBASE,
+                (
+                    state.value,
+                    snapshot or row["evidence_json"],
+                    _iso(now),
+                    proposal.request_id,
+                ),
+            )
+            return
+        conn.execute(
+            _Q_REDECIDE,
+            (
+                state.value,
+                result.decision.value,
+                result.rule_id,
+                result.explanation,
+                json.dumps(list(result.triggered_rules)),
+                snapshot,
+                _iso(now),
+                _iso_or_none(result.release_at),
+                _iso(now),
+                proposal.request_id,
+            ),
+        )
+
     def _recheck_pauses(
         self, conn: sqlite3.Connection, customer: str | None, now: datetime
     ) -> None:
@@ -1104,10 +1234,10 @@ class Ledger:
             ).fetchone()
         return str(row["request_id"]) if row else None
 
-    def expire_due(self, now: datetime, ttl_seconds: int) -> list[str]:
+    def expire_due(self, now: datetime, open_seconds: int) -> list[str]:
         """Expire approvals left waiting too long, releasing their reservations."""
         now = _utc(now)
-        cutoff = _iso(now - timedelta(seconds=ttl_seconds))
+        cutoff = _iso(now - timedelta(seconds=open_seconds))
         expired: list[str] = []
         with self._transaction() as conn:
             for row in conn.execute(_Q_DUE, (S.PENDING_APPROVAL, cutoff)).fetchall():

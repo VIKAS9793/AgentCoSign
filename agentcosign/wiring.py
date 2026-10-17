@@ -54,7 +54,10 @@ def open_ledger(settings: Settings) -> Ledger:
 def open_passkeys(settings: Settings) -> PasskeyRegistry:
     """The approver passkeys, kept in the same database as the ledger."""
     return PasskeyRegistry(
-        _database(settings), settings.passkey_rp_id, settings.public_origin
+        _database(settings),
+        settings.passkey_rp_id,
+        settings.public_origin,
+        prompt_seconds=settings.approval.fingerprint_seconds,
     )
 
 

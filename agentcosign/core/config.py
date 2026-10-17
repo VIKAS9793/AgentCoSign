@@ -87,10 +87,13 @@ class ApprovalSettings(BaseModel):
 
     model_config = _STRICT
 
-    # A stale approval is a risk (the order, dispute or budget may have changed) while
-    # expiry is harmless (nothing is sent), so the window is capped at 10 minutes and
-    # cannot be raised by configuration.
-    ttl_seconds: int = Field(ge=30, le=600)
+    # How long a request waits for the owner. Every approval re-checks PayPal and
+    # every rule before anything is sent, so a long wait cannot act on old facts;
+    # the cap still keeps money from being set aside for more than a day.
+    open_seconds: int = Field(ge=300, le=86_400)
+    # How long one fingerprint prompt can be answered: short, so a prompt left open
+    # on an unattended phone cannot be completed much later.
+    fingerprint_seconds: int = Field(ge=30, le=300)
     # How long a signed-in phone stays open, and how long a setup link works.
     # Both are capped at 10 minutes in code for the same reason.
     session_seconds: int = Field(ge=60, le=600)

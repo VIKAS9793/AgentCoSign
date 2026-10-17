@@ -42,6 +42,22 @@ def plain_reason(rule_id: str, policy: PolicySettings) -> str:
     return reasons.get(rule_id, "This one needs your approval.")
 
 
+def refused_at_approval(rule_id: str, policy: PolicySettings) -> str:
+    """Why an approved request could not go out after PayPal was checked again."""
+    window = int(VELOCITY_WINDOW.total_seconds() // 3600)
+    reasons = {
+        "R4": "There isn't enough left on this order for this refund now.",
+        "R5": "This customer reached your limit of "
+        f"{policy.velocity_max_refunds_24h} refunds in {window} hours, so it is "
+        "on hold.",
+        "R10": "This refund would pass your daily refund limit of "
+        f"${policy.daily_outflow_cap:,.2f}.",
+        "R13": "The order's currency or account no longer matches.",
+        "R14": "The order changed at PayPal after your assistant checked it.",
+    }
+    return reasons.get(rule_id, "It no longer fits your settings.")
+
+
 SAFETY_PASSED = "passed"
 SAFETY_UNAVAILABLE = "unavailable"
 ONLY_SAFETY_REASON = (
@@ -190,6 +206,22 @@ def display_name(name: str) -> str:
     return name
 
 
+def _recheck_event(body: dict[str, Any]) -> dict[str, str] | None:
+    """An approval that a fresh check with PayPal stopped before any money moved."""
+    to = body.get("to")
+    if not body.get("recheck") or to not in ("denied", "paused"):
+        return None
+    approver = display_name(str(body.get("approver") or ""))
+    held = to == "paused"
+    return {
+        "step": "refused_on_recheck",
+        "title": f"{approver} approved, then PayPal was checked again",
+        "detail": "It went on hold. No money moved"
+        if held
+        else "It didn't fit any more, so it was not refunded. No money moved",
+    }
+
+
 def _changed_event(body: dict[str, Any]) -> dict[str, str]:
     to = body.get("to")
     approver = display_name(str(body.get("approver") or ""))
@@ -249,7 +281,7 @@ def history_events(rows: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
         if kind == "decided":
             found = _decided_events(row)
         elif kind == "state_changed":
-            found = [_changed_event(row)]
+            found = [_recheck_event(row) or _changed_event(row)]
         elif kind == "execution_attempt":
             found = [
                 {
@@ -279,10 +311,10 @@ def history_events(rows: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
     return events
 
 
-def decide_by(created_at: str, ttl_seconds: int) -> str:
+def decide_by(created_at: str, open_seconds: int) -> str:
     """The moment the request closes (ISO time), after which nothing is sent."""
     return (
-        datetime.fromisoformat(created_at) + timedelta(seconds=ttl_seconds)
+        datetime.fromisoformat(created_at) + timedelta(seconds=open_seconds)
     ).isoformat()
 
 
