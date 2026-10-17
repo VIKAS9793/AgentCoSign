@@ -719,3 +719,73 @@ def test_a_changed_captured_amount_is_refused_even_when_the_refund_fits(
     )
     assert recorded.state is ProposalState.DENIED
     assert recorded.result.rule_id == "R14"
+
+
+# --- the automatic budget counts only refunds that went out without a person ------
+def _auto(ledger: Ledger, request_id: str, amount: str, order: str = "ORD-1"):  # noqa: ANN201
+    return decide(ledger, refund(request_id, amount, order), evidence(order=order))
+
+
+@pytest.mark.edge
+def test_a_second_small_refund_on_an_order_asks_the_owner(ledger: Ledger) -> None:
+    assert _auto(ledger, "r1", "24.99").state is ProposalState.EXECUTING
+    second = _auto(ledger, "r2", "24.99")
+    assert second.result.decision is Decision.ESCALATE
+    assert second.result.rule_id == "R17"
+
+
+@pytest.mark.edge
+def test_small_refunds_on_two_orders_share_the_customers_budget(ledger: Ledger) -> None:
+    assert _auto(ledger, "r1", "20.00", "ORD-1").state is ProposalState.EXECUTING
+    other = _auto(ledger, "r2", "10.00", "ORD-2")
+    assert other.result.rule_id == "R17"
+
+
+@pytest.mark.edge
+def test_a_refund_that_failed_at_paypal_frees_its_budget(ledger: Ledger) -> None:
+    _auto(ledger, "r1", "20.00")
+    ledger.transition("r1", ProposalState.FAILED, NOW)
+    assert _auto(ledger, "r2", "20.00").state is ProposalState.EXECUTING
+
+
+@pytest.mark.edge
+def test_a_refund_the_owner_approved_does_not_use_the_automatic_budget(
+    ledger: Ledger,
+) -> None:
+    decide(ledger, refund("r1", "60.00"))  # asks the owner
+    approve(ledger, "r1", NOW + timedelta(seconds=5))
+    assert ledger.state_of("r1") is ProposalState.EXECUTING
+    assert _auto(ledger, "r2", "20.00").state is ProposalState.EXECUTING
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("seconds_ago", "counted"),
+    [
+        (23 * 3600, True),
+        (24 * 3600, True),  # the window includes its start, like the repeat rule
+        (24 * 3600 + 1, False),
+    ],
+)
+def test_the_customers_automatic_budget_looks_back_one_day(
+    ledger: Ledger, seconds_ago: int, counted: bool
+) -> None:
+    then = NOW - timedelta(seconds=seconds_ago)
+    ledger.decide(
+        refund("r1", "20.00", "ORD-1"),
+        replace_time(evidence(order="ORD-1"), then),
+        Signals(),
+        SCREEN,
+        then,
+    )
+    later = _auto(ledger, "r2", "10.00", "ORD-2")
+    assert (later.result.rule_id == "R17") is counted
+
+
+@pytest.mark.edge
+def test_a_repeat_of_the_same_request_is_not_counted_against_itself(
+    ledger: Ledger,
+) -> None:
+    first = _auto(ledger, "r1", "20.00")
+    again = _auto(ledger, "r1", "20.00")  # same id, same body: replayed
+    assert again.replayed and again.state is first.state

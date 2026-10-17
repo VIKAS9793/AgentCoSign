@@ -160,6 +160,15 @@ _Q_CUSTOMER = (
     "SELECT decided_at FROM proposals WHERE customer_key = ? AND tool = ? "
     "AND decided_at >= ? AND state IN (?, ?, ?) AND request_id != ?"
 )
+# Refunds that went out (or are going out) without a person deciding.
+_Q_AUTO_ORDER = (
+    "SELECT amount FROM proposals WHERE order_id = ? AND tool = ? AND decision = ? "
+    "AND state IN (?, ?) AND request_id != ?"
+)
+_Q_AUTO_CUSTOMER = (
+    "SELECT amount FROM proposals WHERE customer_key = ? AND tool = ? "
+    "AND decision = ? AND decided_at >= ? AND state IN (?, ?) AND request_id != ?"
+)
 _Q_CUSTOMER_REFUND_COUNT = (
     "SELECT COUNT(*) FROM proposals WHERE customer_key = ? AND tool = ? "
     "AND decided_at >= ? AND state IN (?, ?, ?)"
@@ -694,6 +703,7 @@ class Ledger:
             times = tuple(datetime.fromisoformat(r["decided_at"]) for r in rows)
         refunds = len(times)
         known, duplicate = self._payee_facts(conn, proposal, now)
+        auto_order, auto_customer = self._auto_facts(conn, proposal, customer, now)
         return LedgerContext(
             refunds_stopped=self._stopped(conn),
             expected_account_id=self._account,
@@ -701,9 +711,35 @@ class Ledger:
             refunds_24h_for_customer=refunds,
             customer_refund_times=times,
             outflow_24h=outflow,
+            auto_for_order=auto_order,
+            auto_24h_for_customer=auto_customer,
             known_payee=known,
             duplicate_payout_in_window=duplicate,
         )
+
+    def _auto_facts(
+        self,
+        conn: sqlite3.Connection,
+        proposal: Proposal,
+        customer: str | None,
+        now: datetime,
+    ) -> tuple[Decimal, Decimal]:
+        """Refunds sent without a person, on this order and for this customer today.
+
+        Only requests the rules let through on their own count: a refund the owner
+        approved, or one that failed at PayPal, uses none of the automatic budget.
+        """
+        common = (ToolAction.CREATE_REFUND.value, Decision.ALLOW.value)
+        sent = (S.EXECUTING, S.EXECUTED)
+        own = proposal.request_id
+        order = _sum(
+            conn.execute(_Q_AUTO_ORDER, (proposal.order_id, *common, *sent, own))
+        )
+        if not customer:
+            return order, Decimal("0")
+        day_ago = _iso(now - VELOCITY_WINDOW)
+        params = (customer, *common, day_ago, *sent, own)
+        return order, _sum(conn.execute(_Q_AUTO_CUSTOMER, params))
 
     def _payee_facts(
         self, conn: sqlite3.Connection, proposal: Proposal, now: datetime

@@ -175,3 +175,16 @@ def test_the_on_hold_history_title_follows_the_rule_window(
     monkeypatch.setattr(approval_view, "VELOCITY_WINDOW", timedelta(hours=12))
     assert "12-hour" in approval_view.outcome_title("paused")
     assert approval_view.outcome_title("unknown") == ""
+
+
+@pytest.mark.edge
+def test_the_automatic_budget_reason_reads_in_owner_words() -> None:
+    policy = get_settings().policy
+    words = approval_view.plain_reason("R17", policy)
+    assert words != approval_view.plain_reason("", policy)  # never the generic line
+    assert "without asking" in words
+    assert f"${policy.refund_auto_limit:,.2f}" in words  # the configured limit
+    assert not re.search(r"\bR\d+\b|agent|escalat", words, re.IGNORECASE)
+    assert (
+        approval_view.short_flag(["R17"], policy) == "Already refunded without asking"
+    )

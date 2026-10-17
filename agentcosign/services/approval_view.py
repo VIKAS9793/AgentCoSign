@@ -38,6 +38,9 @@ def plain_reason(rule_id: str, policy: PolicySettings) -> str:
         "R8": "These payout details are new or changed. Check them before you approve.",
         "R14": "This order changed after your assistant checked it. Review it again.",
         "R15": "We couldn't scan the customer's messages for misuse.",
+        "R17": "Your assistant already refunded this order or this customer without "
+        f"asking you. Refunds without asking stop at {auto} per order and per "
+        f"customer in {window} hours.",
     }
     return reasons.get(rule_id, "This one needs your approval.")
 
@@ -116,9 +119,10 @@ def short_flag(triggered: Sequence[str], policy: PolicySettings) -> str:
         "R6": "Open dispute",
         "R8": "New payout details",
         "R14": "Order changed",
+        "R17": "Already refunded without asking",
         "R2": f"Over your {auto} limit",
     }
-    for rule in ("R7", "R6", "R8", "R14", "R2"):
+    for rule in ("R7", "R6", "R8", "R14", "R17", "R2"):
         if rule in triggered:
             return flags[rule]
     return "Safety check didn't run" if RULE_SCREENING_DOWN in triggered else ""

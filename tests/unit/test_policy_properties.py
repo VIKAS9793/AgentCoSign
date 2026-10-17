@@ -162,6 +162,43 @@ def test_exposure_stays_bounded_even_if_every_escalation_is_approved(
     assert auto_total <= RULES.daily_outflow_cap
 
 
+@COMMON
+@given(
+    steps=st.lists(
+        st.tuples(
+            st.integers(0, 2), st.integers(1, 3_000).map(lambda n: Decimal(n) / 100)
+        ),
+        min_size=1,
+        max_size=60,
+    )
+)
+def test_money_sent_without_asking_never_passes_the_automatic_limit(
+    steps: list[tuple[int, Decimal]],
+) -> None:
+    """However the asks are split across orders, one customer can get at most the
+    automatic limit out without the owner deciding, per order and per day."""
+    auto_by_order = {0: Decimal("0"), 1: Decimal("0"), 2: Decimal("0")}
+    for order, amount in steps:
+        evidence = replace_order(_evidence(Decimal("0"), False, 5), f"ORD-{order}")
+        proposal = Proposal(
+            request_id=f"req-{order}",
+            tool="create_refund",
+            amount=amount,
+            currency="USD",
+            order_id=f"ORD-{order}",
+        )
+        ledger = LedgerContext(
+            expected_account_id=ACCOUNT,
+            auto_for_order=auto_by_order[order],
+            auto_24h_for_customer=sum(auto_by_order.values(), Decimal("0")),
+        )
+        result = evaluate(proposal, evidence, ledger, Signals(), RULES, SCREEN, NOW)
+        if result.decision is Decision.ALLOW:
+            auto_by_order[order] += amount
+    assert all(total <= RULES.refund_auto_limit for total in auto_by_order.values())
+    assert sum(auto_by_order.values(), Decimal("0")) <= RULES.refund_auto_limit
+
+
 def replace_order(evidence: OrderEvidence, order_id: str) -> OrderEvidence:
     """Copy evidence under a different order id."""
     return OrderEvidence(

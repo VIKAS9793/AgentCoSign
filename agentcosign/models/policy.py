@@ -81,6 +81,10 @@ class LedgerContext:
     # the customer is back under the limit.
     customer_refund_times: tuple[datetime, ...] = ()
     outflow_24h: Decimal = Decimal("0")
+    # Refunds sent (or being sent) without a person deciding: on this order ever,
+    # and for this customer in the last 24 hours.
+    auto_for_order: Decimal = Decimal("0")
+    auto_24h_for_customer: Decimal = Decimal("0")
     known_payee: bool = False
     duplicate_payout_in_window: bool = False
     # the merchant pressed stop: nothing moves until they turn refunds back on

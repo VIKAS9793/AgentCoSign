@@ -66,7 +66,10 @@ async def test_executed_refunds_count_through_paypal_not_twice(ledger: Ledger) -
     ev = await fetch_evidence(client, "ORD-1", now=NOW, secret=SECRET)
     ok = ledger.decide(refund("r2", "10.00"), ev, Signals(), screening(), NOW)
     over = ledger.decide(refund("r3", "10.01"), ev, Signals(), screening(), NOW)
-    assert ok.result.decision is Decision.ALLOW
+    # exactly what is left fits (a second automatic refund on the order now asks
+    # the owner, but never because the first was counted twice)
+    assert "R4" not in ok.result.triggered_rules
+    assert ok.result.decision is not Decision.DENY
     assert over.result.rule_id == "R4"
 
 

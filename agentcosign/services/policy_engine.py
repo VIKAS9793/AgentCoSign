@@ -50,6 +50,7 @@ RULE_MISMATCH_SCOPE = "R13"
 RULE_EVIDENCE = "R14"
 RULE_SCREENING_DOWN = "R15"
 RULE_STOPPED = "R16"
+RULE_AUTO_BUDGET = "R17"
 
 VELOCITY_WINDOW = timedelta(hours=24)
 # never release in the past or in the same instant, so a pause always holds
@@ -75,6 +76,7 @@ ESCALATE_PRIORITY = (
     RULE_NEW_PAYEE,
     RULE_SCREENING_DOWN,
     RULE_VELOCITY,
+    RULE_AUTO_BUDGET,
     RULE_ABOVE_AUTO,
 )
 
@@ -95,6 +97,7 @@ _RULE_TITLES = {
     RULE_EVIDENCE: "Claims do not match PayPal's records",
     RULE_SCREENING_DOWN: "Screening is unavailable",
     RULE_STOPPED: "The merchant stopped all refunds",
+    RULE_AUTO_BUDGET: "Automatic refunds on this order or customer today are used up",
 }
 
 
@@ -446,6 +449,28 @@ def _rule_velocity(case: _Case) -> RuleHit | None:
     )
 
 
+def _rule_auto_budget(case: _Case) -> RuleHit | None:
+    """Refunds sent without asking stay within the automatic limit per order, and
+    per customer per day, so one refund cannot be split into several small ones
+    that each pass on their own."""
+    if case.tool is not ToolAction.CREATE_REFUND:
+        return None
+    amount, limit = case.proposal.amount, case.policy.refund_auto_limit
+    if amount > limit:
+        return None  # the amount limits already ask a person or refuse
+    order_total = case.ledger.auto_for_order + amount
+    customer_total = case.ledger.auto_24h_for_customer + amount
+    if order_total <= limit and customer_total <= limit:
+        return None
+    return _hit(
+        RULE_AUTO_BUDGET,
+        Decision.ESCALATE,
+        "auto_budget",
+        f"{max(order_total, customer_total)} sent without asking would pass the "
+        f"automatic limit of {limit} for this order or customer today.",
+    )
+
+
 def _rule_open_dispute(case: _Case) -> RuleHit | None:
     """A refund on an order with an open dispute risks paying twice."""
     evidence = case.evidence
@@ -496,6 +521,7 @@ RULES: tuple[Rule, ...] = (
     _rule_daily_cap,
     _rule_amount_limits,
     _rule_velocity,
+    _rule_auto_budget,
     _rule_open_dispute,
     _rule_dispute_concession,
     _rule_new_payee,
