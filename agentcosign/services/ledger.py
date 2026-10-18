@@ -254,6 +254,12 @@ _MIGRATIONS = {
 }
 _Q_GREETING = "UPDATE proposals SET greeting_named = ? WHERE request_id = ?"
 _Q_SHOWN = "UPDATE proposals SET evidence_json = ? WHERE request_id = ?"
+# back in front of the owner: today's reasons, the latest facts, a fresh window
+_Q_ASK_AGAIN = (
+    "UPDATE proposals SET state = ?, decision = ?, rule_id = ?, explanation = ?, "
+    "triggered = ?, evidence_json = ?, attempts = 0, decided_at = ?, updated_at = ? "
+    "WHERE request_id = ?"
+)
 # a request put on hold at approval: no customer line was given on that path
 NO_LINE_GIVEN = "none"
 _Q_PAYPAL = (
@@ -428,11 +434,11 @@ def _approval_entry(
 ) -> tuple[str, dict[str, Any]]:
     """The chain entry for an approval, so the sealed record matches the stored one.
 
-    When the decision stands it is a plain state change; when the fresh check
-    refused or held the request, its new decision is recorded with it.
+    When it goes ahead it is a plain state change; when the fresh check refused,
+    held or asked again, the new outcome and its reasons are recorded with it.
     """
     start = S.PENDING_APPROVAL.value
-    if state in (S.EXECUTING, S.PENDING_APPROVAL):
+    if state is S.EXECUTING:
         return "state_changed", {"from": start, "to": state.value, **detail}
     return "rechecked", {
         "from": start,
@@ -457,7 +463,9 @@ def _approval_outcome(
     if fresh.decision is Decision.PAUSE:
         return S.PAUSED, fresh
     if drift is not None:
-        return S.PENDING_APPROVAL, drift
+        # asked again with every reason that applies now, the change first
+        reasons = tuple(dict.fromkeys((*drift.triggered_rules, *fresh.triggered_rules)))
+        return S.PENDING_APPROVAL, replace(drift, triggered_rules=reasons)
     return S.EXECUTING, fresh
 
 
@@ -931,12 +939,13 @@ class Ledger:
         return Recorded(request_id, state, result)
 
     def record_unapplied_approval(
-        self, request_id: str, detail: dict[str, str], now: datetime
+        self, request_id: str, reason: str, detail: dict[str, str], now: datetime
     ) -> None:
-        """Keep a signed approval that moved nothing because PayPal could not be
-        read, so the record shows the owner did approve and why nothing changed."""
+        """Keep a signed approval that moved nothing (PayPal could not be read, the
+        time ran out, refunds were stopped), so the record shows the owner did
+        approve and why nothing changed."""
         with self._transaction() as conn:
-            body = {"reason": "paypal_unreadable", **detail}
+            body = {"reason": reason, **detail}
             self._append(conn, request_id, "approval_not_applied", body, _utc(now))
 
     def record_shown(
@@ -961,6 +970,8 @@ class Ledger:
             changed_order = drift is not None and drift.decision is Decision.DENY
             if changed_order or before.has_open_dispute != shown.has_open_dispute:
                 return False
+            if drift is None:
+                return True  # already the figures on record; nothing to add
             snapshot = canonical_json(evidence_to_dict(shown))
             conn.execute(_Q_SHOWN, (snapshot, request_id))
             body = {
@@ -1010,7 +1021,12 @@ class Ledger:
         now: datetime,
     ) -> None:
         snapshot = canonical_json(evidence_to_dict(evidence)) if evidence else None
-        if state in (S.EXECUTING, S.PENDING_APPROVAL):
+        if state is S.PENDING_APPROVAL:
+            self._ask_again(
+                conn, proposal.request_id, result, snapshot or row["evidence_json"], now
+            )
+            return
+        if state is S.EXECUTING:
             # the decision stands; the facts it is sent on are now PayPal's latest
             conn.execute(
                 _Q_REBASE,
@@ -1059,12 +1075,38 @@ class Ledger:
             )
             return _sum(rows)
 
+    def _ask_again(
+        self,
+        conn: sqlite3.Connection,
+        request_id: str,
+        result: PolicyResult,
+        snapshot: str | None,
+        now: datetime,
+    ) -> None:
+        """Put a request back in front of the owner with the reasons that apply now,
+        so a change such as a new dispute is shown before it can be approved."""
+        conn.execute(
+            _Q_ASK_AGAIN,
+            (
+                S.PENDING_APPROVAL.value,
+                Decision.ESCALATE.value,
+                result.rule_id,
+                result.explanation,
+                json.dumps(list(result.triggered_rules)),
+                snapshot,
+                _iso(now),
+                _iso(now),
+                request_id,
+            ),
+        )
+
     def send_back_for_approval(
         self,
         request_id: str,
         current: OrderEvidence,
         now: datetime,
         detail: dict[str, str],
+        change: PolicyResult,
     ) -> None:
         """Return an executing proposal to the approver with the order as it is now.
 
@@ -1078,12 +1120,17 @@ class Ledger:
             row = conn.execute(_Q_GET, (request_id,)).fetchone()
             if row is None or ProposalState(row["state"]) is not S.EXECUTING:
                 raise FailClosedError("only an executing proposal can be sent back")
-            conn.execute(
-                _Q_REBASE,
-                (S.PENDING_APPROVAL.value, snapshot, _iso(now), _iso(now), request_id),
-            )
-            body = {"from": S.EXECUTING.value, "to": S.PENDING_APPROVAL.value, **detail}
-            self._append(conn, request_id, "state_changed", body, now)
+            proposal = proposal_from_dict(json.loads(row["proposal_json"]))
+            earlier = tuple(json.loads(row["triggered"] or "[]"))
+            reasons = tuple(dict.fromkeys((*change.triggered_rules, *earlier)))
+            result = replace(change, triggered_rules=reasons)
+            self._ask_again(conn, request_id, result, snapshot, now)
+            body = {
+                "from": S.EXECUTING.value,
+                **_audit_body(proposal, result, S.PENDING_APPROVAL),
+                **detail,
+            }
+            self._append(conn, request_id, "rechecked", body, now)
 
     def timing(self, request_id: str) -> tuple[ProposalState, str, str] | None:
         """State, release time and last change of a proposal, for status messages."""

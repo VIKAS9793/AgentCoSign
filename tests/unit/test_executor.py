@@ -88,6 +88,11 @@ async def test_a_dispute_opened_before_execution_sends_it_back_for_approval(
     assert (
         await fetch_evidence(client, "ORD-1", now=NOW, secret=SECRET)
     ).refunded_amount == 0
+    # the owner is asked again with the dispute named, and the record is sealed
+    waiting = next(i for i in ledger.pending_approvals() if i["request_id"] == "r1")
+    assert "R6" in waiting["triggered"]
+    ledger.verify_request("r1")
+    ledger.verify_records()
 
 
 @pytest.mark.edge

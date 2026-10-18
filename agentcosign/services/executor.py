@@ -112,6 +112,7 @@ async def _stop_on_drift(
         current,
         now,
         {"reason": "state_drift"},
+        drift,
     )
     return Execution(request_id, ProposalState.PENDING_APPROVAL, "state_drift")
 

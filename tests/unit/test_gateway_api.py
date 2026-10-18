@@ -26,7 +26,7 @@ from agentcosign.models.policy import ScreeningVerdict, Signals
 from agentcosign.services.evidence import fetch_evidence
 from agentcosign.services.gateway import RETRY_QUIET_SECONDS
 from tests.scenarios.policy_scenarios import NOW
-from tests.unit.paypal_fixtures import ACCOUNT, order_json
+from tests.unit.paypal_fixtures import ACCOUNT, dispute_json, order_json
 from tests.unit.soft_authenticator import SoftAuthenticator
 from tests.unit.web_js import run_js as _run_js
 from tests.unit.web_js import script_function as _script_function
@@ -449,6 +449,26 @@ async def test_a_refund_elsewhere_already_on_screen_is_approved_without_asking_a
     outcome, _ = env.decide("r1", "approve", session)
     assert outcome.json()["state"] == "executed"
     assert await env.refunded() == Decimal("300.00")
+
+
+@pytest.mark.edge
+async def test_a_dispute_opened_while_waiting_is_shown_before_anything_is_sent(
+    env: Env,
+) -> None:
+    env.propose("r1", "200.00")
+    env.enrol()
+    session = env.session()
+    env.paypal._disputes["CAP-1"] = [dispute_json(amount="200.00")]  # type: ignore[attr-defined]  # a customer opens a dispute in PayPal
+    first, _ = env.decide("r1", "approve", session)
+    assert first.json()["state"] == "pending_approval"  # asked again, nothing sent
+    assert await env.refunded() == Decimal("0")
+    card = next(i for i in _listed(env, session) if i["request_id"] == "r1")
+    # the owner is told about the dispute before they can approve again
+    assert any("dispute" in reason for reason in card["reasons"])
+    assert any("over $25.00" in reason for reason in card["reasons"])  # kept
+    assert card["flag"] == "Open dispute"
+    record = env.client.get("/v1/approvals/r1/history", headers=session).json()
+    assert record["sealed"] is True
 
 
 @pytest.mark.edge
@@ -1308,6 +1328,29 @@ async def test_the_deadline_is_checked_after_the_paypal_read_at_approval(
     )
     assert response.status_code == 409
     assert await env.refunded() == Decimal("0")
+    # the signed approval that arrived too late is still on the record
+    with sqlite3.connect(gateway._ledger.path) as conn:
+        events = [
+            r[0]
+            for r in conn.execute("SELECT event FROM audit WHERE request_id = 'r1'")
+        ]
+    assert "approval_not_applied" in events
+
+
+@pytest.mark.edge
+async def test_after_a_figures_changed_refusal_home_shows_the_new_figures(
+    env: Env,
+) -> None:
+    env.propose("r1", "200.00")
+    env.enrol()
+    session = env.session()
+    on_screen = env.seen()
+    _listed(env, session)  # the phone's last read of the order
+    await env.paypal.refund_capture("CAP-1", Decimal("100.00"), "USD", "outside-1")
+    refused, _ = env.decide("r1", "approve", session, seen=on_screen)
+    assert refused.status_code == 409
+    card = next(i for i in _listed(env, session) if i["request_id"] == "r1")
+    assert card["already_refunded"] == "100.00"  # not the read from before
 
 
 @pytest.mark.edge
@@ -1559,7 +1602,7 @@ def test_a_hold_with_no_line_given_never_shows_one(env: Env) -> None:
             "Message given to your assistant for the customer",
             "Couldn't confirm the customer's name in this message.",
         ),
-        ("none", "Message for the customer", ""),
+        ("none", "Message for the customer", ""),  # nothing was given at the hold
     ],
 )
 def test_the_hold_screen_only_quotes_a_line_that_was_given(
@@ -1573,7 +1616,7 @@ def test_the_hold_screen_only_quotes_a_line_that_was_given(
     assert view[0] == heading
     assert view[2] == note
     if exact == "none":
-        assert view[1] == "Your customer hasn't been told about this hold yet."
+        assert view[1] == "No message was given to the customer when this went on hold."
     else:
         assert view[1] == "Thanks, Jane."
 
@@ -1594,6 +1637,30 @@ def test_the_phone_sends_the_figures_on_screen_with_an_approval() -> None:
     assert _run_js(["seenFigures"], 'seenFigures({"paid": "80.00"}, "reject")') == {
         "intent": "reject"
     }
+
+
+@pytest.mark.edge
+def test_a_new_reason_counts_as_a_change_and_is_named() -> None:
+    before = {**_SEEN, "reasons": ["Refunds over $25.00 need your approval."]}
+    after = {
+        **before,
+        "reasons": [
+            "This order is in a dispute. If you refund it, you may still lose "
+            "the dispute.",
+            "Refunds over $25.00 need your approval.",
+        ],
+        "flag": "Open dispute",
+    }
+    changed = _run_js(
+        ["fingerprint"],
+        f"fingerprint({json.dumps(before)}) !== fingerprint({json.dumps(after)})",
+    )
+    assert changed is True
+    lines = _run_js(
+        ["changedLines", "money"],
+        f"changedLines({json.dumps(before)}, {json.dumps(after)})",
+    )
+    assert lines[0].startswith("This order is in a dispute")
 
 
 @pytest.mark.edge

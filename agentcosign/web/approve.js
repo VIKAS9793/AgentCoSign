@@ -1170,6 +1170,10 @@
     if (latest.refundable_now && latest.refundable_now !== before.refundable_now) {
       lines.unshift("Can still be refunded: was " + money(before.refundable_now) + ", now " + money(latest.refundable_now) + ".");
     }
+    // a reason that was not there before (such as a new dispute) comes first
+    var known = before.reasons || [];
+    (latest.reasons || []).filter(function (reason) { return known.indexOf(reason) === -1; })
+      .reverse().forEach(function (reason) { lines.unshift(reason); });
     return lines;
   }
 
@@ -1245,7 +1249,7 @@
   // when one was given; a hold that started at approval had none.
   function customerLineView(item) {
     if (item.customer_message_exact === "none") {
-      return ["Message for the customer", "Your customer hasn't been told about this hold yet.", ""];
+      return ["Message for the customer", "No message was given to the customer when this went on hold.", ""];
     }
     return ["Message given to your assistant for the customer", item.customer_message, customerLineNote(item)];
   }
@@ -1518,7 +1522,8 @@
   // The figures that matter for a decision; any difference means look again.
   function fingerprint(item) {
     return [item.section, item.can_send, item.amount, item.paid, item.already_refunded,
-      item.refundable_now, item.waiting_on_order, item.release_at || ""].join("|");
+      item.refundable_now, item.waiting_on_order, item.release_at || "",
+      (item.reasons || []).join("~"), item.flag || ""].join("|");
   }
 
   // Re-read the server. Home redraws; an open request is never replaced under the

@@ -66,6 +66,10 @@ class OrderReads:
                 self._kept[order_id] = _Kept(read, version)
         return found
 
+    def forget(self, order_id: str) -> None:
+        """Drop a kept read, so the next screen reads PayPal again."""
+        self._kept.pop(order_id, None)
+
     def _reusable(self, order_id: str, version: int, now: datetime) -> Read | None:
         kept = self._kept.get(order_id)
         if kept is None or kept.version != version or kept.read.at is None:

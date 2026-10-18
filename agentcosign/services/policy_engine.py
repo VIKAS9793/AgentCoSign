@@ -650,6 +650,8 @@ def check_execution_drift(
     )
     if not drifted:
         return None
+    # a dispute that opened meanwhile is named, so the owner is told about it
+    dispute_opened = current.has_open_dispute and not decided.has_open_dispute
     return PolicyResult(
         decision=Decision.ESCALATE,
         rule_id=RULE_EVIDENCE,
@@ -657,6 +659,8 @@ def check_execution_drift(
             f"{_RULE_TITLES[RULE_EVIDENCE]}: the order state moved after approval."
         ),
         requires_human_approval=True,
-        triggered_rules=(RULE_EVIDENCE,),
+        triggered_rules=(RULE_EVIDENCE, RULE_OPEN_DISPUTE)
+        if dispute_opened
+        else (RULE_EVIDENCE,),
         metadata={"hits": [{"rule": RULE_EVIDENCE, "code": "state_drift"}]},
     )

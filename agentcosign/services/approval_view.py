@@ -213,6 +213,14 @@ def display_name(name: str) -> str:
 def _recheck_event(body: dict[str, Any]) -> dict[str, str]:
     """An approval that a fresh check with PayPal stopped before any money moved."""
     approver = display_name(str(body.get("approver") or ""))
+    if body.get("state") == "pending_approval":
+        return {
+            "step": "changed",
+            "title": f"{approver} approved, then the order changed"
+            if approver
+            else "The order changed",
+            "detail": "Sent back to you to review again. No money moved",
+        }
     held = body.get("state") == "paused"
     return {
         "step": "refused_on_recheck",

@@ -77,6 +77,7 @@ from agentcosign.services.ledger import (
     NO_LINE_GIVEN,
     Ledger,
     ProposalState,
+    Recorded,
 )
 from agentcosign.services.order_reads import OrderReads, Read
 from agentcosign.services.passkeys import PasskeyRegistry
@@ -1000,6 +1001,7 @@ class Gateway:
         if evidence is None:
             raise FailClosedError("PayPal could not be reached, so nothing was sent")
         if (evidence.captured_amount, evidence.refunded_amount) != seen:
+            self._reads.forget(proposal.order_id)  # the next screen reads PayPal
             raise FailClosedError("the figures changed since they were shown")
         await asyncio.to_thread(self._ledger.record_shown, request_id, evidence, now)
 
@@ -1083,22 +1085,9 @@ class Gateway:
         proposal = loaded[0]
         evidence = await self._evidence(proposal, now)
         if proposal.order_id and evidence is None:
-            # the signed approval is kept on the record even though it moved nothing
-            await asyncio.to_thread(
-                self._ledger.record_unapplied_approval, request_id, detail, now
-            )
+            await self._not_applied(request_id, "paypal_unreadable", detail, now)
             raise FailClosedError("PayPal could not be reached, so nothing was sent")
-        # the deadline is judged when the approval is written, after the PayPal read
-        now = self._clock()
-        recorded = await asyncio.to_thread(
-            partial(self._ledger.approve, decide_within=self._open_seconds),
-            request_id,
-            evidence,
-            self._signals(),
-            self._screening,
-            now,
-            detail,
-        )
+        recorded = await self._apply_approval(request_id, evidence, detail)
         state = recorded.state or ProposalState.DENIED
         base = Outcome(
             request_id=request_id,
@@ -1120,6 +1109,37 @@ class Gateway:
             rule_id=result.rule_id,
             triggered=result.triggered_rules,
             merchant_reason=refused_at_approval(result.rule_id, self._policy),
+        )
+
+    async def _apply_approval(
+        self,
+        request_id: str,
+        evidence: OrderEvidence | None,
+        detail: dict[str, str],
+    ) -> Recorded:
+        """Write the approval; one that cannot be applied stays on the record."""
+        # the deadline is judged when the approval is written, after the PayPal read
+        now = self._clock()
+        try:
+            return await asyncio.to_thread(
+                partial(self._ledger.approve, decide_within=self._open_seconds),
+                request_id,
+                evidence,
+                self._signals(),
+                self._screening,
+                now,
+                detail,
+            )
+        except FailClosedError as refused:
+            await self._not_applied(request_id, refused.message, detail, now)
+            raise
+
+    async def _not_applied(
+        self, request_id: str, reason: str, detail: dict[str, str], now: datetime
+    ) -> None:
+        """Keep a signed approval that moved nothing on the record, with why."""
+        await asyncio.to_thread(
+            self._ledger.record_unapplied_approval, request_id, reason, detail, now
         )
 
     def _signals(self) -> Signals:

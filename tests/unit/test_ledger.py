@@ -1027,3 +1027,19 @@ def test_a_refusal_at_approval_frees_the_customers_held_request(
     timing = ledger.timing("r3")
     assert timing is not None
     assert datetime.fromisoformat(timing[1]) <= at  # looked at again now
+
+
+@pytest.mark.edge
+def test_figures_already_on_record_add_no_entry(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    at = NOW + timedelta(seconds=30)
+    with sqlite3.connect(ledger.path) as conn:
+        before = conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+    ledger.record_shown("r1", replace_time(evidence(), at), at)  # nothing changed
+    with sqlite3.connect(ledger.path) as conn:
+        same = conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+    assert same == before
+    ledger.record_shown("r1", replace_time(evidence(refunded="20.00"), at), at)
+    with sqlite3.connect(ledger.path) as conn:
+        after = conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+    assert after == before + 1
