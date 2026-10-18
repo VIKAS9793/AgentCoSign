@@ -41,6 +41,7 @@ from agentcosign.core.config import (
     ScreeningSettings,
 )
 from agentcosign.core.exceptions import (
+    AgentCoSignError,
     AuditIntegrityError,
     ConfigurationError,
     FailClosedError,
@@ -1137,10 +1138,17 @@ class Gateway:
     async def _not_applied(
         self, request_id: str, reason: str, detail: dict[str, str], now: datetime
     ) -> None:
-        """Keep a signed approval that moved nothing on the record, with why."""
-        await asyncio.to_thread(
-            self._ledger.record_unapplied_approval, request_id, reason, detail, now
-        )
+        """Keep a signed approval that moved nothing on the record, with why.
+
+        If the note itself cannot be written, that is logged and the caller still
+        reports the original refusal.
+        """
+        try:
+            await asyncio.to_thread(
+                self._ledger.record_unapplied_approval, request_id, reason, detail, now
+            )
+        except (sqlite3.Error, AgentCoSignError):
+            logger.exception("could not record an approval that moved nothing")
 
     def _signals(self) -> Signals:
         """Screening and extraction results for a decision. The safety scan is not

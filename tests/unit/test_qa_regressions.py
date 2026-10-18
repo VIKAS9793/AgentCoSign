@@ -131,7 +131,7 @@ async def test_an_outside_refund_after_a_lost_reply_is_not_mistaken_for_ours(
     second = await execute(
         refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
     )
-    assert second.state is ProposalState.PENDING_APPROVAL
+    assert second.state is ProposalState.EXECUTED  # ours had landed: recorded as sent
     assert await _refunded(client) == Decimal("50.00")  # ours once, theirs once
 
 
@@ -275,6 +275,6 @@ async def test_ours_and_a_same_amount_outside_refund_are_told_apart(
     second = await execute(
         refund("r1", "20.00"), decided, client, ledger, now=NOW, secret=SECRET
     )
-    assert second.state is ProposalState.PENDING_APPROVAL  # the outside one is a change
+    assert second.state is ProposalState.EXECUTED  # ours had landed: recorded as sent
     assert client.calls == 1
     assert await _refunded(client) == Decimal("40.00")  # ours once, theirs once

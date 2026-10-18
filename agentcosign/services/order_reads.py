@@ -45,6 +45,8 @@ class OrderReads:
         self._max_parallel = max_parallel
         self._reuse = timedelta(seconds=reuse_seconds)
         self._kept: dict[str, _Kept] = {}
+        # grows each time a read is dropped; a read started before is not kept
+        self._dropped: dict[str, int] = {}
 
     async def read_many(
         self, order_ids: Iterable[str], version: int
@@ -58,17 +60,20 @@ class OrderReads:
         now = self._clock()
         found = {o: kept for o in wanted if (kept := self._reusable(o, version, now))}
         missing = [o for o in wanted if o not in found]
+        started = {o: self._dropped.get(o, 0) for o in missing}
         gate = asyncio.Semaphore(self._max_parallel)
         fresh = await asyncio.gather(*(self._read(o, gate) for o in missing))
         for order_id, read in zip(missing, fresh, strict=True):
             found[order_id] = read
-            if read.at is not None:
+            unchanged = self._dropped.get(order_id, 0) == started[order_id]
+            if read.at is not None and unchanged:
                 self._kept[order_id] = _Kept(read, version)
         return found
 
     def forget(self, order_id: str) -> None:
         """Drop a kept read, so the next screen reads PayPal again."""
         self._kept.pop(order_id, None)
+        self._dropped[order_id] = self._dropped.get(order_id, 0) + 1
 
     def _reusable(self, order_id: str, version: int, now: datetime) -> Read | None:
         kept = self._kept.get(order_id)

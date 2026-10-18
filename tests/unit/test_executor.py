@@ -1,5 +1,6 @@
 """End to end below the API: evidence, decision, reservation, execution, audit."""
 
+import json
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -90,7 +91,9 @@ async def test_a_dispute_opened_before_execution_sends_it_back_for_approval(
     ).refunded_amount == 0
     # the owner is asked again with the dispute named, and the record is sealed
     waiting = next(i for i in ledger.pending_approvals() if i["request_id"] == "r1")
-    assert "R6" in waiting["triggered"]
+    asked = json.loads(waiting["triggered"])
+    assert "R6" in asked
+    assert "R1" not in asked  # it went out on its own before; now it asks
     ledger.verify_request("r1")
     ledger.verify_records()
 
@@ -168,3 +171,55 @@ async def test_dispute_concession_executes_after_approval(ledger: Ledger) -> Non
     )
     outcome = await execute(claim, decided, client, ledger, now=NOW, secret=SECRET)
     assert outcome.state is ProposalState.EXECUTED
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize("other_change", ["outside_refund", "dispute"])
+async def test_our_refund_already_at_paypal_is_recorded_whatever_else_changed(
+    ledger: Ledger, other_change: str
+) -> None:
+    client = RecordedPayPalClient({"ORD-1": order_json(captured="100.00")})
+    decided = await decide(ledger, client, refund("r1", "10.00"))
+    # an earlier attempt reached PayPal but its answer was lost
+    await client.refund_capture("CAP-1", Decimal("10.00"), "USD", "r1")
+    # and before the retry something else changed on the order
+    if other_change == "outside_refund":
+        await client.refund_capture("CAP-1", Decimal("5.00"), "USD", "outside-1")
+    else:
+        client._disputes["CAP-1"] = [dispute_json()]  # noqa: SLF001 -- simulate PayPal changing
+    outcome = await execute(
+        refund("r1", "10.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    # money already moved, so it is recorded as sent, never "nothing moved"
+    assert outcome.state is ProposalState.EXECUTED
+    assert ledger.state_of("r1") is ProposalState.EXECUTED
+    after = await fetch_evidence(client, "ORD-1", now=NOW, secret=SECRET)
+    ours = [t for t in after.tagged_refunds if t[0] == "r1"]
+    assert len(ours) == 1  # sent once, never again
+    ledger.verify_request("r1")
+
+
+@pytest.mark.edge
+async def test_a_dispute_that_closed_before_sending_is_not_named(
+    ledger: Ledger,
+) -> None:
+    # decided while a dispute was open (the owner is asked), approved, and the
+    # dispute closed before the refund went out while the refunded figure moved
+    client = RecordedPayPalClient(
+        {"ORD-1": order_json(captured="100.00")}, {"CAP-1": [dispute_json()]}
+    )
+    decided = await decide(ledger, client, refund("r1", "10.00"))
+    ledger.transition(
+        "r1", ProposalState.EXECUTING, NOW, {"approver": "Vikas"}, decide_within=600
+    )
+    client._disputes["CAP-1"] = []  # noqa: SLF001 -- the dispute closed
+    await client.refund_capture("CAP-1", Decimal("5.00"), "USD", "outside-1")
+    outcome = await execute(
+        refund("r1", "10.00"), decided, client, ledger, now=NOW, secret=SECRET
+    )
+    assert outcome.state is ProposalState.PENDING_APPROVAL
+    waiting = next(i for i in ledger.pending_approvals() if i["request_id"] == "r1")
+    reasons = json.loads(waiting["triggered"])
+    assert "R6" not in reasons
+    assert "R1" not in reasons
+    ledger.verify_request("r1")

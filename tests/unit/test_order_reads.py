@@ -123,3 +123,15 @@ async def test_an_unexpected_paypal_failure_is_shown_as_not_read() -> None:
 
     reads = await _reader(Broken({}), Clock()).read_many(["ORD-1"], version=1)
     assert reads["ORD-1"].at is None
+
+
+@pytest.mark.edge
+async def test_a_read_in_flight_never_brings_back_dropped_figures() -> None:
+    paypal = CountingPayPal(_orders("ORD-1"))
+    reads = OrderReads(paypal, Clock(), max_parallel=4, reuse_seconds=10)
+    in_flight = asyncio.create_task(reads.read_many(["ORD-1"], 1))
+    await asyncio.sleep(0)  # the read has started
+    reads.forget("ORD-1")  # the figures were found to be old meanwhile
+    await in_flight
+    await reads.read_many(["ORD-1"], 1)
+    assert paypal.reads == 2  # the second screen read PayPal again

@@ -42,6 +42,8 @@ from agentcosign.models.policy import (
 )
 from agentcosign.services.identity import payee_key
 from agentcosign.services.policy_engine import (
+    RULE_ALLOW,
+    RULE_OPEN_DISPUTE,
     VELOCITY_WINDOW,
     check_execution_drift,
     evaluate,
@@ -426,6 +428,19 @@ def _reused_id_result() -> PolicyResult:
     )
 
 
+def _ask_again_reasons(
+    change: tuple[str, ...], others: tuple[str, ...], *, disputed: bool = True
+) -> tuple[str, ...]:
+    """Reasons for asking the owner again: the change first, then the others.
+
+    "Allowed on its own" never sits next to an ask, and an open dispute is
+    only named while PayPal shows one.
+    """
+    dropped = {RULE_ALLOW} | (set() if disputed else {RULE_OPEN_DISPUTE})
+    merged = (*change, *others)
+    return tuple(dict.fromkeys(r for r in merged if r not in dropped))
+
+
 def _approval_entry(
     proposal: Proposal,
     result: PolicyResult,
@@ -464,7 +479,7 @@ def _approval_outcome(
         return S.PAUSED, fresh
     if drift is not None:
         # asked again with every reason that applies now, the change first
-        reasons = tuple(dict.fromkeys((*drift.triggered_rules, *fresh.triggered_rules)))
+        reasons = _ask_again_reasons(drift.triggered_rules, fresh.triggered_rules)
         return S.PENDING_APPROVAL, replace(drift, triggered_rules=reasons)
     return S.EXECUTING, fresh
 
@@ -1089,7 +1104,7 @@ class Ledger:
             _Q_ASK_AGAIN,
             (
                 S.PENDING_APPROVAL.value,
-                Decision.ESCALATE.value,
+                result.decision.value,
                 result.rule_id,
                 result.explanation,
                 json.dumps(list(result.triggered_rules)),
@@ -1122,7 +1137,9 @@ class Ledger:
                 raise FailClosedError("only an executing proposal can be sent back")
             proposal = proposal_from_dict(json.loads(row["proposal_json"]))
             earlier = tuple(json.loads(row["triggered"] or "[]"))
-            reasons = tuple(dict.fromkeys((*change.triggered_rules, *earlier)))
+            reasons = _ask_again_reasons(
+                change.triggered_rules, earlier, disputed=current.has_open_dispute
+            )
             result = replace(change, triggered_rules=reasons)
             self._ask_again(conn, request_id, result, snapshot, now)
             body = {

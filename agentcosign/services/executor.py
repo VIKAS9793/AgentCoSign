@@ -11,7 +11,7 @@ the same money be spent twice. Only a definite refusal releases it.
 """
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 
 from agentcosign.clients.paypal import JsonObject, PayPalClient
@@ -84,17 +84,11 @@ async def _stop_on_drift(
     proposal: Proposal,
     decided: OrderEvidence,
     current: OrderEvidence,
-    own_landed: bool,
     now: datetime,
 ) -> Execution | None:
     """Stop or send back for approval when the order changed since the decision."""
     request_id = proposal.request_id
-    compared = current
-    if own_landed:
-        # take out only our own refund; any other new refund is a real change
-        others = current.refunded_amount - proposal.amount
-        compared = replace(current, refunded_amount=others)
-    drift = check_execution_drift(decided, compared)
+    drift = check_execution_drift(decided, current)
     if drift is None:
         return None
     if drift.decision is Decision.DENY:
@@ -121,7 +115,6 @@ async def _stop_if_over_refundable(
     ledger: Ledger,
     proposal: Proposal,
     current: OrderEvidence,
-    own_landed: bool,
     now: datetime,
 ) -> Execution | None:
     """Refuse a refund that would take the order past what the customer paid.
@@ -131,8 +124,7 @@ async def _stop_if_over_refundable(
     """
     if proposal.tool != ToolAction.CREATE_REFUND.value:
         return None
-    others = current.refunded_amount - (proposal.amount if own_landed else 0)
-    if others + proposal.amount <= current.captured_amount:
+    if current.refunded_amount + proposal.amount <= current.captured_amount:
         return None
     detail = {"reason": "exceeds_refundable"}
     await _move(ledger, proposal.request_id, ProposalState.FAILED, now, detail)
@@ -160,14 +152,15 @@ async def execute(
     except PayPalClientError:
         return Execution(request_id, ProposalState.EXECUTING, "evidence_unavailable")
     landed = _our_refund(proposal, current)
-    own_landed = landed is not None
+    if landed is not None:
+        # our refund already reached PayPal: money moved, so it is recorded as
+        # sent whatever else changed on the order since
+        return await _record_success(ledger, request_id, now, *landed)
     stopped = await _stop_on_drift(
-        ledger, proposal, decided, current, own_landed, now
-    ) or await _stop_if_over_refundable(ledger, proposal, current, own_landed, now)
+        ledger, proposal, decided, current, now
+    ) or await _stop_if_over_refundable(ledger, proposal, current, now)
     if stopped is not None:
         return stopped
-    if landed is not None:
-        return await _record_success(ledger, request_id, now, *landed)
     if await asyncio.to_thread(ledger.refunds_stopped):
         # nothing new is sent while stopped; it is retried with the same request
         # id after refunds resume, so it can never go out twice

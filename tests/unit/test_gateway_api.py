@@ -1354,6 +1354,40 @@ async def test_after_a_figures_changed_refusal_home_shows_the_new_figures(
 
 
 @pytest.mark.edge
+async def test_a_failed_note_never_hides_why_an_approval_was_refused(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env.propose("r1", "30.00")
+    env.enrol()
+    session = env.session()
+    prompt = env.client.post(
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
+    )
+    signed = env.phone.sign(prompt.text)
+    gateway = _gateway(env)
+    real_read = gateway._evidence
+
+    async def slow_read(proposal: Any, now: datetime) -> Any:
+        found = await real_read(proposal, now)
+        later = datetime.now(UTC) + timedelta(seconds=gateway._open_seconds + 1)
+        gateway._clock = lambda: later  # the deadline passes during the read
+        return found
+
+    def locked(*_args: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(gateway, "_evidence", slow_read)
+    monkeypatch.setattr(gateway._ledger, "record_unapplied_approval", locked)
+    response = env.client.post(
+        "/v1/approvals/r1/approve", json={"credential": signed}, headers=session
+    )
+    assert response.status_code == 409  # the refusal, not a server error
+    assert await env.refunded() == Decimal("0")
+
+
+@pytest.mark.edge
 def test_an_approval_paypal_could_not_check_is_still_on_the_record(env: Env) -> None:
     env.propose("r1", "30.00")
     env.enrol()
