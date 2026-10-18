@@ -926,7 +926,8 @@
     head.appendChild(el("p", "to " + item.customer, "strong"));
     head.appendChild(el("p", paymentLine(item), "muted small"));
     view.appendChild(head);
-    var table = el("div", "", "card list");
+    // the figures and the send warning count only until a fresh read disagrees
+    var table = el("div", "", "card list unconfirmed");
     table.appendChild(row("Customer paid", money(item.paid)));
     table.appendChild(row("Already refunded", money(item.already_refunded)));
     if (Number(item.waiting_on_order) > 0) {
@@ -935,7 +936,7 @@
     table.appendChild(row("Left to refund after this", money(item.left_after)));
     view.appendChild(table);
     view.appendChild(el("div", "", "change-banner-slot"));
-    var warn = el("div", "", "card caution-box");
+    var warn = el("div", "", "card caution-box unconfirmed");
     warn.appendChild(withIcon("caution", el("p", money(item.amount) + " goes back to " + item.customer + " now. Refunds can't be undone.", "box-title")));
     warn.appendChild(el("p", "From your PayPal account ending " + account + ". Your fingerprint approves this refund only.", "small"));
     view.appendChild(warn);
@@ -987,6 +988,7 @@
         setProgress(screen, latest.checked_at ? "Up to date with PayPal " + when(latest.checked_at) : "", false);
         setButtons(screen, true);
       } else if (verdict === "unchecked") {
+        dropUnconfirmed(screen);
         setProgress(screen, "Couldn't check the latest figures with PayPal. No money moved. Go back and try again.", true);
       } else if (verdict === "closed") {
         changeBanner("final", "This refund request is already closed. No money will move from this screen.", null);
@@ -995,6 +997,7 @@
       }
     }).catch(function () {
       if (current.view === "final") {
+        dropUnconfirmed(screen);
         setProgress(screen, "Couldn't check the latest figures with PayPal. No money moved. Go back and try again.", true);
       }
     });
@@ -1051,7 +1054,7 @@
       : "Confirm it's you with your fingerprint.", false);
     var path = "/v1/approvals/" + encodeURIComponent(item.request_id);
     var signedAndSent = false;
-    post(path + "/options", { intent: intent }, sessionHeaders())
+    post(path + "/options", seenFigures(item, intent), sessionHeaders())
       .then(function (options) {
         return navigator.credentials.get(requestOptions(options));
       })
@@ -1080,7 +1083,7 @@
         if (status === 409) {
           // the server refused the decision: read it again to say why
           readHome().then(function (data) {
-            var refused = refusedOutcome(data, findItem(item.request_id));
+            var refused = refusedOutcome(data, findItem(item.request_id), item);
             showOutcome(refused[0], refused[1], refused[2], item);
           }).catch(function () {
             showOutcome("check", "This refund request is already closed.", ["No money will move from this screen."], item);
@@ -1145,9 +1148,9 @@
     }
     showOutcome("stopped", "Couldn't refund. No money moved.", ["Ask your assistant to try again."], item);
   }
+
   // PayPal is checked again right after an approval; when the request does not
   // fit any more, say so in the server's words. Null when the approval went ahead.
-  // fits, say so in the server's words. Null when the approval went ahead.
   function recheckOutcome(outcome) {
     if (!outcome.merchant_reason) {
       return null;
@@ -1161,16 +1164,29 @@
     return null;
   }
 
+  // What to say when the order moved: then and now only when they differ.
+  function changedLines(before, latest) {
+    var lines = ["Review the new figures and approve again if it's still right."];
+    if (latest.refundable_now && latest.refundable_now !== before.refundable_now) {
+      lines.unshift("Can still be refunded: was " + money(before.refundable_now) + ", now " + money(latest.refundable_now) + ".");
+    }
+    return lines;
+  }
+
+  // The body of an approve or decline prompt request. Approving sends the order's
+  // figures on screen; the server checks them with PayPal before any fingerprint.
+  function seenFigures(item, intent) {
+    if (intent !== "approve") {
+      return { intent: intent };
+    }
+    return { intent: intent, seen: { paid: item.paid, already_refunded: item.already_refunded } };
+  }
+
   // The order moved under the merchant: show then and now, and ask again.
   function showChanged(item) {
     var title = "The order changed before the refund went out. No money moved.";
     readHome().then(function () {
-      var latest = findItem(item.request_id);
-      var lines = ["Review the new figures and approve again if it's still right."];
-      if (latest && latest.refundable_now) {
-        lines.unshift("Can still be refunded: was " + money(item.refundable_now) + ", now " + money(latest.refundable_now) + ".");
-      }
-      showOutcome("check", title, lines, item);
+      showOutcome("check", title, changedLines(item, findItem(item.request_id) || {}), item);
     }).catch(function () {
       showOutcome("check", title, ["Review it again in your refund requests."], item);
     });
@@ -1225,8 +1241,17 @@
     return "Couldn't confirm the customer's name in this message.";
   }
 
+  // Heading, words and note for the customer line on a hold. A line is quoted only
+  // when one was given; a hold that started at approval had none.
+  function customerLineView(item) {
+    if (item.customer_message_exact === "none") {
+      return ["Message for the customer", "Your customer hasn't been told about this hold yet.", ""];
+    }
+    return ["Message given to your assistant for the customer", item.customer_message, customerLineNote(item)];
+  }
+
   // Why the server refused a decision, from a fresh read of home.
-  function refusedOutcome(data, latest) {
+  function refusedOutcome(data, latest, shown) {
     if (data.refunds_stopped === "yes") {
       return ["stopped", "Refunds are stopped", ["No money moved. Turn refunds back on to approve requests."]];
     }
@@ -1235,6 +1260,9 @@
     }
     if (latest && latest.cant_send_reason === "paypal_unavailable") {
       return ["check", "Couldn't reach PayPal. No money moved.", ["Try again in a moment."]];
+    }
+    if (latest && shown && fingerprint(latest) !== fingerprint(shown)) {
+      return ["check", "The figures changed. No money moved.", ["Review the new figures before you approve."]];
     }
     if (latest && latest.status === "waiting") {
       return ["check", "That didn't go through. No money moved.", ["It's still waiting for you. Try again."]];
@@ -1326,11 +1354,11 @@
     if (item.many_requests === "yes") {
       view.appendChild(el("p", "This customer has asked for many refunds in the last " + home.settings.window_hours + " hours. You may want to contact them.", "caution-text strong"));
     }
-    view.appendChild(el("p", "Message given to your assistant for the customer", "eyebrow"));
-    view.appendChild(el("blockquote", item.customer_message, "quote"));
-    var lineNote = customerLineNote(item);
-    if (lineNote) {
-      view.appendChild(el("p", lineNote, "muted small"));
+    var line = customerLineView(item);
+    view.appendChild(el("p", line[0], "eyebrow"));
+    view.appendChild(el(item.customer_message_exact === "none" ? "p" : "blockquote", line[1], "quote"));
+    if (line[2]) {
+      view.appendChild(el("p", line[2], "muted small"));
     }
     view.appendChild(progressLine());
     var actions = el("div", "", "actions decision");
@@ -1532,9 +1560,18 @@
     });
   }
 
+  // Figures a fresh read could not confirm never stay on a money screen.
+  function dropUnconfirmed(screen) {
+    screen.querySelectorAll(".unconfirmed").forEach(function (box) { box.remove(); });
+  }
+
   function changeBanner(view, text, latest) {
     var screen = document.getElementById(view);
     screen.querySelectorAll(".decision .primary").forEach(function (b) { b.remove(); });
+    dropUnconfirmed(screen);
+    if (screen.querySelector(".progress")) {
+      setProgress(screen, "", false);
+    }
     var slot = screen.querySelector(".change-banner-slot");
     if (!slot) {
       return;

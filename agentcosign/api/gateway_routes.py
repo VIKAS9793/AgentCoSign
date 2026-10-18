@@ -11,6 +11,7 @@ Three separate principals, never interchangeable:
 import asyncio
 import hmac
 import json
+from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
@@ -290,8 +291,16 @@ async def approval_options(
     request_id: RequestId, body: IntentIn, request: Request
 ) -> Response:
     """Passkey challenge bound to this exact pending request and intent."""
+    seen = (
+        (Decimal(body.seen.paid), Decimal(body.seen.already_refunded))
+        if body.seen
+        else None
+    )
     try:
-        return _json(_gateway(request).approval_options(request_id, body.intent))
+        options = await _gateway(request).approval_options(
+            request_id, body.intent, seen
+        )
+        return _json(options)
     except FailClosedError as exc:
         raise _refused(exc) from exc
 

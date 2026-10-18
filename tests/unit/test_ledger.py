@@ -2,7 +2,7 @@
 
 import sqlite3
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -789,3 +789,241 @@ def test_a_repeat_of_the_same_request_is_not_counted_against_itself(
     first = _auto(ledger, "r1", "20.00")
     again = _auto(ledger, "r1", "20.00")  # same id, same body: replayed
     assert again.replayed and again.state is first.state
+
+
+# --- a re-decision at approval is part of the sealed record -------------------
+@pytest.mark.edge
+def test_a_refusal_at_approval_keeps_the_record_sealed(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    at = NOW + timedelta(seconds=60)
+    assert approve(ledger, "r1", at, evidence(refunded="50.00")).state is (
+        ProposalState.DENIED
+    )
+    ledger.verify_request("r1")  # raises if the record disagrees with the chain
+    ledger.verify_records()
+
+
+@pytest.mark.edge
+def test_a_hold_at_approval_keeps_the_record_sealed(tmp_path: Path) -> None:
+    first = Ledger(tmp_path / "ledger.db", SECRET, policy(), ACCOUNT)
+    for n in range(3):
+        ev = evidence(order=f"ORD-{n}", captured="500.00")
+        first.decide(refund(f"r{n}", "60.00", f"ORD-{n}"), ev, Signals(), SCREEN, NOW)
+    lowered = Ledger(
+        tmp_path / "ledger.db", SECRET, policy(velocity_max_refunds_24h=1), ACCOUNT
+    )
+    at = NOW + timedelta(seconds=60)
+    held = approve(lowered, "r2", at, evidence(order="ORD-2", captured="500.00"))
+    assert held.state is ProposalState.PAUSED
+    lowered.verify_request("r2")
+    lowered.verify_records()
+
+
+# --- rolling 24-hour counters follow when money was sent, not first decided -----
+DAY = 86_400  # the longest a request may stay open
+
+
+def _approve_within_a_day(ledger: Ledger, request_id: str, at, ev: OrderEvidence):  # noqa: ANN001, ANN202
+    return ledger.approve(
+        request_id,
+        replace_time(ev, at),
+        Signals(),
+        SCREEN,
+        at,
+        APPROVER,
+        decide_within=DAY,
+    )
+
+
+def _cap_ledger(tmp_path: Path) -> Ledger:
+    return Ledger(
+        tmp_path / "ledger.db", SECRET, policy(daily_outflow_cap="300.00"), ACCOUNT
+    )
+
+
+@pytest.mark.edge
+def test_a_refund_approved_late_counts_from_when_it_was_sent(tmp_path: Path) -> None:
+    ledger = _cap_ledger(tmp_path)
+    ledger.decide(
+        refund("r1", "200.00", "ORD-1"),
+        evidence(captured="500.00"),
+        Signals(),
+        SCREEN,
+        NOW,
+    )
+    sent = NOW + timedelta(hours=23, minutes=59)
+    assert _approve_within_a_day(
+        ledger, "r1", sent, evidence(captured="500.00")
+    ).state is (ProposalState.EXECUTING)
+    later = NOW + timedelta(hours=24, minutes=1)
+    second = ledger.decide(
+        refund("r2", "200.00", "ORD-2"),
+        replace_time(evidence(order="ORD-2", captured="500.00"), later),
+        Signals(),
+        SCREEN,
+        later,
+    )
+    assert second.result.decision is Decision.DENY
+    assert "R10" in second.result.triggered_rules
+
+
+@pytest.mark.edge
+def test_a_reopened_request_keeps_holding_its_money_in_the_window(
+    tmp_path: Path,
+) -> None:
+    ledger = _cap_ledger(tmp_path)
+    ledger.decide(
+        refund("r1", "200.00", "ORD-1"),
+        evidence(captured="500.00"),
+        Signals(),
+        SCREEN,
+        NOW,
+    )
+    # the order changed while it waited: the owner is asked again a day later
+    reopened = NOW + timedelta(hours=23)
+    again = _approve_within_a_day(
+        ledger, "r1", reopened, evidence(captured="500.00", refunded="10.00")
+    )
+    assert again.state is ProposalState.PENDING_APPROVAL
+    later = NOW + timedelta(hours=24, minutes=1)
+    second = ledger.decide(
+        refund("r2", "200.00", "ORD-2"),
+        replace_time(evidence(order="ORD-2", captured="500.00"), later),
+        Signals(),
+        SCREEN,
+        later,
+    )
+    assert "R10" in second.result.triggered_rules  # the first 200.00 is still set aside
+
+
+@pytest.mark.edge
+def test_a_hold_at_approval_keeps_its_own_release_time(tmp_path: Path) -> None:
+    first = Ledger(tmp_path / "ledger.db", SECRET, policy(), ACCOUNT)
+    for n in range(3):
+        ev = evidence(order=f"ORD-{n}", captured="500.00")
+        first.decide(refund(f"r{n}", "60.00", f"ORD-{n}"), ev, Signals(), SCREEN, NOW)
+    lowered = Ledger(
+        tmp_path / "ledger.db", SECRET, policy(velocity_max_refunds_24h=1), ACCOUNT
+    )
+    at = NOW + timedelta(seconds=60)
+    held = approve(lowered, "r2", at, evidence(order="ORD-2", captured="500.00"))
+    timing = lowered.timing("r2")
+    assert held.result.release_at is not None and held.result.release_at > at
+    assert timing is not None
+    assert datetime.fromisoformat(timing[1]) == held.result.release_at
+
+
+@pytest.mark.edge
+def test_the_assistants_figures_are_checked_once_not_against_later_refunds(
+    ledger: Ledger,
+) -> None:
+    # the assistant said nothing was refunded (true when it asked); 20.00 is
+    # refunded in PayPal while the request waits and 60.00 still fits
+    asked = Proposal(
+        request_id="r1",
+        tool="create_refund",
+        amount=Decimal("60.00"),
+        currency="USD",
+        order_id="ORD-1",
+        claimed_captured=Decimal("100.00"),
+        claimed_refunded=Decimal("0.00"),
+    )
+    assert decide(ledger, asked).state is ProposalState.PENDING_APPROVAL
+    at = NOW + timedelta(seconds=60)
+    again = approve(ledger, "r1", at, evidence(refunded="20.00"))
+    assert again.state is ProposalState.PENDING_APPROVAL  # asked again, not refused
+
+
+@pytest.mark.edge
+def test_a_hold_at_approval_records_that_no_customer_line_was_given(
+    tmp_path: Path,
+) -> None:
+    first = Ledger(tmp_path / "ledger.db", SECRET, policy(), ACCOUNT)
+    for n in range(3):
+        ev = evidence(order=f"ORD-{n}", captured="500.00")
+        first.decide(refund(f"r{n}", "60.00", f"ORD-{n}"), ev, Signals(), SCREEN, NOW)
+    lowered = Ledger(
+        tmp_path / "ledger.db", SECRET, policy(velocity_max_refunds_24h=1), ACCOUNT
+    )
+    at = NOW + timedelta(seconds=60)
+    approve(lowered, "r2", at, evidence(order="ORD-2", captured="500.00"))
+    held = next(i for i in lowered.paused(at) if i["request_id"] == "r2")
+    assert held["greeting_named"] == "none"
+
+
+# --- the owner approves the figures they were shown ------------------------------
+@pytest.mark.edge
+def test_figures_shown_after_a_refund_elsewhere_are_the_ones_approved(
+    ledger: Ledger,
+) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    before = ledger.timing("r1")
+    at = NOW + timedelta(seconds=30)
+    seen = replace_time(evidence(refunded="20.00"), at)
+    assert ledger.record_shown("r1", seen, at) is True
+    assert ledger.timing("r1") == before  # the deadline is not touched
+    later = at + timedelta(seconds=20)
+    assert approve(ledger, "r1", later, evidence(refunded="20.00")).state is (
+        ProposalState.EXECUTING  # no second "order changed" for what they saw
+    )
+    ledger.verify_request("r1")
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"has_open_dispute": True, "dispute_id": "DSP-1", "dispute_amount": "40.00"},
+        {"captured_amount": "90.00"},  # the order itself changed
+    ],
+)
+def test_a_new_dispute_or_changed_order_is_never_taken_as_seen(
+    ledger: Ledger, change: dict[str, str]
+) -> None:
+    decide(ledger, refund("r1", "60.00"))
+    at = NOW + timedelta(seconds=30)
+    fields = {**_fields(replace_time(evidence(), at))}
+    fields.update(
+        {k: Decimal(v) if k.endswith("amount") else v for k, v in change.items()}
+    )
+    assert ledger.record_shown("r1", OrderEvidence(**fields), at) is False
+    assert approve(
+        ledger, "r1", at + timedelta(seconds=5), OrderEvidence(**fields)
+    ).state in (
+        ProposalState.PENDING_APPROVAL,
+        ProposalState.DENIED,
+    )
+
+
+@pytest.mark.edge
+def test_figures_are_only_kept_for_a_waiting_request(ledger: Ledger) -> None:
+    decide(ledger, refund("r1", "10.00"))  # sent on its own, not waiting
+    with pytest.raises(FailClosedError):
+        ledger.record_shown("r1", evidence(), NOW)
+
+
+@pytest.mark.edge
+def test_a_refusal_at_approval_frees_the_customers_held_request(
+    ledger: Ledger,
+) -> None:
+    # three refunds wait for the owner, so the customer's fourth is held
+    for n in range(3):
+        ev = evidence(order=f"ORD-{n}", captured="500.00")
+        ledger.decide(refund(f"r{n}", "60.00", f"ORD-{n}"), ev, Signals(), SCREEN, NOW)
+    held = ledger.decide(
+        refund("r3", "60.00", "ORD-3"),
+        evidence(order="ORD-3", captured="500.00"),
+        Signals(),
+        SCREEN,
+        NOW,
+    )
+    assert held.state is ProposalState.PAUSED
+    # the first does not fit when approved, so it stops counting
+    at = NOW + timedelta(seconds=60)
+    refused = approve(
+        ledger, "r0", at, evidence(order="ORD-0", captured="500.00", refunded="480.00")
+    )
+    assert refused.state is ProposalState.DENIED
+    timing = ledger.timing("r3")
+    assert timing is not None
+    assert datetime.fromisoformat(timing[1]) <= at  # looked at again now

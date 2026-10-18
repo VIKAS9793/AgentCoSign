@@ -71,12 +71,22 @@ class OutcomeOut(BaseModel):
     merchant_reason: str | None = None
 
 
+class SeenIn(BaseModel):
+    """The order's figures on the owner's screen when they asked to approve."""
+
+    model_config = _STRICT
+
+    paid: str = Field(pattern=MONEY)
+    already_refunded: str = Field(pattern=MONEY)
+
+
 class IntentIn(BaseModel):
     """Whether the approver is about to approve or reject."""
 
     model_config = _STRICT
 
     intent: Literal["approve", "reject"]
+    seen: SeenIn | None = None
 
 
 class CredentialIn(BaseModel):

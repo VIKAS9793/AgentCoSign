@@ -72,7 +72,12 @@ from agentcosign.services.approval_view import (
 )
 from agentcosign.services.evidence import fetch_evidence
 from agentcosign.services.executor import execute
-from agentcosign.services.ledger import CONTROL_REQUEST, Ledger, ProposalState
+from agentcosign.services.ledger import (
+    CONTROL_REQUEST,
+    NO_LINE_GIVEN,
+    Ledger,
+    ProposalState,
+)
 from agentcosign.services.order_reads import OrderReads, Read
 from agentcosign.services.passkeys import PasskeyRegistry
 from agentcosign.services.policy_engine import VELOCITY_WINDOW
@@ -660,6 +665,8 @@ class Gateway:
         is marked as not exact, rather than shown as if it were what they saw.
         """
         named = item.get("greeting_named", "")
+        if named == NO_LINE_GIVEN:
+            return {"customer_message": "", "customer_message_exact": NO_LINE_GIVEN}
         live = customer_copy.first_name(facts["customer"], UNKNOWN_NAME)
         name = live if named != "no" else None
         exact = named == "no" or (named == "yes" and live is not None)
@@ -958,12 +965,43 @@ class Gateway:
         deadline = datetime.fromisoformat(decide_by(timing[2], self._open_seconds))
         return self._clock() >= deadline
 
-    def approval_options(self, request_id: str, intent: str) -> str:
-        """Passkey challenge bound to this exact pending action and intent."""
-        digest = self._pending_digest(request_id, intent)
-        return self._passkeys.approval_options(
-            request_id, intent, digest, self._clock()
+    async def approval_options(
+        self,
+        request_id: str,
+        intent: str,
+        seen: tuple[Decimal, Decimal] | None = None,
+    ) -> str:
+        """Passkey challenge bound to this exact pending action and intent.
+
+        An approval is only offered on the figures PayPal shows now: ``seen`` is
+        what the owner's screen says was paid and already refunded.
+        """
+        digest = await asyncio.to_thread(self._pending_digest, request_id, intent)
+        if intent == "approve":
+            await self._confirm_shown(request_id, seen)
+        return await asyncio.to_thread(
+            self._passkeys.approval_options, request_id, intent, digest, self._clock()
         )
+
+    async def _confirm_shown(
+        self, request_id: str, seen: tuple[Decimal, Decimal] | None
+    ) -> None:
+        """Check the owner's figures against PayPal now and keep them as approved."""
+        loaded = await asyncio.to_thread(self._ledger.load, request_id)
+        if loaded is None:
+            raise FailClosedError("unknown request id")
+        proposal = loaded[0]
+        if not proposal.order_id:
+            return  # payouts carry no order figures
+        if seen is None:
+            raise FailClosedError("the figures on screen are needed to approve")
+        now = self._clock()
+        evidence = await self._evidence(proposal, now)
+        if evidence is None:
+            raise FailClosedError("PayPal could not be reached, so nothing was sent")
+        if (evidence.captured_amount, evidence.refunded_amount) != seen:
+            raise FailClosedError("the figures changed since they were shown")
+        await asyncio.to_thread(self._ledger.record_shown, request_id, evidence, now)
 
     def control_options(self, intent: str) -> str:
         """Passkey challenge to stop or resume all refunds."""
@@ -1045,7 +1083,13 @@ class Gateway:
         proposal = loaded[0]
         evidence = await self._evidence(proposal, now)
         if proposal.order_id and evidence is None:
+            # the signed approval is kept on the record even though it moved nothing
+            await asyncio.to_thread(
+                self._ledger.record_unapplied_approval, request_id, detail, now
+            )
             raise FailClosedError("PayPal could not be reached, so nothing was sent")
+        # the deadline is judged when the approval is written, after the PayPal read
+        now = self._clock()
         recorded = await asyncio.to_thread(
             partial(self._ledger.approve, decide_within=self._open_seconds),
             request_id,

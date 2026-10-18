@@ -23,7 +23,7 @@ import sqlite3
 import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -80,6 +80,9 @@ _SENT_STATES = frozenset({S.EXECUTING.value, S.EXECUTED.value})
 RESERVING = (S.PENDING_APPROVAL, S.EXECUTING, S.PAUSED)
 OUTFLOW = (S.PENDING_APPROVAL, S.EXECUTING, S.EXECUTED, S.PAUSED)
 CUSTOMER_REFUNDS = (S.PENDING_APPROVAL, S.EXECUTING, S.EXECUTED)
+# Plain moves. Deciding a request again goes through ``release`` (a paused request)
+# and ``approve`` (an approval checked against fresh facts), which may also move a
+# waiting request on hold, or keep it waiting with a fresh window.
 ALLOWED_TRANSITIONS: dict[ProposalState, frozenset[ProposalState]] = {
     S.PENDING_APPROVAL: frozenset({S.EXECUTING, S.DENIED, S.EXPIRED}),
     # Declining is always possible; sending only happens through a release.
@@ -214,9 +217,11 @@ _Q_INSERT = (
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 _Q_SET_STATE = "UPDATE proposals SET state = ?, updated_at = ? WHERE request_id = ?"
+# Sending or asking again starts the request's place in the rolling windows anew,
+# so money is counted from when it is sent or put in front of the owner again.
 _Q_REBASE = (
     "UPDATE proposals SET state = ?, evidence_json = ?, attempts = 0, "
-    "updated_at = ? WHERE request_id = ?"
+    "decided_at = ?, updated_at = ? WHERE request_id = ?"
 )
 # the approval window runs from when the request reached the person, which
 # for a released pause is the release, not the original request
@@ -248,6 +253,9 @@ _MIGRATIONS = {
     "greeting_named": "ALTER TABLE proposals ADD COLUMN greeting_named TEXT",
 }
 _Q_GREETING = "UPDATE proposals SET greeting_named = ? WHERE request_id = ?"
+_Q_SHOWN = "UPDATE proposals SET evidence_json = ? WHERE request_id = ?"
+# a request put on hold at approval: no customer line was given on that path
+NO_LINE_GIVEN = "none"
 _Q_PAYPAL = (
     "UPDATE proposals SET paypal_id = ?, paypal_status = ?, updated_at = ? "
     "WHERE request_id = ?"
@@ -410,6 +418,27 @@ def _reused_id_result() -> PolicyResult:
         triggered_rules=("R12",),
         metadata={"hits": [{"rule": "R12", "decision": "deny", "code": "id_reused"}]},
     )
+
+
+def _approval_entry(
+    proposal: Proposal,
+    result: PolicyResult,
+    state: ProposalState,
+    detail: dict[str, str],
+) -> tuple[str, dict[str, Any]]:
+    """The chain entry for an approval, so the sealed record matches the stored one.
+
+    When the decision stands it is a plain state change; when the fresh check
+    refused or held the request, its new decision is recorded with it.
+    """
+    start = S.PENDING_APPROVAL.value
+    if state in (S.EXECUTING, S.PENDING_APPROVAL):
+        return "state_changed", {"from": start, "to": state.value, **detail}
+    return "rechecked", {
+        "from": start,
+        **_audit_body(proposal, result, state),
+        **detail,
+    }
 
 
 def _approval_outcome(
@@ -891,17 +920,55 @@ class Ledger:
             proposal, state, result = self._decide_again(
                 conn, row, evidence, signals, screening, now
             )
-            self._apply_approval(conn, row, proposal, evidence, result, state, now)
-            body = {
-                "from": S.PENDING_APPROVAL.value,
-                "to": state.value,
-                **({} if state is S.EXECUTING else {"recheck": result.rule_id}),
-                **detail,
-            }
-            self._append(conn, request_id, "state_changed", body, now)
             if state in DROPPED_OUT or state is S.PAUSED:
+                # it stops counting as one of the customer's refunds; other holds
+                # are looked at again, before this one gets its own release time
                 self._recheck_pauses(conn, row["customer_key"], now)
+            self._apply_approval(conn, row, proposal, evidence, result, state, now)
+            self._append(
+                conn, request_id, *_approval_entry(proposal, result, state, detail), now
+            )
         return Recorded(request_id, state, result)
+
+    def record_unapplied_approval(
+        self, request_id: str, detail: dict[str, str], now: datetime
+    ) -> None:
+        """Keep a signed approval that moved nothing because PayPal could not be
+        read, so the record shows the owner did approve and why nothing changed."""
+        with self._transaction() as conn:
+            body = {"reason": "paypal_unreadable", **detail}
+            self._append(conn, request_id, "approval_not_applied", body, _utc(now))
+
+    def record_shown(
+        self, request_id: str, shown: OrderEvidence, now: datetime
+    ) -> bool:
+        """Keep the figures on the owner's screen as the ones they approve.
+
+        Only a change in what was refunded is taken this way. A new dispute or a
+        change in the order itself is left for the approval to send back or
+        refuse, and the deadline is not touched. Returns False when nothing was
+        kept.
+        """
+        now = _utc(now)
+        with self._transaction() as conn:
+            row = conn.execute(_Q_GET, (request_id,)).fetchone()
+            if row is None or ProposalState(row["state"]) is not S.PENDING_APPROVAL:
+                raise FailClosedError("this request is not waiting for approval")
+            if not row["evidence_json"] or shown.order_id != row["order_id"]:
+                return False
+            before = evidence_from_dict(json.loads(row["evidence_json"]))
+            drift = check_execution_drift(before, shown)
+            changed_order = drift is not None and drift.decision is Decision.DENY
+            if changed_order or before.has_open_dispute != shown.has_open_dispute:
+                return False
+            snapshot = canonical_json(evidence_to_dict(shown))
+            conn.execute(_Q_SHOWN, (snapshot, request_id))
+            body = {
+                "captured": str(shown.captured_amount),
+                "refunded": str(shown.refunded_amount),
+            }
+            self._append(conn, request_id, "shown", body, now)
+        return True
 
     def _decide_again(
         self,
@@ -917,8 +984,12 @@ class Ledger:
         if evidence is not None and evidence.order_id != proposal.order_id:
             raise FailClosedError("approval evidence is for a different order")
         context = self._context(conn, proposal, evidence, now)
+        # The assistant's figures were checked against PayPal when it asked; a
+        # refund made since is a change in the order, judged below, not a false
+        # claim.
+        unclaimed = replace(proposal, claimed_captured=None, claimed_refunded=None)
         fresh = evaluate(
-            proposal, evidence, context, signals, self._policy, screening, now
+            unclaimed, evidence, context, signals, self._policy, screening, now
         )
         decided = row["evidence_json"]
         drift = (
@@ -947,6 +1018,7 @@ class Ledger:
                     state.value,
                     snapshot or row["evidence_json"],
                     _iso(now),
+                    _iso(now),
                     proposal.request_id,
                 ),
             )
@@ -966,6 +1038,8 @@ class Ledger:
                 proposal.request_id,
             ),
         )
+        if state is S.PAUSED:
+            conn.execute(_Q_GREETING, (NO_LINE_GIVEN, proposal.request_id))
 
     def _recheck_pauses(
         self, conn: sqlite3.Connection, customer: str | None, now: datetime
@@ -1005,7 +1079,8 @@ class Ledger:
             if row is None or ProposalState(row["state"]) is not S.EXECUTING:
                 raise FailClosedError("only an executing proposal can be sent back")
             conn.execute(
-                _Q_REBASE, (S.PENDING_APPROVAL.value, snapshot, _iso(now), request_id)
+                _Q_REBASE,
+                (S.PENDING_APPROVAL.value, snapshot, _iso(now), _iso(now), request_id),
             )
             body = {"from": S.EXECUTING.value, "to": S.PENDING_APPROVAL.value, **detail}
             self._append(conn, request_id, "state_changed", body, now)
@@ -1544,8 +1619,8 @@ def _replayed_facts(rows: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
             }
         elif row["event"] == "state_changed" and request_id in facts:
             facts[request_id]["state"] = str(body["to"])
-        elif row["event"] == "released" and request_id in facts:
-            # a paused request decided again: its decision and state change
+        elif row["event"] in ("released", "rechecked") and request_id in facts:
+            # decided again (after a pause, or at approval): decision and state change
             facts[request_id]["decision"] = str(body["decision"])
             facts[request_id]["state"] = str(body["state"])
     return facts

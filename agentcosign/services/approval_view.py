@@ -210,13 +210,10 @@ def display_name(name: str) -> str:
     return name
 
 
-def _recheck_event(body: dict[str, Any]) -> dict[str, str] | None:
+def _recheck_event(body: dict[str, Any]) -> dict[str, str]:
     """An approval that a fresh check with PayPal stopped before any money moved."""
-    to = body.get("to")
-    if not body.get("recheck") or to not in ("denied", "paused"):
-        return None
     approver = display_name(str(body.get("approver") or ""))
-    held = to == "paused"
+    held = body.get("state") == "paused"
     return {
         "step": "refused_on_recheck",
         "title": f"{approver} approved, then PayPal was checked again",
@@ -285,7 +282,9 @@ def history_events(rows: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
         if kind == "decided":
             found = _decided_events(row)
         elif kind == "state_changed":
-            found = [_recheck_event(row) or _changed_event(row)]
+            found = [_changed_event(row)]
+        elif kind == "rechecked":
+            found = [_recheck_event(row)]
         elif kind == "execution_attempt":
             found = [
                 {

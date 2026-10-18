@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -88,13 +89,37 @@ class Env:
         assert response.status_code == 200
         return {"X-Approver-Session": response.json()["session"]}
 
-    def decide(self, request_id: str, intent: str, session: dict[str, str]) -> Any:
-        options = self.client.post(
-            f"/v1/approvals/{request_id}/options",
-            json={"intent": intent},
-            headers=session,
-        ).text
-        signed = self.phone.sign(options)
+    def seen(self, order: str = "ORD-1") -> dict[str, str] | None:
+        """The figures a phone shows for the order, read from PayPal now."""
+        read = fetch_evidence(self.paypal, order, now=NOW, secret=b"x" * 32)
+        try:
+            # its own thread, so async tests (already in a loop) can call it too
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                facts = pool.submit(asyncio.run, read).result()
+        except PayPalClientError:
+            return None
+        return {
+            "paid": f"{facts.captured_amount:.2f}",
+            "already_refunded": f"{facts.refunded_amount:.2f}",
+        }
+
+    def decide(
+        self,
+        request_id: str,
+        intent: str,
+        session: dict[str, str],
+        seen: dict[str, str] | None = None,
+    ) -> Any:
+        body: dict[str, Any] = {"intent": intent}
+        shown = seen if seen is not None else self.seen()
+        if intent == "approve" and shown is not None:
+            body["seen"] = shown
+        response = self.client.post(
+            f"/v1/approvals/{request_id}/options", json=body, headers=session
+        )
+        if response.status_code != 200:
+            return response, None
+        signed = self.phone.sign(response.text)
         return self.client.post(
             f"/v1/approvals/{request_id}/{intent}",
             json={"credential": signed},
@@ -270,7 +295,9 @@ def test_a_denied_request_cannot_be_approved(env: Env) -> None:
     env.propose("r1", "999.00")  # above the maximum: denied
     env.enrol()
     response = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=env.session()
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=env.session(),
     )
     assert response.status_code == 409
 
@@ -282,10 +309,14 @@ def test_a_signature_for_one_request_cannot_approve_another(env: Env) -> None:
     env.enrol()
     session = env.session()
     options_r1 = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     ).text
     env.client.post(
-        "/v1/approvals/r2/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r2/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     )
     response = env.client.post(
         "/v1/approvals/r2/approve",
@@ -302,7 +333,7 @@ def test_options_are_valid_webauthn_requests(env: Env) -> None:
     options = json.loads(
         env.client.post(
             "/v1/approvals/r1/options",
-            json={"intent": "approve"},
+            json={"intent": "approve", "seen": env.seen()},
             headers=env.session(),
         ).text
     )
@@ -406,22 +437,84 @@ def _decide_by(env: Env, session: dict[str, str]) -> str:
 
 
 @pytest.mark.edge
-async def test_a_change_that_still_fits_asks_again_with_a_fresh_window(
+async def test_a_refund_elsewhere_already_on_screen_is_approved_without_asking_again(
     env: Env,
 ) -> None:
-    # 500.00 paid; 200.00 asked; 100.00 refunded in PayPal directly while it waits
+    # 500.00 paid; 200.00 asked; 100.00 refunded in PayPal directly while it
+    # waits, and the owner's screen shows the 100.00 when they approve
+    env.propose("r1", "200.00")
+    env.enrol()
+    session = env.session()
+    await env.paypal.refund_capture("CAP-1", Decimal("100.00"), "USD", "outside-1")
+    outcome, _ = env.decide("r1", "approve", session)
+    assert outcome.json()["state"] == "executed"
+    assert await env.refunded() == Decimal("300.00")
+
+
+@pytest.mark.edge
+async def test_figures_that_changed_after_the_screen_read_get_no_fingerprint(
+    env: Env,
+) -> None:
+    env.propose("r1", "200.00")
+    env.enrol()
+    session = env.session()
+    on_screen = env.seen()  # read before the refund made elsewhere
+    await env.paypal.refund_capture("CAP-1", Decimal("100.00"), "USD", "outside-1")
+    refused, _ = env.decide("r1", "approve", session, seen=on_screen)
+    assert refused.status_code == 409
+    assert _gateway(env)._ledger.state_of("r1").value == "pending_approval"
+    assert await env.refunded() == Decimal("100.00")
+
+
+@pytest.mark.edge
+async def test_a_change_between_the_prompt_and_the_fingerprint_asks_again(
+    env: Env,
+) -> None:
     env.propose("r1", "200.00")
     env.enrol()
     session = env.session()
     before = _decide_by(env, session)
+    options = env.client.post(
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
+    )
+    signed = env.phone.sign(options.text)
     await env.paypal.refund_capture("CAP-1", Decimal("100.00"), "USD", "outside-1")
-    first, _ = env.decide("r1", "approve", session)
+    first = env.client.post(
+        "/v1/approvals/r1/approve", json={"credential": signed}, headers=session
+    )
     assert first.json()["state"] == "pending_approval"  # asked again, nothing sent
     assert await env.refunded() == Decimal("100.00")
     assert _decide_by(env, session) > before  # the new question gets its own time
     second, _ = env.decide("r1", "approve", session)
     assert second.json()["state"] == "executed"
     assert await env.refunded() == Decimal("300.00")
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    "seen",
+    [
+        None,  # an approval never offered without the figures on screen
+        {"paid": "500", "already_refunded": "-1.00"},
+        {"paid": "500.001", "already_refunded": "0.00"},
+        {"paid": "500.00", "already_refunded": "0.00", "extra": "x"},
+    ],
+)
+def test_an_approval_prompt_needs_well_formed_figures_on_screen(
+    env: Env, seen: dict[str, str] | None
+) -> None:
+    env.propose("r1", "30.00")
+    env.enrol()
+    response = env.client.post(
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": seen},
+        headers=env.session(),
+    )
+    assert response.status_code == (409 if seen is None else 422)
+    if seen is None:
+        assert "figures on screen are needed" in response.json()["detail"]
 
 
 @pytest.mark.edge
@@ -456,6 +549,11 @@ async def test_a_refusal_at_approval_reads_as_owner_words_in_the_history(
     assert "declined" not in steps  # the owner approved; they did not decline
     assert steps["refused_on_recheck"]["title"].startswith("Vikas approved")
     assert "No money moved" in steps["refused_on_recheck"]["detail"]
+    # the re-decision is part of the sealed record, also for the full check
+    assert record["sealed"] is True
+    assert await _gateway(env).check_records_if_due() is not False
+    again = env.client.get("/v1/approvals/r1/history", headers=session).json()
+    assert again["sealed"] is True
 
 
 @pytest.mark.edge
@@ -467,7 +565,9 @@ def test_a_stop_while_a_request_waits_does_not_move_its_deadline(env: Env) -> No
     ledger = _gateway(env)._ledger
     ledger.set_refunds_stopped(True, "Vikas", datetime.now(UTC))
     refused = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     )
     assert refused.status_code == 409  # no fingerprint is even asked for
     ledger.set_refunds_stopped(False, "Vikas", datetime.now(UTC))
@@ -540,7 +640,9 @@ def test_nobody_can_send_a_paused_refund_but_declining_works(env: Env) -> None:
     paused = [i for i in listed if i["status"] == "paused"]
     assert paused and paused[0]["count_in_window"] == "4"
     approve = env.client.post(
-        "/v1/approvals/r4/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r4/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     )
     assert approve.status_code == 409  # sending early is not possible
     response, _ = env.decide("r4", "reject", session)
@@ -1124,7 +1226,9 @@ def test_no_fingerprint_is_asked_for_an_approval_past_its_deadline(env: Env) -> 
     session = env.session()
     _gateway(env)._open_seconds = 0  # the window has closed; the expiry job has not run
     options = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     )
     assert options.status_code == 409
 
@@ -1137,7 +1241,9 @@ async def test_a_fingerprint_that_arrives_after_the_deadline_sends_nothing(
     env.enrol()
     session = env.session()
     options = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     ).text
     signed = env.phone.sign(options)  # signed in time
     gateway = _gateway(env)
@@ -1158,7 +1264,9 @@ async def test_the_deadline_is_checked_again_where_the_approval_is_written(
     env.enrol()
     session = env.session()
     options = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     ).text
     signed = env.phone.sign(options)
     gateway = _gateway(env)
@@ -1172,6 +1280,63 @@ async def test_the_deadline_is_checked_again_where_the_approval_is_written(
     assert await env.refunded() == Decimal("0")
 
 
+@pytest.mark.edge
+async def test_the_deadline_is_checked_after_the_paypal_read_at_approval(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env.propose("r1", "30.00")
+    env.enrol()
+    session = env.session()
+    options = env.client.post(
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
+    ).text
+    signed = env.phone.sign(options)
+    gateway = _gateway(env)
+    real_read = gateway._evidence
+
+    async def slow_read(proposal: Any, now: datetime) -> Any:
+        found = await real_read(proposal, now)
+        later = datetime.now(UTC) + timedelta(seconds=gateway._open_seconds + 1)
+        gateway._clock = lambda: later  # the deadline passes during the read
+        return found
+
+    monkeypatch.setattr(gateway, "_evidence", slow_read)
+    response = env.client.post(
+        "/v1/approvals/r1/approve", json={"credential": signed}, headers=session
+    )
+    assert response.status_code == 409
+    assert await env.refunded() == Decimal("0")
+
+
+@pytest.mark.edge
+def test_an_approval_paypal_could_not_check_is_still_on_the_record(env: Env) -> None:
+    env.propose("r1", "30.00")
+    env.enrol()
+    session = env.session()
+    reads = iter([True, True])  # screen figures and the check before the fingerprint
+    real_get = env.paypal.get_order
+
+    async def flaky(order_id: str) -> Any:
+        if next(reads, False):
+            return await real_get(order_id)
+        raise PayPalClientError("unreachable")
+
+    env.paypal.get_order = flaky  # type: ignore[method-assign]
+    response, _ = env.decide("r1", "approve", session)
+    env.paypal.get_order = real_get  # type: ignore[method-assign]
+    assert response.status_code == 409
+    ledger = _gateway(env)._ledger
+    with sqlite3.connect(ledger.path) as conn:
+        events = [
+            r[0]
+            for r in conn.execute("SELECT event FROM audit WHERE request_id = 'r1'")
+        ]
+    assert "approval_not_applied" in events
+    ledger.verify_request("r1")
+
+
 # A fingerprint that cannot be accepted is told apart from a request that cannot
 # be decided: unknown passkey, no user verification, wrong site, and a stop
 # signature replayed to resume.
@@ -1179,7 +1344,9 @@ def _signed_by(
     env: Env, session: dict[str, str], phone: SoftAuthenticator, **how: Any
 ) -> Any:
     options = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     ).text
     return env.client.post(
         "/v1/approvals/r1/approve",
@@ -1353,6 +1520,108 @@ def test_the_fingerprint_button_waits_for_the_fresh_check() -> None:
     assert "send.disabled = true" in fresh
     assert "freshVerdict(item, latest)" in fresh
     assert "latest = findItem(item.request_id)" in fresh
+
+
+@pytest.mark.edge
+def test_unconfirmed_figures_never_stay_under_a_change_or_a_failed_check() -> None:
+    """Wiring only: a banner or a failed read removes the old figures, the send
+    warning and the checking line, so the first thing read is true."""
+    final = _script_function("openFinal")
+    assert final.count("unconfirmed") >= 2  # the figures table and the send warning
+    banner = _script_function("changeBanner")
+    assert "dropUnconfirmed(screen)" in banner
+    assert 'setProgress(screen, "", false)' in banner
+    fresh = _script_function("confirmFresh")
+    assert fresh.count("dropUnconfirmed(screen)") == 2  # not read, read failed
+    assert "box.remove()" in _script_function("dropUnconfirmed")
+
+
+@pytest.mark.edge
+def test_a_hold_with_no_line_given_never_shows_one(env: Env) -> None:
+    item = {
+        "greeting_named": "none",
+        "order_id": "ORD-1",
+        "amount": "60.00",
+        "release_at": "2026-11-03T12:00:00+00:00",
+        "created_at": "2026-11-02T12:00:00+00:00",
+    }
+    line = _gateway(env)._paused_line(item, {"customer": "Jane Buyer"})
+    assert line == {"customer_message": "", "customer_message_exact": "none"}
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("exact", "heading", "note"),
+    [
+        ("yes", "Message given to your assistant for the customer", ""),
+        (
+            "no",
+            "Message given to your assistant for the customer",
+            "Couldn't confirm the customer's name in this message.",
+        ),
+        ("none", "Message for the customer", ""),
+    ],
+)
+def test_the_hold_screen_only_quotes_a_line_that_was_given(
+    exact: str, heading: str, note: str
+) -> None:
+    item = {"customer_message_exact": exact, "customer_message": "Thanks, Jane."}
+    view = _run_js(
+        ["customerLineView", "customerLineNote"],
+        f"customerLineView({json.dumps(item)})",
+    )
+    assert view[0] == heading
+    assert view[2] == note
+    if exact == "none":
+        assert view[1] == "Your customer hasn't been told about this hold yet."
+    else:
+        assert view[1] == "Thanks, Jane."
+
+
+@pytest.mark.edge
+def test_the_phone_sends_the_figures_on_screen_with_an_approval() -> None:
+    """Wiring only: the server compares these with PayPal before any fingerprint."""
+    decide = _script_function("decide")
+    assert "seenFigures(item, intent)" in decide
+    seen = _run_js(
+        ["seenFigures"],
+        'seenFigures({"paid": "80.00", "already_refunded": "15.00"}, "approve")',
+    )
+    assert seen == {
+        "intent": "approve",
+        "seen": {"paid": "80.00", "already_refunded": "15.00"},
+    }
+    assert _run_js(["seenFigures"], 'seenFigures({"paid": "80.00"}, "reject")') == {
+        "intent": "reject"
+    }
+
+
+@pytest.mark.edge
+def test_a_prompt_refused_for_changed_figures_says_so() -> None:
+    shown = {**_SEEN}
+    latest = {**_SEEN, "status": "waiting", "already_refunded": "20.00"}
+    found = _run_js(
+        ["refusedOutcome", "fingerprint"],
+        f"refusedOutcome({{}}, {json.dumps(latest)}, {json.dumps(shown)})",
+    )
+    assert found[1] == "The figures changed. No money moved."
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("before", "after", "has_line"),
+    [("100.00", "80.00", True), ("65.00", "65.00", False), ("65.00", "", False)],
+)
+def test_the_changed_screen_only_compares_figures_that_differ(
+    before: str, after: str, has_line: bool
+) -> None:
+    lines = _run_js(
+        ["changedLines", "money"],
+        f"changedLines({{refundable_now: {json.dumps(before)}}}, "
+        f"{{refundable_now: {json.dumps(after)}}})",
+    )
+    assert any("was" in line for line in lines) is has_line
+    assert lines[-1] == "Review the new figures and approve again if it's still right."
 
 
 @pytest.mark.edge
@@ -1860,7 +2129,9 @@ def test_while_stopped_waiting_requests_cannot_be_approved_but_can_be_declined(
     item = next(i for i in home["sections"]["cant_send"] if i["request_id"] == "r1")
     assert item["can_send"] == "no" and item["cant_send_reason"] == "stopped"
     refused = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     )
     assert refused.status_code == 409
     declined, _ = env.decide("r2", "reject", session)
@@ -1999,7 +2270,9 @@ def test_a_decision_signed_by_a_revoked_phone_is_refused(
     session = env.session()  # opened with the phone that is kept
     assert cli.revoke_approver(_operator_settings(env, monkeypatch), "Lost") == 0
     options = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     ).text
     refused = env.client.post(
         "/v1/approvals/r1/approve",
@@ -2360,7 +2633,9 @@ def test_an_approval_signed_before_the_stop_cannot_send_after_it(env: Env) -> No
     env.enrol()
     session = env.session()
     options = env.client.post(
-        "/v1/approvals/r1/options", json={"intent": "approve"}, headers=session
+        "/v1/approvals/r1/options",
+        json={"intent": "approve", "seen": env.seen()},
+        headers=session,
     ).text
     signed = env.phone.sign(options)  # fingerprint given before the stop
     _gateway(env)._ledger.set_refunds_stopped(True, "Vikas", datetime.now(UTC))
@@ -2380,7 +2655,9 @@ async def test_a_stuck_send_is_not_sent_while_stopped_and_finishes_once_after(
     env.enrol()
     session = env.session()
     # PayPal answers the check at approval, then cannot be read at send time
-    reads = iter([True])
+    reads = iter(
+        [True, True, True]
+    )  # screen figures, before the fingerprint, at approval
     real_get = env.paypal.get_order
 
     async def flaky(order_id: str) -> Any:
