@@ -1043,3 +1043,51 @@ def test_figures_already_on_record_add_no_entry(ledger: Ledger) -> None:
     with sqlite3.connect(ledger.path) as conn:
         after = conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
     assert after == before + 1
+
+
+# --- money still being sent always holds its share of the daily cap --------------
+def _later_refund(ledger: Ledger, request_id: str, order: str, at):  # noqa: ANN001, ANN202
+    return ledger.decide(
+        refund(request_id, "250.00", order),
+        replace_time(evidence(order=order, captured="500.00"), at),
+        Signals(),
+        SCREEN,
+        at,
+    )
+
+
+@pytest.mark.edge
+def test_an_approved_refund_held_past_a_day_still_counts_against_the_cap(
+    tmp_path: Path,
+) -> None:
+    ledger = _cap_ledger(tmp_path)
+    ledger.decide(
+        refund("r1", "200.00", "ORD-1"),
+        evidence(captured="500.00"),
+        Signals(),
+        SCREEN,
+        NOW,
+    )
+    approve(ledger, "r1", NOW + timedelta(seconds=5), evidence(captured="500.00"))
+    # held (refunds stopped, or PayPal unreachable) for more than a day
+    late = NOW + timedelta(hours=25)
+    held = _later_refund(ledger, "r2", "ORD-2", late)
+    assert "R10" in held.result.triggered_rules  # the 200.00 has not gone yet
+
+
+@pytest.mark.edge
+def test_a_refund_sent_late_counts_from_when_it_was_sent(tmp_path: Path) -> None:
+    ledger = _cap_ledger(tmp_path)
+    ledger.decide(
+        refund("r1", "200.00", "ORD-1"),
+        evidence(captured="500.00"),
+        Signals(),
+        SCREEN,
+        NOW,
+    )
+    approve(ledger, "r1", NOW + timedelta(seconds=5), evidence(captured="500.00"))
+    sent = NOW + timedelta(hours=25)
+    ledger.begin_execution(refund("r1", "200.00", "ORD-1"), sent)
+    ledger.mark_executed("r1", sent, "REF-1", "COMPLETED")
+    after = _later_refund(ledger, "r2", "ORD-2", sent + timedelta(minutes=1))
+    assert "R10" in after.result.triggered_rules  # 200.00 left a minute ago

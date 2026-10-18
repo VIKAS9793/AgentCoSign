@@ -157,9 +157,11 @@ _Q_ORDER_RESERVED = (
     "SELECT amount FROM proposals WHERE order_id = ? AND tool IN (?, ?) "
     "AND state IN (?, ?, ?) AND request_id != ?"
 )
+# Money still being sent holds its share of the cap whatever its age; the rest
+# counts for a day from when it was sent or set aside.
 _Q_OUTFLOW = (
-    "SELECT amount FROM proposals WHERE decided_at >= ? AND state IN (?, ?, ?, ?) "
-    "AND request_id != ?"
+    "SELECT amount FROM proposals WHERE (decided_at >= ? OR state = ?) "
+    "AND state IN (?, ?, ?, ?) AND request_id != ?"
 )
 _Q_CUSTOMER = (
     "SELECT decided_at FROM proposals WHERE customer_key = ? AND tool = ? "
@@ -238,8 +240,11 @@ _Q_SENDING = (
     "SELECT request_id, tool, amount, currency, order_id, updated_at "
     "FROM proposals WHERE state = ? ORDER BY updated_at"
 )
+# each attempt that may reach PayPal restarts the request's place in the rolling
+# windows, so money is counted from when it is sent
 _Q_ATTEMPT = (
-    "UPDATE proposals SET attempts = attempts + 1, updated_at = ? WHERE request_id = ?"
+    "UPDATE proposals SET attempts = attempts + 1, decided_at = ?, updated_at = ? "
+    "WHERE request_id = ?"
 )
 _Q_COLUMNS = "PRAGMA table_info(proposals)"
 _MIGRATIONS = {
@@ -273,7 +278,10 @@ _Q_UNSETTLED = (
     "ORDER BY updated_at"
 )
 _Q_VERSION = "SELECT COALESCE(MAX(seq), 0) FROM audit"
-_Q_WAITING = "SELECT amount FROM proposals WHERE decided_at >= ? AND state IN (?, ?, ?)"
+_Q_WAITING = (
+    "SELECT amount FROM proposals WHERE (decided_at >= ? OR state = ?) "
+    "AND state IN (?, ?, ?)"
+)
 _Q_EVENTS = (
     "SELECT created_at, event, body FROM audit WHERE request_id = ? ORDER BY seq"
 )
@@ -460,6 +468,12 @@ def _approval_entry(
         **_audit_body(proposal, result, state),
         **detail,
     }
+
+
+def _outflow(conn: sqlite3.Connection, day_ago: str, leave_out: str) -> Decimal:
+    """Money counted against the daily cap, leaving out one request (or none)."""
+    params = (day_ago, S.EXECUTING.value, *OUTFLOW, leave_out)
+    return _sum(conn.execute(_Q_OUTFLOW, params))
 
 
 def _approval_outcome(
@@ -746,7 +760,7 @@ class Ledger:
                 ),
             )
         )
-        outflow = _sum(conn.execute(_Q_OUTFLOW, (day_ago, *OUTFLOW, own)))
+        outflow = _outflow(conn, day_ago, own)
         customer = evidence.customer_key if evidence is not None else None
         times: tuple[datetime, ...] = ()
         if customer:
@@ -870,7 +884,7 @@ class Ledger:
                     "proposal is not approved for execution", {"state": row["state"]}
                 )
             previous = int(row["attempts"])
-            conn.execute(_Q_ATTEMPT, (_iso(now), proposal.request_id))
+            conn.execute(_Q_ATTEMPT, (_iso(now), _iso(now), proposal.request_id))
             body = {"attempt": str(previous + 1)}
             self._append(conn, proposal.request_id, "execution_attempt", body, now)
         return previous
@@ -1284,8 +1298,10 @@ class Ledger:
         }
         with self._connection() as conn:
             rows = conn.execute(_Q_DAY, (refund, day_ago)).fetchall()
-            outflow = _sum(conn.execute(_Q_OUTFLOW, (day_ago, *OUTFLOW, "")))
-            waiting = _sum(conn.execute(_Q_WAITING, (day_ago, *RESERVING)))
+            outflow = _outflow(conn, day_ago, "")
+            waiting = _sum(
+                conn.execute(_Q_WAITING, (day_ago, S.EXECUTING.value, *RESERVING))
+            )
         for row in rows:
             state = ProposalState(row["state"])
             amount = Decimal(row["amount"])
