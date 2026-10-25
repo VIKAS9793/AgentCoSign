@@ -48,6 +48,13 @@ class ExtractionError(AgentCoSignError):
     """Raised when structured financial extraction fails."""
 
 
+class ModelUnavailableError(AgentCoSignError):
+    """Raised when no configured model gave a usable answer in time.
+
+    The check counts as "could not run", which asks the owner and never allows.
+    """
+
+
 class AuditIntegrityError(AgentCoSignError):
     """Raised when hash-chain validation or audit ledger integrity fails."""
 
