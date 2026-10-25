@@ -54,6 +54,15 @@ class ProposalIn(BaseModel):
         )
 
 
+class DemoMessageIn(BaseModel):
+    """A visitor's own customer message on the hosted demo (length is also
+    checked against the configured limit)."""
+
+    model_config = _STRICT
+
+    text: str = Field(min_length=1, max_length=2000)
+
+
 class OutcomeOut(BaseModel):
     """What happened to a proposal or an approval."""
 

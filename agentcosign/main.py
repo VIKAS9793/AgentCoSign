@@ -22,8 +22,14 @@ from agentcosign.core.config import Settings, get_settings
 from agentcosign.core.exceptions import AgentCoSignError
 from agentcosign.core.limits import TrafficGuard
 from agentcosign.services.gateway import Gateway
+from agentcosign.services.scenarios import ScenarioRunner
 from agentcosign.services.workspaces import Workspaces
-from agentcosign.wiring import build_gateway, build_workspaces
+from agentcosign.wiring import (
+    build_assistant,
+    build_gateway,
+    build_workspaces,
+    paypal_client,
+)
 
 logger = logging.getLogger("agentcosign")
 
@@ -194,8 +200,14 @@ def _install_gateway(
     app: FastAPI, settings: Settings, paypal: PayPalClient | None
 ) -> None:
     """Build the gateway and add its routes."""
-    app.state.gateway = build_gateway(settings, paypal)
-    app.state.workspaces = build_workspaces(settings, app.state.gateway, paypal)
+    shared = paypal or paypal_client(settings)
+    app.state.gateway = build_gateway(settings, shared)
+    app.state.workspaces = build_workspaces(settings, app.state.gateway, shared)
+    app.state.scenarios = ScenarioRunner(
+        paypal=shared,
+        assistant=build_assistant(settings),
+        per_day=settings.demo.scenarios_per_workspace_per_day,
+    )
     app.include_router(gateway_router)
 
 

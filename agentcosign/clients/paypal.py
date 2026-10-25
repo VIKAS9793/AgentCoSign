@@ -341,7 +341,9 @@ class RecordedPayPalClient:
         self._webhook_status: str | None = NOT_VERIFIED
 
     @classmethod
-    def from_directory(cls, root: Path) -> "RecordedPayPalClient":
+    def from_directory(
+        cls, root: Path, merchant_id: str = ""
+    ) -> "RecordedPayPalClient":
         """Load ``orders/<id>.json`` and ``disputes/<capture id>.json`` files."""
         orders = {
             p.stem: json.loads(p.read_text("utf-8")) for p in root.glob("orders/*.json")
@@ -350,7 +352,7 @@ class RecordedPayPalClient:
             p.stem: json.loads(p.read_text("utf-8"))
             for p in root.glob("disputes/*.json")
         }
-        return cls(orders, disputes)
+        return cls(orders, disputes, merchant_id=merchant_id)
 
     def set_webhook_verification(self, status: str | None) -> None:
         """What PayPal answers to webhook checks; None means PayPal is unreachable."""

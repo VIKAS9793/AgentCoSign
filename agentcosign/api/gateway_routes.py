@@ -23,12 +23,14 @@ from agentcosign.core.exceptions import (
     ConfigurationError,
     FailClosedError,
     LimitReachedError,
+    ModelUnavailableError,
     PayPalClientError,
     SignatureError,
 )
 from agentcosign.schemas.gateway import (
     REQUEST_ID,
     CredentialIn,
+    DemoMessageIn,
     EnrolFinishIn,
     EnrolStartIn,
     IntentIn,
@@ -37,11 +39,13 @@ from agentcosign.schemas.gateway import (
 )
 from agentcosign.services.gateway import Gateway, Outcome
 from agentcosign.services.live_updates import change_events
+from agentcosign.services.scenarios import BY_KEY, SCENARIOS, ScenarioRunner
 from agentcosign.services.workspaces import Workspaces
 
 router = APIRouter(tags=["Gateway"])
 RequestId = Annotated[str, Path(pattern=REQUEST_ID)]
 ControlIntent = Annotated[str, Path(pattern="^(stop|resume)$")]
+ScenarioKey = Annotated[str, Path(pattern="^(" + "|".join(BY_KEY) + ")$")]
 # PayPal events are small; anything larger is refused before it is parsed
 WEBHOOK_MAX_BYTES = 65_536
 
@@ -173,6 +177,77 @@ async def open_workspace(request: Request) -> dict[str, str]:
     if gateway is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Try again.")
     return {"workspace": workspace_id, "enrolment": gateway.enrolment_token()}
+
+
+def _demo_only(request: Request) -> Settings:
+    settings: Settings = request.app.state.settings
+    if settings.env != "demo":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+    return settings
+
+
+@router.get("/v1/demo/scenarios")
+async def list_scenarios(request: Request) -> dict[str, Any]:
+    """Hosted demo only: the ready scenarios and the visitor's allowances."""
+    settings = _demo_only(request)
+    return {
+        "scenarios": [
+            {"key": s.key, "title": s.title, "shows": s.shows} for s in SCENARIOS
+        ],
+        "per_day": settings.demo.scenarios_per_workspace_per_day,
+        "message_max_chars": settings.demo.message_max_chars,
+    }
+
+
+async def _run_demo(run: Any) -> dict[str, Any]:
+    """Run a scenario and say plainly what happened or why nothing did."""
+    try:
+        result = await run
+    except LimitReachedError as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, exc.message) from exc
+    except ModelUnavailableError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The AI assistant isn't available right now. No money moved.",
+        ) from exc
+    except PayPalClientError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Couldn't create the test order. No money moved. Try again.",
+        ) from exc
+    outcome = result.outcome
+    return {
+        "order_id": result.order_id,
+        "outcome": None if outcome is None else _out(outcome).model_dump(),
+    }
+
+
+def _workspace_key(request: Request) -> str:
+    return request.headers.get(WORKSPACE_HEADER, "") or "owner"
+
+
+@router.post(
+    "/v1/demo/scenarios/{key}", dependencies=[Depends(require_approver_session)]
+)
+async def run_scenario(key: ScenarioKey, request: Request) -> dict[str, Any]:
+    """Hosted demo only: run one ready scenario in the visitor's own workspace."""
+    _demo_only(request)
+    runner: ScenarioRunner = request.app.state.scenarios
+    run = runner.run_ready(_gateway(request), _workspace_key(request), key)
+    return await _run_demo(run)
+
+
+@router.post("/v1/demo/messages", dependencies=[Depends(require_approver_session)])
+async def run_own_message(body: DemoMessageIn, request: Request) -> dict[str, Any]:
+    """Hosted demo only: a visitor's own customer message, on a fresh test order."""
+    settings = _demo_only(request)
+    if len(body.text) > settings.demo.message_max_chars:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "That message is too long."
+        )
+    runner: ScenarioRunner = request.app.state.scenarios
+    run = runner.run_own(_gateway(request), _workspace_key(request), body.text)
+    return await _run_demo(run)
 
 
 # ----------------------------------------------------------------- enrolment

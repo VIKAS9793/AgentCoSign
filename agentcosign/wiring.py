@@ -29,13 +29,15 @@ RECORDINGS_DIR = (
 )
 
 
-def _paypal_client(settings: Settings) -> PayPalClient:
+def paypal_client(settings: Settings) -> PayPalClient:
     """Live sandbox calls when configured, otherwise recorded sandbox responses."""
     if settings.paypal_execution == "sandbox":
         return LivePayPalClient(
             settings.paypal_client_id, settings.paypal_client_secret
         )
-    return RecordedPayPalClient.from_directory(RECORDINGS_DIR)
+    return RecordedPayPalClient.from_directory(
+        RECORDINGS_DIR, settings.paypal_merchant_id
+    )
 
 
 def _audit_secret(settings: Settings) -> bytes:
@@ -93,12 +95,20 @@ def build_checks(settings: Settings) -> CustomerChecks | None:
     )
 
 
+def build_assistant(settings: Settings) -> OpenAICompatibleProvider | None:
+    """The refund assistant's model, or None when no model key is set."""
+    key = settings.groq_api_key
+    if not key.get_secret_value():
+        return None
+    return OpenAICompatibleProvider("agent", settings.models.agent, key)
+
+
 def build_gateway(settings: Settings, paypal: PayPalClient | None = None) -> Gateway:
     """The gateway as the service runs it; the command line uses the same one."""
     return Gateway(
         ledger=open_ledger(settings),
         passkeys=open_passkeys(settings),
-        paypal=paypal or _paypal_client(settings),
+        paypal=paypal or paypal_client(settings),
         policy=settings.policy,
         screening=settings.screening,
         secret=_audit_secret(settings),
@@ -124,7 +134,7 @@ def build_workspaces(
     derived from the audit key and the workspace id, so a sign-in or setup link
     from one workspace is never accepted by another.
     """
-    shared_paypal = paypal or _paypal_client(settings)
+    shared_paypal = paypal or paypal_client(settings)
     folder = _database(settings).parent / "workspaces"
     master = settings.audit_hmac_key.get_secret_value().encode("utf-8")
 
