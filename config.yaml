@@ -70,6 +70,9 @@ screening:
   # Never "allow". Escalate keeps the demo alive without weakening safety.
   on_unavailable: "escalate" # escalate | deny
   max_document_chars: 8000
+  # Prompt guard score at or above which a message counts as an attempt to
+  # instruct the assistant. A probability, quoted so it parses exactly.
+  guard_threshold: "0.50"
 
 # ------------------------------------------------------------------------------
 # Model Layer Configurations (Provider endpoints, models, fallbacks)
@@ -87,10 +90,10 @@ models:
 
   screening:
     provider: "groq"
-    # Free-tier limit on the safeguard model is 3 requests per minute, so a burst
-    # gets HTTP 429. Treat 429 as "use the fallback now", never as a reason to wait.
-    primary: "openai/gpt-oss-safeguard-20b"
-    fallback: "openai/gpt-oss-20b"
+    # The safeguard model answers only about 3 requests a minute on the free tier,
+    # so it is the fallback; a 429 means "use the other model now", never wait.
+    primary: "openai/gpt-oss-20b"
+    fallback: "openai/gpt-oss-safeguard-20b"
     temperature: 0.0
     max_tokens: 512
     timeout_seconds: 10
@@ -107,6 +110,19 @@ models:
     temperature: 0.0
     max_tokens: 512
     timeout_seconds: 15
+
+  guard:
+    # A small classifier from a different family that scores open attack wording
+    # ("ignore all previous instructions") from 0 to 1. It misses social
+    # engineering, which screening reads for. The smaller 22m version flagged a
+    # genuine message in testing, so there is no second model: if this one is
+    # down the guard could not run and screening still decides.
+    provider: "groq"
+    primary: "meta-llama/llama-prompt-guard-2-86m"
+    fallback: "meta-llama/llama-prompt-guard-2-86m"
+    temperature: 0.0
+    max_tokens: 16
+    timeout_seconds: 5
 
 # ------------------------------------------------------------------------------
 # Traffic protection (keeps the free-tier service alive and fair)

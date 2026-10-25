@@ -107,6 +107,17 @@ class ScreeningSettings(BaseModel):
 
     on_unavailable: Literal["escalate", "deny"]  # never "allow"
     max_document_chars: int = Field(ge=500, le=50_000)
+    # The prompt guard's score at or above which a message counts as an attempt
+    # to instruct the assistant. A probability: 0 would flag everything, 1 nothing.
+    guard_threshold: Decimal
+
+    @field_validator("guard_threshold", mode="before")
+    @classmethod
+    def _parse_threshold(cls, value: Any) -> Decimal:
+        threshold = _to_decimal(value)
+        if not Decimal(0) < threshold < Decimal(1):
+            raise ValueError("guard_threshold must be between 0 and 1")
+        return threshold
 
 
 class ModelRoleConfig(BaseModel):
@@ -138,12 +149,13 @@ class ModelsConfig(BaseModel):
     agent: ModelRoleConfig
     screening: ModelRoleConfig
     extraction: ModelRoleConfig
+    guard: ModelRoleConfig
 
     @model_validator(mode="after")
     def _customer_text_stays_with_cleared_providers(self) -> "ModelsConfig":
         # every role reads the customer's message, the agent included
         roles = {"agent": self.agent, "screening": self.screening}
-        roles["extraction"] = self.extraction
+        roles.update(extraction=self.extraction, guard=self.guard)
         for name, role in roles.items():
             if role.provider not in CUSTOMER_TEXT_PROVIDERS:
                 raise ValueError(

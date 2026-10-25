@@ -89,7 +89,9 @@ def test_models_config_loaded() -> None:
     settings = get_settings()
     assert settings.models.agent.provider == "groq"
     assert settings.models.agent.primary == "openai/gpt-oss-120b"
-    assert settings.models.screening.primary == "openai/gpt-oss-safeguard-20b"
+    assert settings.models.screening.primary == "openai/gpt-oss-20b"
+    assert settings.models.screening.fallback == "openai/gpt-oss-safeguard-20b"
+    assert settings.models.guard.primary == "meta-llama/llama-prompt-guard-2-86m"
     assert settings.models.extraction.provider == "groq"
     assert settings.models.extraction.primary == "qwen/qwen3.8-27b"
 
@@ -103,7 +105,7 @@ def _models(**changes: dict[str, Any]) -> dict[str, Any]:
 
 
 @pytest.mark.edge
-@pytest.mark.parametrize("role", ["agent", "screening", "extraction"])
+@pytest.mark.parametrize("role", ["agent", "screening", "extraction", "guard"])
 def test_customer_words_only_go_to_a_provider_cleared_for_them(role: str) -> None:
     """Every role reads the customer's words, and a provider that may keep or
     learn from prompts must never receive them, so such a setting stops startup."""
@@ -199,3 +201,21 @@ def test_nonsensical_policy_is_rejected(override: dict[str, Any]) -> None:
 def test_float_yaml_numbers_do_not_leak_binary_error() -> None:
     policy = PolicySettings(**{**VALID_POLICY, "refund_auto_limit": 0.1})
     assert policy.refund_auto_limit == Decimal("0.1")
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize("threshold", ["0", "1", "1.5", "-0.1"])
+def test_the_guard_threshold_must_be_a_real_probability(threshold: str) -> None:
+    """At 0 every message would be flagged and at 1 none could be."""
+    from agentcosign.core.config import ScreeningSettings
+
+    with pytest.raises(ValidationError):
+        ScreeningSettings(
+            on_unavailable="escalate",
+            max_document_chars=8000,
+            guard_threshold=threshold,
+        )
+
+
+def test_the_guard_threshold_is_decimal() -> None:
+    assert get_settings().screening.guard_threshold == Decimal("0.50")

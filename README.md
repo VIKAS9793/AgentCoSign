@@ -61,12 +61,13 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 | R16 | The merchant pressed the emergency stop | DENY every money action; only the merchant's fingerprint turns refunds back on |
 | R17 | Refunds sent without asking would pass the auto limit for the order, or for the customer in 24 h | ESCALATE (one refund cannot be split into several small automatic ones). Takes effect once the safety check of customer messages ships; until then every refund already asks the owner |
 
-### Three AI roles (designed; models verified live, roles not yet wired into the request path)
+### Four AI roles (designed; models verified live, roles not yet wired into the request path)
 AI reads and checks; it never approves money. A refund goes out without the merchant only when three independent witnesses agree: the agent's proposal, a separate reading of the customer's own words, and the facts PayPal returns. Any disagreement goes to the merchant.
 
 1. **Acting agent** (Groq `openai/gpt-oss-120b`) reads the customer's message and proposes a refund through the gateway. It holds no PayPal credentials.
 2. **Extraction** (Groq `qwen/qwen3.8-27b`, a different model family from the agent) reads the customer's own words for the order, amount, currency, reason and any request to send money elsewhere. Startup refuses a configuration that gives this role the agent's own model.
-3. **Screening** (Groq `openai/gpt-oss-safeguard-20b`) looks for manipulation across the customer's messages, after a deterministic pre-screen.
+3. **Screening** (Groq `openai/gpt-oss-20b`, falling back to `openai/gpt-oss-safeguard-20b`) looks for manipulation across the customer's messages, including social engineering such as a message claiming to be the shop or PayPal.
+4. **Prompt guard** (Groq `meta-llama/llama-prompt-guard-2-86m`, a different model family) scores open attack wording such as "ignore all previous instructions" from 0 to 1, reading long messages in overlapping pieces. It misses social engineering, which is why screening runs beside it; neither replaces the other.
 
 The approval card shows what the customer asked for as a fixed sentence built from the extracted fields, so no model writes text the merchant reads. Customer words go only to providers whose terms let the account turn off prompt retention and rule out training on prompts; startup refuses any other provider for these roles.
 

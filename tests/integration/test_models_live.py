@@ -14,6 +14,7 @@ import pytest
 from agentcosign.clients.llm import ModelAnswer, OpenAICompatibleProvider
 from agentcosign.core.config import ModelRoleConfig, Settings, get_settings
 from agentcosign.core.exceptions import ModelUnavailableError
+from agentcosign.services.prompt_guard import guard
 
 pytestmark = pytest.mark.integration
 
@@ -196,3 +197,21 @@ async def test_an_answer_cut_off_by_the_token_budget_counts_as_none(
     provider = _provider(settings, "agent", max_tokens=16)
     with pytest.raises(ModelUnavailableError):
         await _ask_all(provider, AGENT_SYSTEM, GENUINE[:1])
+
+
+async def test_the_guard_flags_open_attack_wording_and_passes_genuine_customers(
+    settings: Settings,
+) -> None:
+    """The guard is scored through the same client; it should catch the open
+    instruction and leave angry genuine customers alone. It is not expected to
+    catch the social-engineering messages: screening reads for those."""
+    provider = _provider(settings, "guard")
+    threshold = settings.screening.guard_threshold
+    try:
+        results = [await guard(provider, t, threshold) for t in MANIPULATION + GENUINE]
+    finally:
+        await provider.aclose()
+    for result in results:
+        print(f"guard {result.model}: {result.score:.4f} flagged={result.flagged}")
+    assert results[0].flagged
+    assert not any(r.flagged for r in results[3:])

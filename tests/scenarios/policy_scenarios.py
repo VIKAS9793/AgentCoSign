@@ -49,7 +49,11 @@ def policy(**overrides: Any) -> PolicySettings:
 
 def screening(on_unavailable: str = "escalate") -> ScreeningSettings:
     """Screening configuration for the table."""
-    return ScreeningSettings(on_unavailable=on_unavailable, max_document_chars=8000)
+    return ScreeningSettings(
+        on_unavailable=on_unavailable,
+        max_document_chars=8000,
+        guard_threshold="0.50",
+    )
 
 
 @dataclass(frozen=True)
