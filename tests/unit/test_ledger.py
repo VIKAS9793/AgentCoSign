@@ -778,6 +778,9 @@ def test_the_customers_automatic_budget_looks_back_one_day(
         SCREEN,
         then,
     )
+    # it went out then (an unsent refund would still count, whatever its age)
+    ledger.begin_execution(refund("r1", "20.00", "ORD-1"), then)
+    ledger.mark_executed("r1", then, "REF-1", "COMPLETED")
     later = _auto(ledger, "r2", "10.00", "ORD-2")
     assert (later.result.rule_id == "R17") is counted
 
@@ -1091,3 +1094,42 @@ def test_a_refund_sent_late_counts_from_when_it_was_sent(tmp_path: Path) -> None
     ledger.mark_executed("r1", sent, "REF-1", "COMPLETED")
     after = _later_refund(ledger, "r2", "ORD-2", sent + timedelta(minutes=1))
     assert "R10" in after.result.triggered_rules  # 200.00 left a minute ago
+
+
+# --- unsent money also stays in the customer's limits whatever its age ------------
+@pytest.mark.edge
+def test_an_unsent_automatic_refund_older_than_a_day_still_uses_the_budget(
+    ledger: Ledger,
+) -> None:
+    # sent on its own, but PayPal's answer was lost and nothing retried for a day
+    assert _auto(ledger, "r1", "20.00", "ORD-1").state is ProposalState.EXECUTING
+    later = NOW + timedelta(hours=25)
+    second = ledger.decide(
+        refund("r2", "20.00", "ORD-2"),
+        replace_time(evidence(order="ORD-2"), later),
+        Signals(),
+        SCREEN,
+        later,
+    )
+    assert second.result.rule_id == "R17"  # not a second automatic refund
+
+
+@pytest.mark.edge
+def test_unsent_refunds_older_than_a_day_still_count_as_the_customers(
+    ledger: Ledger,
+) -> None:
+    for n in range(3):
+        assert _auto(ledger, f"r{n}", "5.00", f"ORD-{n}").state is (
+            ProposalState.EXECUTING
+        )
+    later = NOW + timedelta(hours=25)
+    fourth = ledger.decide(
+        refund("r9", "5.00", "ORD-9"),
+        replace_time(evidence(order="ORD-9"), later),
+        Signals(),
+        SCREEN,
+        later,
+    )
+    assert fourth.result.decision is Decision.PAUSE
+    assert fourth.result.release_at is not None
+    assert fourth.result.release_at > later + timedelta(hours=1)  # a real hold

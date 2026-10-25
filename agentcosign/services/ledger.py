@@ -163,9 +163,12 @@ _Q_OUTFLOW = (
     "SELECT amount FROM proposals WHERE (decided_at >= ? OR state = ?) "
     "AND state IN (?, ?, ?, ?) AND request_id != ?"
 )
+# A refund still being sent is one of the customer's refunds whatever its age,
+# and counts as made now, so a hold computed from it is never already over.
 _Q_CUSTOMER = (
-    "SELECT decided_at FROM proposals WHERE customer_key = ? AND tool = ? "
-    "AND decided_at >= ? AND state IN (?, ?, ?) AND request_id != ?"
+    "SELECT CASE WHEN state = ? THEN ? ELSE decided_at END AS decided_at "
+    "FROM proposals WHERE customer_key = ? AND tool = ? "
+    "AND (decided_at >= ? OR state = ?) AND state IN (?, ?, ?) AND request_id != ?"
 )
 # Refunds that went out (or are going out) without a person deciding.
 _Q_AUTO_ORDER = (
@@ -174,11 +177,12 @@ _Q_AUTO_ORDER = (
 )
 _Q_AUTO_CUSTOMER = (
     "SELECT amount FROM proposals WHERE customer_key = ? AND tool = ? "
-    "AND decision = ? AND decided_at >= ? AND state IN (?, ?) AND request_id != ?"
+    "AND decision = ? AND (decided_at >= ? OR state = ?) AND state IN (?, ?) "
+    "AND request_id != ?"
 )
 _Q_CUSTOMER_REFUND_COUNT = (
     "SELECT COUNT(*) FROM proposals WHERE customer_key = ? AND tool = ? "
-    "AND decided_at >= ? AND state IN (?, ?, ?)"
+    "AND (decided_at >= ? OR state = ?) AND state IN (?, ?, ?)"
 )
 _Q_CUSTOMER_ASKS = (
     "SELECT COUNT(*) FROM proposals WHERE customer_key = ? AND tool = ? "
@@ -468,6 +472,25 @@ def _approval_entry(
         **_audit_body(proposal, result, state),
         **detail,
     }
+
+
+def _customer_times(
+    conn: sqlite3.Connection, customer: str, leave_out: str, day_ago: str, now: datetime
+) -> tuple[datetime, ...]:
+    """When each of the customer's refunds in the window was made (unsent: now)."""
+    sending = S.EXECUTING.value
+    params = (
+        sending,
+        _iso(now),
+        customer,
+        ToolAction.CREATE_REFUND.value,
+        day_ago,
+        sending,
+        *CUSTOMER_REFUNDS,
+        leave_out,
+    )
+    rows = conn.execute(_Q_CUSTOMER, params).fetchall()
+    return tuple(datetime.fromisoformat(r["decided_at"]) for r in rows)
 
 
 def _outflow(conn: sqlite3.Connection, day_ago: str, leave_out: str) -> Decimal:
@@ -762,11 +785,7 @@ class Ledger:
         )
         outflow = _outflow(conn, day_ago, own)
         customer = evidence.customer_key if evidence is not None else None
-        times: tuple[datetime, ...] = ()
-        if customer:
-            params = (customer, refund, day_ago, *CUSTOMER_REFUNDS, own)
-            rows = conn.execute(_Q_CUSTOMER, params).fetchall()
-            times = tuple(datetime.fromisoformat(r["decided_at"]) for r in rows)
+        times = _customer_times(conn, customer, own, day_ago, now) if customer else ()
         refunds = len(times)
         known, duplicate = self._payee_facts(conn, proposal, now)
         auto_order, auto_customer = self._auto_facts(conn, proposal, customer, now)
@@ -804,7 +823,7 @@ class Ledger:
         if not customer:
             return order, Decimal("0")
         day_ago = _iso(now - VELOCITY_WINDOW)
-        params = (customer, *common, day_ago, *sent, own)
+        params = (customer, *common, day_ago, S.EXECUTING.value, *sent, own)
         return order, _sum(conn.execute(_Q_AUTO_CUSTOMER, params))
 
     def _payee_facts(
@@ -1395,7 +1414,7 @@ class Ledger:
                 if row["customer_key"]:
                     params = (row["customer_key"], refund, day_ago)
                     asks = int(conn.execute(_Q_CUSTOMER_ASKS, params).fetchone()[0])
-                    counted = (*params, *CUSTOMER_REFUNDS)
+                    counted = (*params, S.EXECUTING.value, *CUSTOMER_REFUNDS)
                     refunds = int(
                         conn.execute(_Q_CUSTOMER_REFUND_COUNT, counted).fetchone()[0]
                     )
