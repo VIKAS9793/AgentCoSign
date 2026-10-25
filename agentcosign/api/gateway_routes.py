@@ -22,6 +22,7 @@ from agentcosign.core.config import Settings
 from agentcosign.core.exceptions import (
     ConfigurationError,
     FailClosedError,
+    LimitReachedError,
     PayPalClientError,
     SignatureError,
 )
@@ -36,6 +37,7 @@ from agentcosign.schemas.gateway import (
 )
 from agentcosign.services.gateway import Gateway, Outcome
 from agentcosign.services.live_updates import change_events
+from agentcosign.services.workspaces import Workspaces
 
 router = APIRouter(tags=["Gateway"])
 RequestId = Annotated[str, Path(pattern=REQUEST_ID)]
@@ -44,12 +46,26 @@ ControlIntent = Annotated[str, Path(pattern="^(stop|resume)$")]
 WEBHOOK_MAX_BYTES = 65_536
 
 
+WORKSPACE_HEADER = "x-workspace"
+
+
 def _gateway(request: Request) -> Gateway:
-    gateway: Gateway | None = getattr(request.app.state, "gateway", None)
-    if gateway is None:
+    """The gateway for the request's workspace: a visitor's own one in the hosted
+    demo, otherwise the owner's. A workspace that has closed (the demo slept or
+    restarted) answers 410, so the app can ask the visitor to set up again."""
+    workspaces: Workspaces[Gateway] | None = getattr(
+        request.app.state, "workspaces", None
+    )
+    if workspaces is None:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Gateway is not ready."
         )
+    workspace_id = request.headers.get(WORKSPACE_HEADER, "")
+    if not workspace_id:
+        return workspaces.default
+    gateway = workspaces.get(workspace_id)
+    if gateway is None:
+        raise HTTPException(status.HTTP_410_GONE, "This test setup has closed.")
     return gateway
 
 
@@ -81,8 +97,10 @@ def require_operator(request: Request) -> None:
 
 def require_approver_session(request: Request) -> None:
     """Only an approver who opened a passkey session may list or decide."""
+    # a closed workspace is said first (set up again), before any sign-in check
+    gateway = _gateway(request)
     token = request.headers.get("x-approver-session", "")
-    if not token or not _gateway(request).session_is_valid(token):
+    if not token or not gateway.session_is_valid(token):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Approver session required.")
 
 
@@ -132,6 +150,29 @@ async def proposal_status(request_id: RequestId, request: Request) -> dict[str, 
     if view is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown request id.")
     return view
+
+
+# ---------------------------------------------------------------- hosted demo
+
+
+@router.post("/v1/demo/workspaces")
+async def open_workspace(request: Request) -> dict[str, str]:
+    """Hosted demo only: open a private workspace and a one-time setup token for
+    it, so a visitor can set up their own device without our keys."""
+    settings: Settings = request.app.state.settings
+    if settings.env != "demo":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+    workspaces: Workspaces[Gateway] = request.app.state.workspaces
+    client = getattr(request.state, "client", None)
+    address = client.key if client is not None else ""
+    try:
+        workspace_id = await asyncio.to_thread(workspaces.open, address)
+    except LimitReachedError as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, exc.message) from exc
+    gateway = workspaces.get(workspace_id)
+    if gateway is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Try again.")
+    return {"workspace": workspace_id, "enrolment": gateway.enrolment_token()}
 
 
 # ----------------------------------------------------------------- enrolment

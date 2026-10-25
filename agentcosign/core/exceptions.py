@@ -61,3 +61,7 @@ class AuditIntegrityError(AgentCoSignError):
 
 class PayPalClientError(AgentCoSignError):
     """Raised when communication with PayPal sandbox fails."""
+
+
+class LimitReachedError(AgentCoSignError):
+    """A demo allowance is used up (setups or test scenarios). Nothing moved."""

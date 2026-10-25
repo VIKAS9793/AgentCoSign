@@ -4,7 +4,11 @@ Nothing here builds the web app, so an operator command such as stopping all
 refunds keeps working when the web app itself cannot load.
 """
 
+import hashlib
+import hmac
 from pathlib import Path
+
+from pydantic import SecretStr
 
 from agentcosign.clients.llm import OpenAICompatibleProvider
 from agentcosign.clients.paypal import (
@@ -18,6 +22,7 @@ from agentcosign.services.gateway import Gateway
 from agentcosign.services.ledger import Ledger
 from agentcosign.services.messages import MessageStore
 from agentcosign.services.passkeys import PasskeyRegistry
+from agentcosign.services.workspaces import Workspaces
 
 RECORDINGS_DIR = (
     Path(__file__).resolve().parent.parent / "docs" / "evidence" / "recordings"
@@ -107,4 +112,34 @@ def build_gateway(settings: Settings, paypal: PayPalClient | None = None) -> Gat
         ),
         messages=open_messages(settings),
         checks=build_checks(settings),
+    )
+
+
+def build_workspaces(
+    settings: Settings, default: Gateway, paypal: PayPalClient | None = None
+) -> Workspaces[Gateway]:
+    """The owner's gateway plus, in the hosted demo, one private gateway per visitor.
+
+    Each visitor's workspace has its own database and its own signing secret,
+    derived from the audit key and the workspace id, so a sign-in or setup link
+    from one workspace is never accepted by another.
+    """
+    shared_paypal = paypal or _paypal_client(settings)
+    folder = _database(settings).parent / "workspaces"
+    master = settings.audit_hmac_key.get_secret_value().encode("utf-8")
+
+    def build(workspace_id: str) -> Gateway:
+        """One workspace's gateway: its own database file and signing secret."""
+        folder.mkdir(parents=True, exist_ok=True)
+        secret = hmac.new(master, workspace_id.encode("utf-8"), hashlib.sha256)
+        own = settings.model_copy(
+            update={
+                "sqlite_db_path": str(folder / f"{workspace_id}.db"),
+                "audit_hmac_key": SecretStr(secret.hexdigest()),
+            }
+        )
+        return build_gateway(own, shared_paypal)
+
+    return Workspaces(
+        default=default, build=build, demo=settings.env == "demo", limits=settings.demo
     )

@@ -251,6 +251,7 @@ class Gateway:
         self._secret = secret
         self._open_seconds = approval.open_seconds
         self._session_seconds = approval.session_seconds
+        self._enrolment_seconds = approval.enrolment_link_seconds
         self._reconciliation = reconciliation
         self._full_check_every = timedelta(hours=audit.full_check_hours)
         self._last_full_check: datetime | None = None
@@ -554,6 +555,10 @@ class Gateway:
         if not self._token_is_valid("approver-session", token):
             return False
         return self._passkeys.is_active(token.split(".")[0])
+
+    def enrolment_token(self) -> str:
+        """A one-time setup link token for this gateway's own workspace."""
+        return self._token("enrolment", "self-setup", self._enrolment_seconds)
 
     def enrolment_token_is_valid(self, token: str) -> bool:
         """True for an unexpired, untampered enrolment link token."""
@@ -1179,6 +1184,18 @@ class Gateway:
             if stored is not None:
                 return stored.signals
         return UNCHECKED
+
+    async def keep_message(self, text: str, now: datetime) -> str:
+        """Mask and keep a customer's message; returns its id."""
+        if self._messages is None:
+            raise FailClosedError("customer messages are not kept here")
+        return await asyncio.to_thread(self._messages.add, text, now)
+
+    async def message_text(self, message_id: str) -> str | None:
+        """A kept message as stored (masked), or None if unknown."""
+        if self._messages is None:
+            return None
+        return await asyncio.to_thread(self._messages.text, message_id)
 
     async def _customer_asked(self, request_id: str, order_id: str = "") -> str:
         """The card's sentence on what the customer's message asked for."""

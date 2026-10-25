@@ -317,6 +317,17 @@ class DisplaySettings(BaseModel):
     reuse_seconds: int = Field(ge=0, le=60)
 
 
+class DemoSettings(BaseModel):
+    """Limits for the hosted demo, where each visitor gets a private workspace."""
+
+    model_config = _STRICT
+
+    max_workspaces: int = Field(ge=1, le=2_000)
+    setups_per_address_per_day: int = Field(ge=1, le=100)
+    scenarios_per_workspace_per_day: int = Field(ge=1, le=500)
+    message_max_chars: int = Field(ge=50, le=2_000)
+
+
 class Settings(BaseSettings):
     """Root application settings combining environment variables and YAML config."""
 
@@ -395,6 +406,7 @@ class Settings(BaseSettings):
     reconciliation: ReconciliationSettings
     audit: AuditSettings
     display: DisplaySettings
+    demo: DemoSettings
     limits: LimitSettings
 
     _ephemeral: set[str] = PrivateAttr(default_factory=set)
@@ -507,6 +519,7 @@ def get_settings() -> Settings:
         "reconciliation",
         "audit",
         "display",
+        "demo",
     )
     missing = [s for s in sections if s not in yaml_data]
     if missing:

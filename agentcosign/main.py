@@ -22,7 +22,8 @@ from agentcosign.core.config import Settings, get_settings
 from agentcosign.core.exceptions import AgentCoSignError
 from agentcosign.core.limits import TrafficGuard
 from agentcosign.services.gateway import Gateway
-from agentcosign.wiring import build_gateway
+from agentcosign.services.workspaces import Workspaces
+from agentcosign.wiring import build_gateway, build_workspaces
 
 logger = logging.getLogger("agentcosign")
 
@@ -43,42 +44,48 @@ _SECURITY_HEADERS = {
 }
 
 
-async def _expire_forever(gateway: Gateway) -> None:
-    """Expire approvals left waiting past the window, releasing reservations, and
-    finish executions whose PayPal answer was lost."""
+async def _expire_forever(workspaces: Workspaces[Gateway]) -> None:
+    """Run the timed work for the owner's workspace and every open visitor's one."""
     while True:
         await asyncio.sleep(EXPIRY_INTERVAL_SECONDS)
-        try:
-            await asyncio.to_thread(gateway.expire)
-        except (AgentCoSignError, sqlite3.Error):
-            logger.exception("approval expiry failed; will retry")
-        try:
-            await gateway.release_due()
-        except (AgentCoSignError, sqlite3.Error):
-            logger.exception("releasing paused refunds failed; will retry")
-        try:
-            await gateway.settle_pending()
-        except (AgentCoSignError, sqlite3.Error):
-            logger.exception("re-reading pending refunds failed; will retry")
-        try:
-            await gateway.finish_unfinished()
-        except (AgentCoSignError, sqlite3.Error):
-            logger.exception("finishing unanswered executions failed; will retry")
-        try:
-            await gateway.reconcile_if_due()
-        except (AgentCoSignError, sqlite3.Error):
-            logger.exception("reconciliation with PayPal failed; will retry")
-        try:
-            await gateway.check_records_if_due()
-        except sqlite3.Error:
-            logger.exception("checking the saved record failed; will retry")
+        for gateway in workspaces.live():
+            await _tend(gateway)
+
+
+async def _tend(gateway: Gateway) -> None:
+    """Expire approvals left waiting past the window, releasing reservations, and
+    finish executions whose PayPal answer was lost."""
+    try:
+        await asyncio.to_thread(gateway.expire)
+    except (AgentCoSignError, sqlite3.Error):
+        logger.exception("approval expiry failed; will retry")
+    try:
+        await gateway.release_due()
+    except (AgentCoSignError, sqlite3.Error):
+        logger.exception("releasing paused refunds failed; will retry")
+    try:
+        await gateway.settle_pending()
+    except (AgentCoSignError, sqlite3.Error):
+        logger.exception("re-reading pending refunds failed; will retry")
+    try:
+        await gateway.finish_unfinished()
+    except (AgentCoSignError, sqlite3.Error):
+        logger.exception("finishing unanswered executions failed; will retry")
+    try:
+        await gateway.reconcile_if_due()
+    except (AgentCoSignError, sqlite3.Error):
+        logger.exception("reconciliation with PayPal failed; will retry")
+    try:
+        await gateway.check_records_if_due()
+    except sqlite3.Error:
+        logger.exception("checking the saved record failed; will retry")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Log the active run mode and run approval expiry in the background."""
     settings: Settings = app.state.settings
-    expiry = asyncio.create_task(_expire_forever(app.state.gateway))
+    expiry = asyncio.create_task(_expire_forever(app.state.workspaces))
     logger.info(
         "AgentCoSign v%s env=%s hermetic=%s replay_mode=%s paypal_execution=%s",
         __version__,
@@ -188,6 +195,7 @@ def _install_gateway(
 ) -> None:
     """Build the gateway and add its routes."""
     app.state.gateway = build_gateway(settings, paypal)
+    app.state.workspaces = build_workspaces(settings, app.state.gateway, paypal)
     app.include_router(gateway_router)
 
 

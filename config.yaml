@@ -212,3 +212,17 @@ display:
   # A screen reuses an order read this recent while none of our records
   # changed, so live updates and two open tabs do not repeat PayPal calls.
   reuse_seconds: 10
+
+# ------------------------------------------------------------------------------
+# Hosted demo for visitors (used only when AGENTCOSIGN_ENV is "demo")
+# ------------------------------------------------------------------------------
+demo:
+  # Each visitor sets up a private workspace; this many stay open at once and the
+  # least recently used one is closed first.
+  max_workspaces: 200
+  # New workspaces one address may open in a day.
+  setups_per_address_per_day: 5
+  # Test scenarios (ready ones and own messages) one workspace may run in a day.
+  scenarios_per_workspace_per_day: 15
+  # Longest customer message a visitor may write.
+  message_max_chars: 500
