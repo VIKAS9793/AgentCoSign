@@ -120,7 +120,7 @@ def test_other_refunds_waiting_on_the_order_are_counted_as_promised() -> None:
     ("triggered", "expected"),
     [
         (["R15"], ""),  # the scan is already the only reason given
-        (["R2", "R15"], "We couldn't scan the customer's messages for misuse."),
+        (["R2", "R15"], "The safety check on the customer's message didn't run."),
         (["R2"], ""),  # the scan ran
     ],
 )

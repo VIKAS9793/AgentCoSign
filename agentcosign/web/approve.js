@@ -170,8 +170,8 @@
     stopListening();
     showSignin();
     say(sessionMinutes
-      ? "Signed out after " + plural(sessionMinutes, "minute", "minutes") + ", for your safety. Open again with your fingerprint."
-      : "Signed out for your safety. Open again with your fingerprint.");
+      ? "Signed out after " + plural(sessionMinutes, "minute", "minutes") + ", for your safety. Confirm it's you to open again."
+      : "Signed out for your safety. Confirm it's you to open again.");
   }
 
   // --- formatting (the server decides; the phone only words and formats) ----------
@@ -427,7 +427,7 @@
       return;
     }
     var headers = { "X-Enrolment-Token": enrolToken };
-    say("Follow the prompt on your phone.");
+    say("Follow the prompt on your screen.");
     post("/v1/approver/enrolment/options", { approver: name }, headers)
       .then(function (options) {
         return navigator.credentials.create(creationOptions(options));
@@ -439,7 +439,7 @@
         history.replaceState(null, "", window.location.pathname);
         remember("approver", name);
         showSignin();
-        say("This phone is set up. Open your refunds with your fingerprint.");
+        say("This device is set up. Confirm it's you to open your refunds.");
       })
       .catch(function (error) {
         say(error && error.name === "NotAllowedError"
@@ -466,7 +466,7 @@
   }
 
   function signIn() {
-    say("Follow the prompt on your phone.");
+    say("Follow the prompt on your screen.");
     post("/v1/approver/session/options")
       .then(function (options) {
         return navigator.credentials.get(requestOptions(options));
@@ -492,7 +492,7 @@
           return;
         }
         say(error && error.name === "NotAllowedError"
-          ? "Fingerprint cancelled. Try again when you're ready."
+          ? "Not confirmed. Try again when you're ready."
           : "Couldn't open your refund requests. Try again.");
       });
   }
@@ -606,7 +606,7 @@
     if (data.paypal_checked === "partial") {
       return "Some PayPal details couldn't be checked, so those refunds can't go out for now.";
     }
-    return data.checked_at ? "Up to date with PayPal " + when(data.checked_at) : "";
+    return data.checked_at ? "Checked with PayPal " + when(data.checked_at) : "";
   }
 
   function fill(id, items, make) {
@@ -659,7 +659,7 @@
       cards.push(unchecked);
     }
     if (Number(run.outside) > 0) {
-      cards.push(withIcon("info", el("p", plural(run.outside, "refund was", "refunds were") + " made in PayPal directly in the last " + run.lookback_days + " days.", "muted small")));
+      cards.push(withIcon("info", el("p", plural(run.outside, "refund was", "refunds were") + " made outside this app (in PayPal) in the last " + run.lookback_days + " days.", "muted small")));
     }
     return cards;
   }
@@ -674,8 +674,8 @@
       card.appendChild(pill("Processing at PayPal", "caution-pill", "working"));
       card.appendChild(el("p", "Waiting for PayPal to confirm the " + money(item.amount) + " refund.", "strong"));
       card.appendChild(el("p", home && home.refunds_stopped === "yes"
-        ? "Order ending " + item.order_ending + ". Refunds are stopped: if PayPal hasn't received it, it is sent when you turn refunds back on. It can't go out twice."
-        : "Order ending " + item.order_ending + ". It can't go out twice. Don't refund it again in PayPal.", "small"));
+        ? "Order ending " + item.order_ending + ". Refunds are stopped: if PayPal hasn't received it, it is sent when you start refunds again. It won't be sent twice."
+        : "Order ending " + item.order_ending + ". It won't be sent twice. Don't refund it again in PayPal.", "small"));
     }
     return card;
   }
@@ -702,7 +702,7 @@
     return card;
   }
 
-  var OUTCOME_WORDS = { executed: "Refunded", denied: "Not refunded", expired: "Time ran out", failed: "Not refunded" };
+  var OUTCOME_WORDS = { executed: "Refunded", denied: "Stopped by your limits", expired: "Time ran out", failed: "PayPal couldn't send it" };
 
   function doneRow(item, back) {
     var line = el("button", "", "row row-button");
@@ -736,11 +736,11 @@
     var who = day.by_you_count + " by you · " + day.by_assistant_count + " by your assistant";
     var processing = Number(day.processing_count) > 0
       ? day.processing_count + " processing at PayPal (" + money(day.processing_total) + ")" : "";
-    var held = Number(day.waiting_total) > 0 ? money(day.waiting_total) + " held for open requests" : "";
+    var held = Number(day.waiting_total) > 0 ? money(day.waiting_total) + " set aside for open requests" : "";
     var waiting = Number(data.counts.needs_decision);
     box.appendChild(tile("Waiting for your approval", String(waiting), "", waiting > 0 ? "attention" : ""));
     box.appendChild(tile("Refunded in the last " + data.settings.window_hours + " hours", money(day.sent_total), [who, processing].filter(Boolean).join(" · ")));
-    box.appendChild(tile("Not refunded", String(day.not_sent_count)));
+    box.appendChild(tile("Declined or stopped", String(day.not_sent_count)));
     box.appendChild(tile("Daily limit used", money(day.limit_used), ["of " + money(data.settings.daily_cap), held].filter(Boolean).join(" · ")));
   }
 
@@ -773,8 +773,8 @@
     banner.replaceChildren();
     if (stopped) {
       banner.appendChild(withIcon("blocked", el("p", "All refunds are stopped", "box-title")));
-      banner.appendChild(el("p", "No money moves until you turn refunds back on. You can still decline requests.", "small"));
-      banner.appendChild(withIcon("fingerprint", button("Turn refunds back on", "primary", function () {
+      banner.appendChild(el("p", "No money moves until you start refunds again. You can still decline requests.", "small"));
+      banner.appendChild(withIcon("fingerprint", button("Start refunds again", "primary", function () {
         control("resume");
       })));
     }
@@ -808,7 +808,7 @@
         if (result.refunds_stopped === "yes") {
           toast("All refunds are stopped." + (still ? " " + plural(still, "refund", "refunds") + " already with PayPal will finish." : ""));
         } else {
-          toast("Refunds are back on.");
+          toast("Refunds are on again.");
         }
         return openHome();
       })
@@ -848,7 +848,7 @@
     view.appendChild(el("h1", sendable ? "Refund " + money(item.amount) + " to " + item.customer + "?"
       : item.customer + " · " + money(item.amount), "question"));
     view.appendChild(el("p", paymentLine(item), "muted small"));
-    var fresh = item.checked_at ? "Up to date with PayPal " + when(item.checked_at) : "";
+    var fresh = item.checked_at ? "Checked with PayPal " + when(item.checked_at) : "";
     var meta = sendable ? [fresh, deadlineText(item.decide_by, serverNow())] : [fresh];
     view.appendChild(el("p", meta.filter(Boolean).join(" · "), "muted small"));
     view.appendChild(el("div", "", "change-banner-slot"));
@@ -860,15 +860,15 @@
 
     var actions = el("div", "", "actions decision");
     if (sendable) {
-      actions.appendChild(button("Continue to refund", "primary", function () {
+      actions.appendChild(button("Check and refund", "primary", function () {
         openFinal(item);
       }));
-      actions.appendChild(button("Decline", "secondary", function () {
+      actions.appendChild(button("Don't refund", "secondary", function () {
         decide(item, "reject", view);
       }, "reject"));
       actions.appendChild(el("p", "If you do nothing by then, no money moves.", "muted small center"));
     } else if (item.cant_send_reason === "not_enough_left" || item.cant_send_reason === "stopped") {
-      actions.appendChild(button("Decline request", "primary", function () {
+      actions.appendChild(button("Don't refund", "primary", function () {
         decide(item, "reject", view);
       }, "reject"));
       actions.appendChild(el("p", "No money moves. Your assistant is told it can't be refunded.", "muted small center"));
@@ -892,7 +892,11 @@
       box.appendChild(el("p", item.scan_note, "small"));
     }
     if (item.customer_asked) {
-      box.appendChild(el("p", "From the customer's message (read by AI): " + item.customer_asked, "small"));
+      // a label marks what the AI read, kept apart from PayPal's facts
+      var asked = el("p", "", "small ai-line");
+      asked.appendChild(pill("Read by AI", "neutral-pill"));
+      asked.appendChild(document.createTextNode(" " + item.customer_asked));
+      box.appendChild(asked);
     }
     if (item.safety_check !== "passed") {
       box.appendChild(el("p", "Check the customer, order and amount before you approve.", "small strong"));
@@ -906,14 +910,14 @@
     table.appendChild(row("Customer paid", money(item.paid)));
     if (Number(item.refunded_outside) > 0) {
       table.appendChild(row("Refunded through this app", money(item.refunded_in_app)));
-      table.appendChild(row("Refunded in PayPal directly", money(item.refunded_outside)));
+      table.appendChild(row("Refunded outside this app", money(item.refunded_outside)));
     } else {
       table.appendChild(row("Already refunded", money(item.already_refunded)));
     }
     if (item.waiting_note) {
-      table.appendChild(row("Held for other requests", money(item.waiting_on_order)));
+      table.appendChild(row("Set aside for other requests", money(item.waiting_on_order)));
     }
-    table.appendChild(row("Can still be refunded", money(item.refundable_now)));
+    table.appendChild(row("Left to refund", money(item.refundable_now)));
     table.appendChild(row("This refund", money(item.amount), "strong"));
     if (item.can_send === "yes") {
       table.appendChild(row("Left to refund after this", money(item.left_after)));
@@ -925,7 +929,7 @@
     if (item.cant_send_reason === "stopped") {
       var held = el("div", "", "card caution-box");
       held.appendChild(withIcon("blocked", el("p", "All refunds are stopped", "box-title")));
-      held.appendChild(el("p", "Turn refunds back on to approve this. No money moved.", "small"));
+      held.appendChild(el("p", "Start refunds again to approve this. No money moved.", "small"));
       return held;
     }
     var box = el("div", "", "card danger-box");
@@ -969,14 +973,14 @@
     table.appendChild(row("Customer paid", money(item.paid)));
     table.appendChild(row("Already refunded", money(item.already_refunded)));
     if (Number(item.waiting_on_order) > 0) {
-      table.appendChild(row("Held for other requests", money(item.waiting_on_order)));
+      table.appendChild(row("Set aside for other requests", money(item.waiting_on_order)));
     }
     table.appendChild(row("Left to refund after this", money(item.left_after)));
     view.appendChild(table);
     view.appendChild(el("div", "", "change-banner-slot"));
     var warn = el("div", "", "card caution-box unconfirmed");
     warn.appendChild(withIcon("caution", el("p", money(item.amount) + " goes back to " + item.customer + " now. Refunds can't be undone.", "box-title")));
-    warn.appendChild(el("p", "From your PayPal account ending " + account + ". Your fingerprint approves this refund only.", "small"));
+    warn.appendChild(el("p", "From your PayPal account ending " + account + ". Confirming approves this refund only.", "small"));
     view.appendChild(warn);
     view.appendChild(progressLine());
     var actions = el("div", "", "actions decision");
@@ -986,7 +990,7 @@
     actions.appendChild(button("Go back", "secondary", function () {
       openReview(item);
     }));
-    actions.appendChild(el("p", "No money moves until you confirm with your fingerprint.", "muted small center"));
+    actions.appendChild(el("p", "No money moves until you confirm it's you.", "muted small center"));
     view.appendChild(actions);
     go("final", item.request_id);
     if (stale) {
@@ -1015,7 +1019,7 @@
     if (send) {
       send.disabled = true;
     }
-    setProgress(screen, "Checking the latest figures with PayPal", false);
+    setProgress(screen, "Checking the latest amounts with PayPal", false);
     readHome().then(function () {
       if (current.view !== "final" || current.requestId !== item.request_id) {
         return;
@@ -1023,20 +1027,20 @@
       var latest = findItem(item.request_id);
       var verdict = freshVerdict(item, latest);
       if (verdict === "same") {
-        setProgress(screen, latest.checked_at ? "Up to date with PayPal " + when(latest.checked_at) : "", false);
+        setProgress(screen, latest.checked_at ? "Checked with PayPal " + when(latest.checked_at) : "", false);
         setButtons(screen, true);
       } else if (verdict === "unchecked") {
         dropUnconfirmed(screen);
-        setProgress(screen, "Couldn't check the latest figures with PayPal. No money moved. Go back and try again.", true);
+        setProgress(screen, "Couldn't check the latest amounts with PayPal. No money moved. Go back and try again.", true);
       } else if (verdict === "closed") {
         changeBanner("final", "This refund request is already closed. No money will move from this screen.", null);
       } else {
-        changeBanner("final", "This refund request changed. Review the new figures before you approve.", findItem(item.request_id));
+        changeBanner("final", "This refund request changed. Review the new amounts before you approve.", findItem(item.request_id));
       }
     }).catch(function () {
       if (current.view === "final") {
         dropUnconfirmed(screen);
-        setProgress(screen, "Couldn't check the latest figures with PayPal. No money moved. Go back and try again.", true);
+        setProgress(screen, "Couldn't check the latest amounts with PayPal. No money moved. Go back and try again.", true);
       }
     });
   }
@@ -1086,10 +1090,10 @@
     }
     deciding = true;
     setButtons(view, false);
-    busy(view, intent, "Waiting for your fingerprint");
+    busy(view, intent, "Waiting for you to confirm");
     setProgress(view, intent === "approve"
-      ? "Confirm with your fingerprint to refund " + money(item.amount) + " to " + item.customer + "."
-      : "Confirm it's you with your fingerprint.", false);
+      ? "Confirm it's you to refund " + money(item.amount) + " to " + item.customer + "."
+      : "Confirm it's you.", false);
     var path = "/v1/approvals/" + encodeURIComponent(item.request_id);
     var signedAndSent = false;
     post(path + "/options", seenFigures(item, intent), sessionHeaders())
@@ -1141,11 +1145,11 @@
         }
         setButtons(view, true);
         if (failure && failure.name === "NotAllowedError") {
-          setProgress(view, "Fingerprint cancelled. No money moved.", true);
+          setProgress(view, "Not confirmed. No money moved.", true);
         } else if (signedAndSent) {
-          setProgress(view, "Fingerprint not recognised. No money moved. Try again.", true);
+          setProgress(view, "We couldn't confirm it's you. No money moved. Try again.", true);
         } else {
-          setProgress(view, "Couldn't start the fingerprint check. No money moved. Try again.", true);
+          setProgress(view, "Couldn't start the check. No money moved. Try again.", true);
         }
       });
   }
@@ -1153,7 +1157,7 @@
   function afterDecision(item, intent, outcome) {
     var amount = money(item.amount);
     if (intent === "reject") {
-      showOutcome("stopped", "Declined", [
+      showOutcome("stopped", "You declined", [
         "No money moved. Your assistant has been told.",
         "If the customer asks again, you'll see a new request.",
       ], item);
@@ -1181,7 +1185,7 @@
       return;
     }
     if (outcome.state === "executing") {
-      showOutcome("check", "Waiting for PayPal", ["It can't go out twice. You'll see the result in your refund requests as soon as PayPal answers."], item);
+      showOutcome("check", "Waiting for PayPal", ["It won't be sent twice. You'll see the result in Refund requests as soon as PayPal answers."], item);
       return;
     }
     showOutcome("stopped", "Couldn't refund. No money moved.", ["Ask your assistant to try again."], item);
@@ -1194,7 +1198,7 @@
       return null;
     }
     if (outcome.state === "paused") {
-      return ["stopped", "On hold. No money moved.", [outcome.merchant_reason, "It's checked again on its own when the customer is back under your limit."]];
+      return ["stopped", "On hold. No money moved.", [outcome.merchant_reason, "We check it again when the customer is under your limit."]];
     }
     if (outcome.state === "denied") {
       return ["stopped", "Not refunded. No money moved.", [outcome.merchant_reason, "PayPal was checked again right after your approval."]];
@@ -1204,9 +1208,9 @@
 
   // What to say when the order moved: then and now only when they differ.
   function changedLines(before, latest) {
-    var lines = ["Review the new figures and approve again if it's still right."];
+    var lines = ["Review the new amounts and approve again if it's still right."];
     if (latest.refundable_now && latest.refundable_now !== before.refundable_now) {
-      lines.unshift("Can still be refunded: was " + money(before.refundable_now) + ", now " + money(latest.refundable_now) + ".");
+      lines.unshift("Left to refund: was " + money(before.refundable_now) + ", now " + money(latest.refundable_now) + ".");
     }
     // a reason that was not there before (such as a new dispute) comes first
     var known = before.reasons || [];
@@ -1230,7 +1234,7 @@
     readHome().then(function () {
       showOutcome("check", title, changedLines(item, findItem(item.request_id) || {}), item);
     }).catch(function () {
-      showOutcome("check", title, ["Review it again in your refund requests."], item);
+      showOutcome("check", title, ["Review it again in Refund requests."], item);
     });
   }
 
@@ -1249,7 +1253,7 @@
         setProgress(view, "Your answer didn't reach us. No money moved. You can try again.", true);
       })
       .catch(function () {
-        showOutcome("check", "We can't confirm the result yet", ["It can't go out twice. Check again when you're back online."], item);
+        showOutcome("check", "We can't confirm the result yet", ["It won't be sent twice. Check again when you're back online."], item);
       });
   }
 
@@ -1266,10 +1270,10 @@
       return ["check", reached, ["It's processing at PayPal, so don't answer again."]];
     }
     if (section === "failed") {
-      return ["check", reached, ["PayPal couldn't complete it, so no money moved. See it on your home screen."]];
+      return ["check", reached, ["PayPal couldn't complete it, so no money moved. See it in Refund requests."]];
     }
     if (latest) {
-      return ["check", "Your answer didn't reach us", ["No money moved. This request can't be sent right now. See it on your home screen."]];
+      return ["check", "Your answer didn't reach us", ["No money moved. This request can't be sent right now. See it in Refund requests."]];
     }
     return ["check", "This request is closed", ["Don't answer it again. Its history shows what happened."]];
   }
@@ -1295,7 +1299,7 @@
   // Why the server refused a decision, from a fresh read of home.
   function refusedOutcome(data, latest, shown) {
     if (data.refunds_stopped === "yes") {
-      return ["stopped", "Refunds are stopped", ["No money moved. Turn refunds back on to approve requests."]];
+      return ["stopped", "Refunds are stopped", ["No money moved. Start refunds again to approve requests."]];
     }
     if (latest && latest.cant_send_reason === "time_up") {
       return ["stopped", "Time ran out. No money moved.", ["Your assistant can ask again if it's still needed."]];
@@ -1304,7 +1308,7 @@
       return ["check", "Couldn't reach PayPal. No money moved.", ["Try again in a moment."]];
     }
     if (latest && shown && fingerprint(latest) !== fingerprint(shown)) {
-      return ["check", "The figures changed. No money moved.", ["Review the new figures before you approve."]];
+      return ["check", "The amounts changed. No money moved.", ["Review the new amounts before you approve."]];
     }
     if (latest && latest.status === "waiting") {
       return ["check", "That didn't go through. No money moved.", ["It's still waiting for you. Try again."]];
@@ -1315,16 +1319,16 @@
   // What to say when stopping or resuming refunds did not go through.
   function controlFailureText(status, failure) {
     if (status === 403) {
-      return "Fingerprint not recognised. Nothing changed. Try again.";
+      return "We couldn't confirm it's you. Nothing changed. Try again.";
     }
     if (failure && failure.name === "NotAllowedError") {
-      return "Fingerprint cancelled. Nothing changed.";
+      return "Not confirmed. Nothing changed.";
     }
     return "That didn't go through. Nothing changed. Try again.";
   }
 
   // --- outcome: what happened, the PayPal reference, and what next ------------------
-  var BADGES = { sent: ["Refunded", "ok-pill", "done"], stopped: ["Not refunded", "neutral-pill", "declined"], check: ["Check this", "caution-pill", "caution"] };
+  var BADGES = { sent: ["Refunded", "ok-pill", "done"], stopped: ["No money moved", "neutral-pill", "declined"], check: ["Check this", "caution-pill", "caution"] };
 
   function showOutcome(kind, title, lines, item, reference) {
     if (kind === "sent") {
@@ -1392,7 +1396,7 @@
     view.appendChild(el("div", "", "change-banner-slot"));
     var facts = el("div", "", "card held");
     facts.appendChild(el("p", repeatLine(item), "strong"));
-    facts.appendChild(el("p", "No one can refund it before then. After that, your usual limits apply to the latest PayPal figures.", "small"));
+    facts.appendChild(el("p", "No one can refund it before then. After that, your usual limits apply to the latest PayPal amounts.", "small"));
     view.appendChild(facts);
     if (item.many_requests === "yes") {
       view.appendChild(el("p", "This customer has asked for many refunds in the last " + home.settings.window_hours + " hours. You may want to contact them.", "caution-text strong"));
@@ -1405,7 +1409,7 @@
     }
     view.appendChild(progressLine());
     var actions = el("div", "", "actions decision");
-    actions.appendChild(button("Decline", "secondary", function () {
+    actions.appendChild(button("Don't refund", "secondary", function () {
       decide(item, "reject", view);
     }, "reject"));
     actions.appendChild(el("p", "No money moves. Your assistant is told it can't be refunded.", "muted small center"));
@@ -1476,7 +1480,7 @@
   // --- live updates: the server says something changed, the phone re-reads ---------
   function setLive(state) {
     var line = document.getElementById("live-line");
-    line.textContent = state === "reconnecting" ? "Reconnecting. No money moves while we reconnect." : "";
+    line.textContent = state === "reconnecting" ? "Connecting again. No money moves until it's back." : "";
     if (line.textContent) {
       withIcon("offline", line);
     }
@@ -1597,7 +1601,7 @@
       if (!after) {
         changeBanner(view, "This refund request is already closed. No money will move from this screen.", null);
       } else if (fingerprint(after) !== fingerprint(before)) {
-        changeBanner(view, "This refund request changed. Review the new figures before you approve.", after);
+        changeBanner(view, "This refund request changed. Review the new amounts before you approve.", after);
       }
     }).catch(function () {
       return null;
@@ -1625,7 +1629,7 @@
     banner.setAttribute("role", "alert");
     banner.appendChild(withIcon("caution", el("p", text, "box-title")));
     banner.appendChild(latest
-      ? button("Review new figures", "secondary", function () {
+      ? button("Review new amounts", "secondary", function () {
         if (latest.section === "paused") {
           openPaused(latest);
         } else {
@@ -1769,7 +1773,7 @@
 
   // --- start -------------------------------------------------------------------------
   if (!window.PublicKeyCredential) {
-    say("This browser can't use your fingerprint. Open this page in Chrome.");
+    say("This browser can't confirm it's you. Open this page in Chrome.");
     return;
   }
   withIcon("fingerprint", document.getElementById("enrol-button"));

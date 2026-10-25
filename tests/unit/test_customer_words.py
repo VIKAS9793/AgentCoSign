@@ -119,9 +119,9 @@ def test_the_card_explains_it_in_the_owners_words() -> None:
 ASKED_LINES = [
     (
         MATCH,
-        "Asked for $10.00 back on order ending RD-1. Reason: the item didn't arrive.",
+        "Customer asked for $10.00 on order ending RD-1. Reason: item didn't arrive.",
     ),
-    (replace(MATCH, currency="INR", amount=Decimal("1500")), "1,500.00 INR back"),
+    (replace(MATCH, currency="INR", amount=Decimal("1500")), "1,500.00 INR"),
     (replace(MATCH, amount=None), "a refund but didn't say how much"),
     (replace(MATCH, order_id=None), "without naming an order"),
     (replace(MATCH, wants_other_destination=True), "sent somewhere else"),
@@ -140,3 +140,16 @@ def test_the_card_line_says_what_was_read(reading: CustomerReading, words: str) 
 def test_an_unread_message_is_said_plainly_and_no_message_says_nothing() -> None:
     assert customer_asked(None, read=False) == UNREAD_MESSAGE
     assert customer_asked(None, read=True) == ""
+
+
+# the request's own order is already on screen; a different one must be named
+ORDER_CASES = [("ORD-1", False), ("ORD-OTHER", True)]
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(("request_order", "named"), ORDER_CASES)
+def test_the_order_is_named_only_when_it_differs(
+    request_order: str, named: bool
+) -> None:
+    line = customer_asked(MATCH, read=True, order_id=request_order)
+    assert ("order ending" in line) is named

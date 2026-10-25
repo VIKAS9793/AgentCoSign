@@ -38,7 +38,7 @@ def plain_reason(rule_id: str, policy: PolicySettings) -> str:
         "approval.",
         "R8": "These payout details are new or changed. Check them before you approve.",
         "R14": "This order changed after your assistant checked it. Review it again.",
-        "R15": "We couldn't scan the customer's messages for misuse.",
+        "R15": "The safety check on the customer's message didn't run.",
         "R17": "Your assistant already refunded this order or this customer without "
         f"asking you. Refunds without asking stop at {auto} per order and per "
         f"customer in {window} hours.",
@@ -68,8 +68,8 @@ def refused_at_approval(rule_id: str, policy: PolicySettings) -> str:
 SAFETY_PASSED = "passed"
 SAFETY_UNAVAILABLE = "unavailable"
 ONLY_SAFETY_REASON = (
-    "This would normally be refunded on its own, but we couldn't scan the "
-    "customer's messages for misuse."
+    "This would normally be refunded on its own, but the safety check on "
+    "the customer's message didn't run."
 )
 
 
@@ -134,23 +134,27 @@ def short_flag(triggered: Sequence[str], policy: PolicySettings) -> str:
 
 
 REASON_WORDS = {
-    "not_received": "the item didn't arrive",
-    "damaged": "the item arrived damaged",
-    "not_as_described": "the item isn't as described",
-    "wrong_item": "the wrong item was sent",
-    "duplicate_charge": "they were charged twice",
-    "refund_not_received": "an earlier refund didn't arrive",
-    "subscription_cancelled": "they were billed after cancelling",
-    "unrecognised_charge": "they don't recognise the charge",
-    "changed_mind": "they changed their mind",
+    "not_received": "item didn't arrive",
+    "damaged": "item arrived damaged",
+    "not_as_described": "item isn't as described",
+    "wrong_item": "wrong item sent",
+    "duplicate_charge": "charged twice",
+    "refund_not_received": "earlier refund didn't arrive",
+    "subscription_cancelled": "billed after cancelling",
+    "unrecognised_charge": "doesn't recognise the charge",
+    "changed_mind": "changed their mind",
     "other": "another reason",
 }
 UNREAD_MESSAGE = "We couldn't read the customer's message. Read it yourself first."
 
 
-def customer_asked(reading: CustomerReading | None, read: bool) -> str:
+def customer_asked(
+    reading: CustomerReading | None, read: bool, order_id: str | None = None
+) -> str:
     """What the customer's own message asked for, as a fixed sentence built from
-    the AI's reading; empty when the request came with no message."""
+    the AI's reading; empty when the request came with no message. The order is
+    named only when it differs from the request's own, since that one is on
+    screen already."""
     if not read:
         return UNREAD_MESSAGE
     if reading is None:
@@ -158,15 +162,17 @@ def customer_asked(reading: CustomerReading | None, read: bool) -> str:
     if reading.amount is None:
         amount = "a refund but didn't say how much"
     elif reading.currency in (None, "USD"):
-        amount = f"${reading.amount:,.2f} back"
+        amount = f"${reading.amount:,.2f}"
     else:
-        amount = f"{reading.amount:,.2f} {reading.currency} back"
-    if reading.order_id:
+        amount = f"{reading.amount:,.2f} {reading.currency}"
+    if not reading.order_id:
+        order = " without naming an order"
+    elif reading.order_id != order_id:
         order = f" on order ending {order_ending(reading.order_id)}"
     else:
-        order = " without naming an order"
+        order = ""
     reason = REASON_WORDS.get(reading.reason or "other", REASON_WORDS["other"])
-    line = f"Asked for {amount}{order}. Reason: {reason}."
+    line = f"Customer asked for {amount}{order}. Reason: {reason}."
     if reading.wants_other_destination:
         line += " They want the money sent somewhere else."
     return line

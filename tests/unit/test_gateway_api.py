@@ -404,8 +404,8 @@ def test_the_approver_sees_owner_words_and_live_paypal_facts(env: Env) -> None:
     assert item["already_refunded"] == "0.00"
     assert item["safety_check"] == "unavailable"  # missing is never "passed"
     assert item["reasons"] == [
-        "This would normally be refunded on its own, but we couldn't scan the "
-        "customer's messages for misuse."
+        "This would normally be refunded on its own, but the safety check on "
+        "the customer's message didn't run."
     ]
     assert item["left_after"] == "490.00"
     assert item["refundable_now"] == "500.00"
@@ -1705,7 +1705,7 @@ def test_a_prompt_refused_for_changed_figures_says_so() -> None:
         ["refusedOutcome", "fingerprint"],
         f"refusedOutcome({{}}, {json.dumps(latest)}, {json.dumps(shown)})",
     )
-    assert found[1] == "The figures changed. No money moved."
+    assert found[1] == "The amounts changed. No money moved."
 
 
 @pytest.mark.edge
@@ -1722,7 +1722,7 @@ def test_the_changed_screen_only_compares_figures_that_differ(
         f"{{refundable_now: {json.dumps(after)}}})",
     )
     assert any("was" in line for line in lines) is has_line
-    assert lines[-1] == "Review the new figures and approve again if it's still right."
+    assert lines[-1] == "Review the new amounts and approve again if it's still right."
 
 
 @pytest.mark.edge
@@ -1811,8 +1811,8 @@ def test_a_lost_answer_says_only_what_the_server_shows(
 @pytest.mark.parametrize(
     ("status", "name", "text"),
     [
-        (403, "", "Fingerprint not recognised. Nothing changed. Try again."),
-        (None, "NotAllowedError", "Fingerprint cancelled. Nothing changed."),
+        (403, "", "We couldn't confirm it's you. Nothing changed. Try again."),
+        (None, "NotAllowedError", "Not confirmed. Nothing changed."),
         (409, "", "That didn't go through. Nothing changed. Try again."),
     ],
 )
@@ -2110,13 +2110,13 @@ def test_an_open_tab_can_tell_when_the_server_was_updated(env: Env) -> None:
 def test_the_final_check_figures_add_up_when_other_requests_hold_money() -> None:
     final = _script_function("openFinal")
     # paid, refunded, held by others and left after must all be on the last screen
-    assert "Held for other requests" in final and "waiting_on_order" in final
+    assert "Set aside for other requests" in final and "waiting_on_order" in final
 
 
 @pytest.mark.edge
 def test_money_set_aside_is_not_called_waiting_for_a_decision() -> None:
     today = _script_function("renderSummary")
-    assert "held for open requests" in today
+    assert "set aside for open requests" in today
     assert "waiting for your decision" not in today  # paused money cannot be decided
 
 
@@ -2308,7 +2308,7 @@ def test_the_operator_can_stop_refunds_but_not_turn_them_back_on(
 
 def test_the_stop_controls_follow_the_server_state() -> None:
     render = _script_function("renderStop")
-    assert "Turn refunds back on" in render and "Stop all refunds" in render
+    assert "Start refunds again" in render and "Stop all refunds" in render
     home = _script_function("renderHome")
     assert 'data.refunds_stopped === "yes"' in home  # the server decides, not the phone
 

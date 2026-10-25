@@ -638,7 +638,9 @@ class Gateway:
                     "safety_check": safety_check(triggered),
                     "scan_note": scan_note(triggered, self._policy),
                     "flag": short_flag(triggered, self._policy),
-                    "customer_asked": await self._customer_asked(item["request_id"]),
+                    "customer_asked": await self._customer_asked(
+                        item["request_id"], item["order_id"]
+                    ),
                     **money_view(facts, item["amount"], waiting),
                     "asked_at": item["created_at"],
                     "decide_by": decide_by(item["updated_at"], self._open_seconds),
@@ -1178,7 +1180,7 @@ class Gateway:
                 return stored.signals
         return UNCHECKED
 
-    async def _customer_asked(self, request_id: str) -> str:
+    async def _customer_asked(self, request_id: str, order_id: str = "") -> str:
         """The card's sentence on what the customer's message asked for."""
         if self._messages is None:
             return ""
@@ -1187,7 +1189,7 @@ class Gateway:
             return ""
         signals = stored.signals
         read = signals.reading_status is not ReadingStatus.UNAVAILABLE
-        return customer_asked(signals.reading, read)
+        return customer_asked(signals.reading, read, order_id or None)
 
     async def _checked_signals(self, proposal: Proposal, now: datetime) -> Signals:
         """Run the AI checks on the customer's message the proposal answers.

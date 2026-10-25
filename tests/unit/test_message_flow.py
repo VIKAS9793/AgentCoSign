@@ -144,7 +144,7 @@ def test_a_malformed_message_id_is_refused_at_the_edge(env: Env) -> None:
 async def test_the_card_says_what_the_customer_asked_for(env: Env) -> None:
     _install(env, asked="25.00")
     env.propose("m1", "10.00", message_id=_message(env))
-    line = await _gateway(env)._customer_asked("m1")
-    assert line.startswith("Asked for $25.00 back on order ending")
-    assert "the item didn't arrive" in line
+    line = await _gateway(env)._customer_asked("m1", "ORD-1")
+    assert line.startswith("Customer asked for $25.00. Reason")
+    assert "item didn't arrive" in line
     assert await _gateway(env)._customer_asked("no-such-request") == ""
