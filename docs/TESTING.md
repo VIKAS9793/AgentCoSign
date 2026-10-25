@@ -26,7 +26,7 @@ docker build -t agentcosign . && docker run -p 8000:8000 agentcosign
 | Property (bounded loss, planned) | `pytest -k property` | No | Auto-executed outflow ≤ daily cap and ≤ auto limit for any proposal sequence |
 | Injection benchmark (planned) | `python -m scripts.run_injection_eval` | Replay by default | Block rates per layer on dev and held-out sets, with 95% Wilson intervals |
 | Latency (planned) | `pytest -m slow -k latency` | No | p95 policy decision time |
-| Live integration | `pytest -m integration` | PayPal sandbox / Groq / NIM keys | Auth handshakes, model availability against configured IDs |
+| Live integration | `pytest -m integration` | PayPal sandbox / Groq keys | Auth handshakes, model availability against configured IDs |
 
 ## Run modes
 

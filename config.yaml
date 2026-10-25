@@ -96,12 +96,13 @@ models:
     timeout_seconds: 10
 
   extraction:
-    provider: "nvidia_nim"
-    base_url: "https://integrate.api.nvidia.com/v1"
-    # A different model family from the agent keeps this an independent second
-    # reading. A model appearing in the provider's catalogue does not mean this
-    # account can call it: always confirm with a real one-token request.
-    primary: "google/diffusiongemma-26b-a4b-it"
+    # Reads the customer's words, so it stays on a provider cleared for customer
+    # text (no prompts kept, no training). A different model family from the
+    # agent keeps this an independent second reading. A model appearing in the
+    # provider's catalogue does not mean this account can call it: always
+    # confirm with a real request.
+    provider: "groq"
+    primary: "qwen/qwen3.8-27b"
     fallback: "openai/gpt-oss-20b"
     temperature: 0.0
     max_tokens: 512

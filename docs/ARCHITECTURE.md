@@ -17,7 +17,7 @@ graph TD
     subgraph Gateway["AgentCoSign Gateway (trust boundary)"]
         API --> Pre["L0 Deterministic pre-screen<br/>unicode / override-phrase / size checks"]
         Pre --> LLM1["L1 LLM screen (Groq safeguard)<br/>categorical verdict"]
-        API --> Ext["Extraction (NIM Palmyra-Fin)<br/>independent second reading"]
+        API --> Ext["Extraction (Groq, Qwen)<br/>independent second reading"]
         API --> Ev["Evidence Fetcher<br/>order, captures, refunds, disputes<br/>FROM PAYPAL, not from the agent"]
         Pre --> Pol
         LLM1 --> Pol
@@ -116,7 +116,7 @@ The **decision plane** (policy, evidence handling, approval, ledger) is always r
 | Mode | LLM | PayPal execution | Credentials | Used for |
 |---|---|---|---|---|
 | **Hermetic** (default) | Recorded answers (replay) | Recorded real-sandbox evidence | None | Fresh clone, CI, judges, hosted fallback |
-| **Live-LLM** | Groq / NIM | Recorded | LLM keys | Prompt development |
+| **Live-LLM** | Groq | Recorded | LLM keys | Prompt development |
 | **Live-sandbox** | Replay or live | PayPal sandbox | PayPal sandbox keys | Recording evidence, hosted demo |
 
 Switches: `AGENTCOSIGN_REPLAY_MODE`, `AGENTCOSIGN_PAYPAL_EXECUTION` (see `.env.example`).
@@ -213,7 +213,7 @@ Every API below is justified by a specific requirement. Anything without a requi
 agentcosign/
   api/        HTTP only         -> services, schemas, core
   services/   business logic    -> clients, models, core   (policy_engine is pure: no I/O)
-  clients/    PayPal, Groq, NIM, recorded replay clients     -> core, models
+  clients/    PayPal, Groq, recorded replay clients          -> core, models
   schemas/    Pydantic edge models
   models/     dataclasses and enums
   core/       config, exceptions, logging

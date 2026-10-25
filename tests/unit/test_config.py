@@ -90,7 +90,45 @@ def test_models_config_loaded() -> None:
     assert settings.models.agent.provider == "groq"
     assert settings.models.agent.primary == "openai/gpt-oss-120b"
     assert settings.models.screening.primary == "openai/gpt-oss-safeguard-20b"
-    assert settings.models.extraction.provider == "nvidia_nim"
+    assert settings.models.extraction.provider == "groq"
+    assert settings.models.extraction.primary == "qwen/qwen3.8-27b"
+
+
+def _models(**changes: dict[str, Any]) -> dict[str, Any]:
+    """The shipped model settings with some role fields replaced."""
+    raw = _load_yaml_config()["models"]
+    for role, fields in changes.items():
+        raw[role] = {**raw[role], **fields}
+    return raw
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize("role", ["agent", "screening", "extraction"])
+def test_customer_words_only_go_to_a_provider_cleared_for_them(role: str) -> None:
+    """Every role reads the customer's words, and a provider that may keep or
+    learn from prompts must never receive them, so such a setting stops startup."""
+    from agentcosign.core.config import ModelsConfig
+
+    raw = _models(**{role: {"provider": "nvidia_nim", "base_url": "https://x.test/v1"}})
+    with pytest.raises(ValidationError, match="customer"):
+        ModelsConfig.model_validate(raw)
+
+
+@pytest.mark.edge
+def test_the_second_reading_cannot_use_the_agents_own_model() -> None:
+    """The extraction is checked against the agent's proposal, so the same model
+    reading twice would agree with its own mistakes."""
+    from agentcosign.core.config import ModelsConfig
+
+    agent_model = _load_yaml_config()["models"]["agent"]["primary"]
+    with pytest.raises(ValidationError, match="independent"):
+        ModelsConfig.model_validate(_models(extraction={"primary": agent_model}))
+
+
+def test_the_shipped_models_pass_both_checks() -> None:
+    from agentcosign.core.config import ModelsConfig
+
+    ModelsConfig.model_validate(_models())
 
 
 def test_secure_hermetic_defaults() -> None:

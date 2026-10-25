@@ -124,6 +124,12 @@ class ModelRoleConfig(BaseModel):
     base_url: str | None = None
 
 
+# Providers whose terms let the account switch off keeping prompts and rule out
+# training on them. The free NVIDIA trial may use prompts to improve its models,
+# so it never receives a customer's words.
+CUSTOMER_TEXT_PROVIDERS = frozenset({"groq"})
+
+
 class ModelsConfig(BaseModel):
     """Configuration for all model tiers."""
 
@@ -132,6 +138,27 @@ class ModelsConfig(BaseModel):
     agent: ModelRoleConfig
     screening: ModelRoleConfig
     extraction: ModelRoleConfig
+
+    @model_validator(mode="after")
+    def _customer_text_stays_with_cleared_providers(self) -> "ModelsConfig":
+        # every role reads the customer's message, the agent included
+        roles = {"agent": self.agent, "screening": self.screening}
+        roles["extraction"] = self.extraction
+        for name, role in roles.items():
+            if role.provider not in CUSTOMER_TEXT_PROVIDERS:
+                raise ValueError(
+                    f"{name} reads customer messages; provider {role.provider} is "
+                    "not cleared for customer text"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _second_reading_is_independent(self) -> "ModelsConfig":
+        # the extraction is compared with the agent's proposal, so it must not
+        # be the same model agreeing with itself
+        if self.extraction.primary == self.agent.primary:
+            raise ValueError("extraction must be independent of the agent's model")
+        return self
 
 
 class BucketSpec(BaseModel):
