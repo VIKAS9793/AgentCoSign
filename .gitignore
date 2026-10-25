@@ -15,7 +15,7 @@ SESSION_HANDOFF.md
 *.db
 *.sqlite
 *.sqlite3
-data/
+/data/
 
 # ----------------------------------------------------------
 # Python
