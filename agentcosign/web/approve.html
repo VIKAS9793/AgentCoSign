@@ -18,6 +18,7 @@
         <span class="mode-pill">Test mode</span>
       </div>
       <p id="identity" class="identity" hidden></p>
+      <div id="header-stop" class="header-stop"></div>
     </header>
     <p id="status" role="status" class="status" hidden></p>
 
@@ -52,32 +53,34 @@
         <div class="skeleton short" aria-hidden="true"></div>
       </div>
       <div id="home-body" hidden>
-        <div id="stop-banner" class="card caution-box" role="status" hidden></div>
-        <p id="home-count" class="muted"></p>
-        <p id="freshness" class="muted small"></p>
-        <p id="live-line" class="muted small" role="status"></p>
-        <div id="notices"></div>
-        <h2 class="section-title">Waiting for your approval</h2>
-        <p id="empty" class="muted" hidden>No refund requests right now. Your assistant will ask when one needs you.</p>
-        <div id="requests"></div>
-        <div id="cant-send-section" hidden>
-          <h2 class="section-title">Can't be refunded</h2>
-          <div id="cant-send-list"></div>
+        <div class="home-top">
+          <div id="stop-banner" class="card caution-box" role="status" hidden></div>
+          <p id="home-count" class="muted"></p>
+          <p id="freshness" class="muted small"></p>
+          <p id="live-line" class="muted small" role="status"></p>
+          <div id="notices"></div>
+          <div id="summary" class="summary"></div>
         </div>
-        <div id="paused-section" hidden>
-          <h2 class="section-title">On hold</h2>
-          <div id="paused-list"></div>
+        <div class="home-grid">
+          <h2 class="section-title">Waiting for your approval</h2>
+          <p id="empty" class="muted" hidden>No refund requests right now. Your assistant will ask when one needs you.</p>
+          <div id="requests"></div>
+          <div id="cant-send-section" hidden>
+            <h2 class="section-title">Can't be refunded</h2>
+            <div id="cant-send-list"></div>
+          </div>
+          <div id="paused-section" hidden>
+            <h2 class="section-title">On hold</h2>
+            <div id="paused-list"></div>
+          </div>
+          <div id="done-section" hidden></div>
+          <details class="fold">
+            <summary>Your settings</summary>
+            <div id="settings" class="card list"></div>
+          </details>
+          <div id="stop-control"></div>
+          <button id="refresh-button" type="button" class="secondary">Check for new requests</button>
         </div>
-        <h2 id="today-title" class="section-title">Your day</h2>
-        <div id="today" class="card"></div>
-        <div id="done-section" hidden>
-          <h2 class="section-title">Recent refunds</h2>
-          <div id="done-list" class="card list"></div>
-        </div>
-        <h2 class="section-title">Your settings</h2>
-        <div id="settings" class="card list"></div>
-        <div id="stop-control"></div>
-        <button id="refresh-button" type="button" class="secondary">Check for new requests</button>
       </div>
     </section>
 

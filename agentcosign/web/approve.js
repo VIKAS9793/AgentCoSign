@@ -36,7 +36,8 @@
     document.getElementById(id).hidden = !visible;
   }
 
-  // One screen at a time, opened at its top.
+  // One screen at a time, opened at its top: dashboard, then the request, the
+  // check and fingerprint, then the outcome.
   function go(view, requestId) {
     VIEWS.forEach(function (name) {
       show(name, name === view);
@@ -332,6 +333,7 @@
   // Material Symbols, rounded, weight 400 (Apache License 2.0). Drawn inline, so
   // the page loads no outside font and makes no outside request.
   var ICONS = {
+    next: "M504-480 348-636q-11-11-11-28t11-28q11-11 28-11t28 11l184 184q6 6 8.5 13t2.5 15q0 8-2.5 15t-8.5 13L404-268q-11 11-28 11t-28-11q-11-11-11-28t11-28l156-156Z",
     done: "m421-389-98-98q-9-9-22-9t-23 10q-9 9-9 22t9 22l122 123q9 9 21 9t21-9l239-239q10-10 10-23t-10-23q-10-9-23.5-8.5T635-603L421-389Zm59 309q-82 0-155-31.5t-127.5-86Q143-252 111.5-325T80-480q0-83 31.5-156t86-127Q252-817 325-848.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 82-31.5 155T763-197.5q-54 54.5-127 86T480-80Zm0-60q142 0 241-99.5T820-480q0-142-99-241t-241-99q-141 0-240.5 99T140-480q0 141 99.5 240.5T480-140Zm0-340Z",
     problem: "M503.5-289.48q9.5-9.48 9.5-23.5t-9.48-23.52q-9.48-9.5-23.5-9.5t-23.52 9.48q-9.5 9.48-9.5 23.5t9.48 23.52q9.48 9.5 23.5 9.5t23.52-9.48Zm1-152.15q8.5-8.62 8.5-21.37v-193q0-12.75-8.68-21.38-8.67-8.62-21.5-8.62-12.82 0-21.32 8.62-8.5 8.63-8.5 21.38v193q0 12.75 8.68 21.37 8.67 8.63 21.5 8.63 12.82 0 21.32-8.63ZM480.27-80q-82.74 0-155.5-31.5Q252-143 197.5-197.5t-86-127.34Q80-397.68 80-480.5t31.5-155.66Q143-709 197.5-763t127.34-85.5Q397.68-880 480.5-880t155.66 31.5Q709-817 763-763t85.5 127Q880-563 880-480.27q0 82.74-31.5 155.5Q817-252 763-197.68q-54 54.31-127 86Q563-80 480.27-80Zm.23-60Q622-140 721-239.5t99-241Q820-622 721.19-721T480-820q-141 0-240.5 98.81T140-480q0 141 99.5 240.5t241 99.5Zm-.5-340Z",
     caution: "M92-120q-9 0-15.5-4T66-135q-4-7-4.5-14.5T66-165l388-670q5-8 11.5-11.5T480-850q8 0 14.5 3.5T506-835l388 670q5 8 4.5 15.5T894-135q-4 7-10.5 11t-15.5 4H92Zm52-60h672L480-760 144-180Zm361.5-65.5Q514-254 514-267t-8.5-21.5Q497-297 484-297t-21.5 8.5Q454-280 454-267t8.5 21.5Q471-237 484-237t21.5-8.5Zm0-111Q514-365 514-378v-164q0-13-8.5-21.5T484-572q-13 0-21.5 8.5T454-542v164q0 13 8.5 21.5T484-348q13 0 21.5-8.5ZM480-470Z",
@@ -370,6 +372,22 @@
     node.insertBefore(icon(name, className), node.firstChild);
     node.classList.add("has-icon");
     return node;
+  }
+
+  // Where the merchant is in the flow, shown rather than explained: done steps
+  // carry a tick, the current step is filled and bold, later steps are outlined.
+  var STEPS = ["Review", "Confirm", "Done"];
+  function stepper(at) {
+    var list = el("ol", "", "steps");
+    list.setAttribute("aria-label", "Step " + (at + 1) + " of " + STEPS.length);
+    STEPS.forEach(function (name, index) {
+      var step = el("li", name, index < at ? "done" : index === at ? "current" : "");
+      if (index === at) {
+        step.setAttribute("aria-current", "step");
+      }
+      list.appendChild(step);
+    });
+    return list;
   }
 
   function progressLine() {
@@ -553,11 +571,10 @@
   function renderHome(data) {
     document.getElementById("greeting").textContent = greeting();
     var counts = data.counts;
-    var parts = [plural(counts.needs_decision, "waiting for your approval", "waiting for your approval")];
-    if (Number(counts.paused)) {
-      parts.push(counts.paused + " on hold");
-    }
-    document.getElementById("home-count").textContent = parts.join(" · ");
+    // the waiting count is in the first tile; only what no tile shows is said here
+    var onHold = Number(counts.paused) ? counts.paused + " on hold" : "";
+    document.getElementById("home-count").textContent = onHold;
+    show("home-count", Boolean(onHold));
     document.getElementById("freshness").textContent = freshness(data);
 
     var notices = document.getElementById("notices");
@@ -573,8 +590,7 @@
     show("empty", data.sections.needs_decision.length === 0);
     show("cant-send-section", data.sections.cant_send.length > 0);
     show("paused-section", data.sections.paused.length > 0);
-    document.getElementById("today-title").textContent = "Your last " + data.settings.window_hours + " hours";
-    renderToday(data.today, data.settings);
+    renderSummary(data);
     renderDone(data.done);
     renderSettings(data.settings);
     renderStop(data.refunds_stopped === "yes");
@@ -620,6 +636,7 @@
     } else {
       card.appendChild(withIcon("blocked", el("span", CANT_SEND_WORDS[item.cant_send_reason] || "Can't be refunded", "danger-text small strong")));
     }
+    card.appendChild(icon("next", "card-go"));
     card.addEventListener("click", function () {
       openReview(item);
     });
@@ -678,6 +695,7 @@
     card.appendChild(top);
     card.appendChild(el("span", repeatLine(item), "muted small"));
     card.appendChild(withIcon("hold", el("span", item.rechecking === "yes" ? "Being reviewed again now" : "Reviewed again " + when(item.release_at), "small strong")));
+    card.appendChild(icon("next", "card-go"));
     card.addEventListener("click", function () {
       openPaused(item);
     });
@@ -700,32 +718,42 @@
     return line;
   }
 
+  // The dashboard only points to past refunds; the list itself is its own screen.
   function renderDone(done) {
-    var box = document.getElementById("done-list");
+    var box = document.getElementById("done-section");
     box.replaceChildren();
-    done.recent.forEach(function (item) { box.appendChild(doneRow(item, openHome)); });
-    if (Number(done.total) > done.recent.length) {
-      box.appendChild(button("See all " + done.total, "link", openActivity));
+    if (Number(done.total) > 0) {
+      box.appendChild(button("See recent refunds (" + done.total + ")", "link", openActivity));
     }
-    show("done-section", done.recent.length > 0);
+    show("done-section", Number(done.total) > 0);
   }
 
-  function renderToday(day, settings) {
-    var box = document.getElementById("today");
+  // The dashboard's four figures of the same kind, in tiles of one height.
+  function renderSummary(data) {
+    var box = document.getElementById("summary");
     box.replaceChildren();
-    box.appendChild(el("p", money(day.sent_total) + " refunded", "big-number"));
-    var lines = el("div", "", "list");
-    lines.appendChild(row("Refunded with your approval", day.by_you_count));
-    lines.appendChild(row("Refunded by your assistant", day.by_assistant_count));
-    lines.appendChild(row("Not refunded", day.not_sent_count));
-    if (Number(day.processing_count) > 0) {
-      lines.appendChild(row("Processing at PayPal", day.processing_count + " (" + money(day.processing_total) + ")"));
+    var day = data.today;
+    var who = day.by_you_count + " by you · " + day.by_assistant_count + " by your assistant";
+    var processing = Number(day.processing_count) > 0
+      ? day.processing_count + " processing at PayPal (" + money(day.processing_total) + ")" : "";
+    var held = Number(day.waiting_total) > 0 ? money(day.waiting_total) + " held for open requests" : "";
+    var waiting = Number(data.counts.needs_decision);
+    box.appendChild(tile("Waiting for your approval", String(waiting), "", waiting > 0 ? "attention" : ""));
+    box.appendChild(tile("Refunded in the last " + data.settings.window_hours + " hours", money(day.sent_total), [who, processing].filter(Boolean).join(" · ")));
+    box.appendChild(tile("Not refunded", String(day.not_sent_count)));
+    box.appendChild(tile("Daily limit used", money(day.limit_used), ["of " + money(data.settings.daily_cap), held].filter(Boolean).join(" · ")));
+  }
+
+  // A tile in the caution tone means "this needs you", the same meaning as the
+  // decide-by line on a request.
+  function tile(label, value, note, tone) {
+    var box = el("div", "", tone ? "card tile " + tone : "card tile");
+    box.appendChild(el("p", label, "tile-label"));
+    box.appendChild(el("p", value, "tile-value"));
+    if (note) {
+      box.appendChild(el("p", note, "muted small"));
     }
-    lines.appendChild(row("Daily limit used", money(day.limit_used) + " of " + money(settings.daily_cap)));
-    box.appendChild(lines);
-    if (Number(day.waiting_total) > 0) {
-      box.appendChild(el("p", money(day.waiting_total) + " of this is held for open requests", "muted small"));
-    }
+    return box;
   }
 
   function renderSettings(settings) {
@@ -751,14 +779,17 @@
       })));
     }
     banner.hidden = !stopped;
-    var box = document.getElementById("stop-control");
-    box.replaceChildren();
-    if (!stopped) {
-      box.appendChild(withIcon("blocked", button("Stop all refunds", "secondary", function () {
-        control("stop");
-      })));
-      box.appendChild(el("p", "Stops new refunds and approvals at once. Refunds already with PayPal will finish.", "muted small"));
-    }
+    // one control, shown in the list on a phone and in the top bar on a laptop
+    ["stop-control", "header-stop"].forEach(function (id) {
+      var box = document.getElementById(id);
+      box.replaceChildren();
+      if (!stopped) {
+        box.appendChild(withIcon("blocked", button("Stop all refunds", "secondary", function () {
+          control("stop");
+        })));
+        box.appendChild(el("p", "Stops new refunds and approvals at once. Refunds already with PayPal will finish.", "muted small"));
+      }
+    });
   }
 
   function control(intent) {
@@ -811,6 +842,9 @@
     var sendable = item.can_send === "yes";
 
     view.appendChild(backLink("Refund requests", openHome));
+    if (sendable) {
+      view.appendChild(stepper(0));
+    }
     view.appendChild(el("h1", sendable ? "Refund " + money(item.amount) + " to " + item.customer + "?"
       : item.customer + " · " + money(item.amount), "question"));
     view.appendChild(el("p", paymentLine(item), "muted small"));
@@ -923,6 +957,7 @@
     var view = document.getElementById("final");
     view.replaceChildren();
     view.appendChild(backLink("Review request", function () { openReview(item); }));
+    view.appendChild(stepper(1));
     view.appendChild(el("p", "Check before you refund", "eyebrow caution-text"));
     var head = el("div", "", "card center");
     head.appendChild(el("p", money(item.amount), "big-number"));
@@ -1301,6 +1336,7 @@
     }
     var view = document.getElementById("outcome");
     view.replaceChildren();
+    view.appendChild(stepper(2));
     var box = el("div", "", kind === "sent" ? "card ok-box center" : "card center");
     box.setAttribute("role", "status");
     box.appendChild(pill(BADGES[kind][0], BADGES[kind][1], BADGES[kind][2]));

@@ -374,10 +374,22 @@ button.row-button {
 .actions {
   position: sticky;
   bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
   margin: 16px -16px 0;
   padding: 8px 16px 12px;
   background: var(--paper);
   border-top: 1px solid var(--rule);
+}
+
+.actions button {
+  margin-top: 0;
+}
+
+.actions p {
+  flex-basis: 100%;
 }
 
 label {
@@ -397,10 +409,15 @@ input {
   color: var(--ink);
 }
 
+/* buttons hug their label with comfortable padding instead of stretching
+   across the screen; cards and list rows that open stay full width */
 button {
-  display: block;
-  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
   min-height: 56px;
+  padding: 0 24px;
   margin-top: 10px;
   font: inherit;
   font-weight: 700;
@@ -691,7 +708,7 @@ p.has-icon,
 }
 
 button.has-icon {
-  display: flex;
+  display: inline-flex;
   justify-content: center;
 }
 
@@ -727,5 +744,295 @@ button.link.has-icon {
 @media (prefers-reduced-motion: reduce) {
   .icon.spin {
     animation: none;
+  }
+}
+
+/* Dashboard summary: four figures of the same kind in tiles of one height,
+   two by two on a phone. */
+.summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 12px 14px;
+}
+
+.tile-label {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.tile-value {
+  margin: 2px 0 0;
+  font-size: 1.4rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* on a phone a tile shows only its label and figure, so the requests that
+   need a decision stay above the fold; the detail lines show on a laptop */
+@media (max-width: 1023px) {
+  .tile .small {
+    display: none;
+  }
+
+  .tile {
+    padding: 10px 12px;
+  }
+
+  /* what decides comes first on a small screen: the queue, then the summary
+     tiles, then the rest */
+  #home-body:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .home-top,
+  .home-grid {
+    display: contents;
+  }
+
+  .home-grid > .section-title:first-child,
+  #empty,
+  #requests,
+  #cant-send-section,
+  #paused-section {
+    order: 1;
+  }
+
+  .summary {
+    order: 2;
+  }
+
+  #done-section,
+  .fold,
+  #stop-control,
+  #refresh-button {
+    order: 3;
+  }
+
+  #refresh-button {
+    align-self: flex-start;
+  }
+}
+
+/* settings are for reference, so they fold away on the dashboard */
+.fold {
+  margin-top: 16px;
+}
+
+.fold > summary {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* cues that show what to do instead of telling: an arrow on anything that
+   opens, a caution tile when something needs the merchant, and a step guide */
+.request-card {
+  position: relative;
+  padding-right: 44px;
+}
+
+.card-go {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
+  fill: var(--ink-muted);
+}
+
+.request-card:hover,
+.request-card:focus-visible {
+  border-color: var(--ink);
+}
+
+.request-card:hover .card-go {
+  fill: var(--ink);
+}
+
+.tile.attention {
+  background: var(--caution-bg);
+  border-color: var(--caution-line);
+}
+
+.tile.attention .tile-label,
+.tile.attention .tile-value {
+  color: var(--caution);
+}
+
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 2px;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.steps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.steps li::before {
+  counter-increment: step;
+  content: counter(step);
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1.5px solid var(--ink-muted);
+  border-radius: 50%;
+  font-weight: 700;
+}
+
+.steps li:not(:last-child)::after {
+  content: "";
+  width: 20px;
+  height: 1.5px;
+  background: var(--rule);
+}
+
+.steps li.current {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.steps li.current::before {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-primary);
+}
+
+.steps li.done::before {
+  content: "\2713";
+  background: var(--ok-bg);
+  border-color: var(--ok-line);
+  color: var(--ok);
+}
+
+.fold > summary {
+  list-style: none;
+}
+
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold > summary::after {
+  content: "";
+  width: 9px;
+  height: 9px;
+  margin-left: auto;
+  margin-right: 6px;
+  border-right: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+  transform: rotate(45deg);
+}
+
+.fold[open] > summary::after {
+  transform: rotate(-135deg);
+}
+
+/* the stop button moves into the top bar on a laptop */
+.header-stop {
+  display: none;
+}
+
+/* Laptop and desktop: the same four-screen flow (dashboard, request, check and
+   fingerprint, outcome), each screen centred at a comfortable width, with the
+   emergency stop in a top bar that stays in view. */
+@media (min-width: 1024px) {
+  main {
+    max-width: 60rem;
+    padding: 0 32px 48px;
+  }
+
+  .brand {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "row stop"
+      "who stop";
+    column-gap: 24px;
+    align-items: center;
+    padding: 12px 0;
+    background: var(--paper);
+  }
+
+  .brand-row {
+    grid-area: row;
+    justify-content: flex-start;
+  }
+
+  .identity {
+    grid-area: who;
+  }
+
+  .header-stop {
+    grid-area: stop;
+    display: block;
+    max-width: 22rem;
+    text-align: right;
+  }
+
+  .header-stop button {
+    min-height: 48px;
+    margin: 0;
+  }
+
+  .header-stop p {
+    margin: 4px 0 0;
+  }
+
+  #stop-control {
+    display: none;
+  }
+
+  .summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .tile-value {
+    font-size: 1.6rem;
+  }
+
+  #review,
+  #final,
+  #sending,
+  #outcome,
+  #paused-view,
+  #activity,
+  #history,
+  #signin,
+  #enrol {
+    max-width: 44rem;
+    margin: 0 auto;
+  }
+
+  .actions {
+    margin: 16px 0 0;
+    padding: 12px 0;
   }
 }

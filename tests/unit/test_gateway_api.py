@@ -2115,7 +2115,7 @@ def test_the_final_check_figures_add_up_when_other_requests_hold_money() -> None
 
 @pytest.mark.edge
 def test_money_set_aside_is_not_called_waiting_for_a_decision() -> None:
-    today = _script_function("renderToday")
+    today = _script_function("renderSummary")
     assert "held for open requests" in today
     assert "waiting for your decision" not in today  # paused money cannot be decided
 
