@@ -91,10 +91,31 @@ class LedgerContext:
     refunds_stopped: bool = False
 
 
+class ReadingStatus(StrEnum):
+    """Whether the customer's own message was read for this request."""
+
+    NOT_SUPPLIED = "not_supplied"  # no customer message is tied to the request
+    READ = "read"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerReading:
+    """What the customer's own message asks for, read independently of the
+    assistant's proposal. Untrusted model output, already schema-checked."""
+
+    order_id: str | None
+    amount: Decimal | None
+    currency: str | None
+    reason: str | None
+    wants_other_destination: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class Signals:
     """Screening and extraction outputs. They can only tighten a decision."""
 
     screening: ScreeningVerdict = ScreeningVerdict.CLEAN
     prescreen_hit: bool = False
-    extracted_amount: Decimal | None = None
+    reading_status: ReadingStatus = ReadingStatus.NOT_SUPPLIED
+    reading: CustomerReading | None = None

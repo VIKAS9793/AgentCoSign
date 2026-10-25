@@ -22,9 +22,11 @@ from agentcosign.core.config import PolicySettings, ScreeningSettings
 from agentcosign.models.domain import Decision, PolicyResult, ToolAction
 from agentcosign.models.policy import (
     REQUEST_ID_PATTERN,
+    CustomerReading,
     LedgerContext,
     OrderEvidence,
     Proposal,
+    ReadingStatus,
     ScreeningVerdict,
     Signals,
 )
@@ -51,6 +53,7 @@ RULE_EVIDENCE = "R14"
 RULE_SCREENING_DOWN = "R15"
 RULE_STOPPED = "R16"
 RULE_AUTO_BUDGET = "R17"
+RULE_CUSTOMER_WORDS = "R18"
 
 VELOCITY_WINDOW = timedelta(hours=24)
 # never release in the past or in the same instant, so a pause always holds
@@ -73,6 +76,7 @@ DENY_PRIORITY = (
 ESCALATE_PRIORITY = (
     RULE_DISPUTE_CONCESSION,
     RULE_OPEN_DISPUTE,
+    RULE_CUSTOMER_WORDS,
     RULE_NEW_PAYEE,
     RULE_SCREENING_DOWN,
     RULE_VELOCITY,
@@ -98,7 +102,14 @@ _RULE_TITLES = {
     RULE_SCREENING_DOWN: "Screening is unavailable",
     RULE_STOPPED: "The merchant stopped all refunds",
     RULE_AUTO_BUDGET: "Automatic refunds on this order or customer today are used up",
+    RULE_CUSTOMER_WORDS: "The customer's own words do not support sending this alone",
 }
+
+# Reasons whose truth PayPal's record for the order cannot show: a second charge
+# elsewhere, an earlier refund, a charge the cardholder disowns, a return.
+UNPROVABLE_REASONS = frozenset(
+    {"duplicate_charge", "refund_not_received", "unrecognised_charge", "changed_mind"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,12 +327,9 @@ def _claim_problems(proposal: Proposal, evidence: OrderEvidence) -> list[str]:
 
 
 def _rule_evidence(case: _Case) -> RuleHit | None:
-    """Agent claims, extraction and age must agree with PayPal's record."""
+    """Agent claims and evidence age must agree with PayPal's record."""
     problems: list[str] = []
     evidence = case.evidence
-    extracted = case.signals.extracted_amount
-    if extracted is not None and extracted != case.proposal.amount:
-        problems.append("the amount differs from the amount read in the source text")
     if evidence is not None:
         age = (case.now - evidence.fetched_at).total_seconds()
         if age < 0 or age > case.policy.evidence_max_age_seconds:
@@ -331,6 +339,46 @@ def _rule_evidence(case: _Case) -> RuleHit | None:
     if not problems:
         return None
     return _hit(RULE_EVIDENCE, Decision.DENY, "claims_differ", "; ".join(problems))
+
+
+def _reading_problems(proposal: Proposal, reading: CustomerReading) -> list[str]:
+    """Where the customer's own words fail to back the proposal exactly."""
+    problems: list[str] = []
+    if reading.order_id is None:
+        problems.append("the customer named no order")
+    elif reading.order_id != proposal.order_id:
+        problems.append("the customer named a different order")
+    if reading.amount is None:
+        problems.append("the customer named no amount")
+    elif reading.amount != proposal.amount:
+        problems.append("the customer asked for a different amount")
+    if reading.currency is not None and reading.currency != proposal.currency:
+        problems.append("the customer wrote a different currency")
+    if reading.wants_other_destination:
+        problems.append("the customer asked for the money to go somewhere else")
+    if reading.reason in UNPROVABLE_REASONS:
+        problems.append("PayPal's record for this order cannot confirm the reason")
+    return problems
+
+
+def _rule_customer_words(case: _Case) -> RuleHit | None:
+    """A refund goes out alone only when the customer's own message, read
+    separately from the assistant, asks for exactly this; a reading never
+    refuses, it asks the merchant."""
+    signals = case.signals
+    if case.tool is not ToolAction.CREATE_REFUND:
+        return None
+    if signals.reading_status is ReadingStatus.NOT_SUPPLIED:
+        return None
+    if signals.reading_status is ReadingStatus.READ and signals.reading is not None:
+        problems = _reading_problems(case.proposal, signals.reading)
+    else:
+        problems = ["the customer's message could not be read"]
+    if not problems:
+        return None
+    return _hit(
+        RULE_CUSTOMER_WORDS, Decision.ESCALATE, "customer_words", "; ".join(problems)
+    )
 
 
 def _rule_injection(case: _Case) -> RuleHit | None:
@@ -525,6 +573,7 @@ RULES: tuple[Rule, ...] = (
     _rule_open_dispute,
     _rule_dispute_concession,
     _rule_new_payee,
+    _rule_customer_words,
 )
 
 

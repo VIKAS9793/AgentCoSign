@@ -41,6 +41,9 @@ def plain_reason(rule_id: str, policy: PolicySettings) -> str:
         "R17": "Your assistant already refunded this order or this customer without "
         f"asking you. Refunds without asking stop at {auto} per order and per "
         f"customer in {window} hours.",
+        "R18": "What the customer wrote doesn't match this refund, or gives a reason "
+        "PayPal can't confirm, like a double charge or a missing earlier refund. "
+        "Read their message first.",
     }
     return reasons.get(rule_id, "This one needs your approval.")
 
@@ -120,9 +123,10 @@ def short_flag(triggered: Sequence[str], policy: PolicySettings) -> str:
         "R8": "New payout details",
         "R14": "Order changed",
         "R17": "Already refunded without asking",
+        "R18": "Check the customer's message",
         "R2": f"Over your {auto} limit",
     }
-    for rule in ("R7", "R6", "R8", "R14", "R17", "R2"):
+    for rule in ("R7", "R6", "R18", "R8", "R14", "R17", "R2"):
         if rule in triggered:
             return flags[rule]
     return "Safety check didn't run" if RULE_SCREENING_DOWN in triggered else ""

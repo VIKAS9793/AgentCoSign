@@ -14,9 +14,11 @@ from typing import Any
 from agentcosign.core.config import PolicySettings, ScreeningSettings
 from agentcosign.models.domain import Decision
 from agentcosign.models.policy import (
+    CustomerReading,
     LedgerContext,
     OrderEvidence,
     Proposal,
+    ReadingStatus,
     ScreeningVerdict,
     Signals,
 )
@@ -137,6 +139,21 @@ PAYOUT = {
     "reference": "INV-9",
     "amount": D("20.00"),
 }
+
+
+def words(**changes: Any) -> dict[str, Any]:
+    """Signals for a customer message read in full; by default it matches the
+    baseline proposal exactly (order ORD-1, 10.00 USD, item not received)."""
+    reading = {
+        "order_id": "ORD-1",
+        "amount": D("10.00"),
+        "currency": "USD",
+        "reason": "not_received",
+        "wants_other_destination": False,
+        **changes,
+    }
+    return {"reading_status": ReadingStatus.READ, "reading": CustomerReading(**reading)}
+
 
 SCENARIOS: tuple[Scenario, ...] = (
     # --- amount boundaries (refunds) -------------------------------------------
@@ -650,18 +667,18 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         "S45",
-        "Amount read from the source text differs",
-        X,
-        "R14",
-        ("R14",),
-        signals={"extracted_amount": D("100.00")},
+        "The customer asked for a different amount: the merchant decides",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(amount=D("100.00")),
     ),
     Scenario(
         "S46",
-        "Amount read from the source text agrees",
+        "The customer's words match the proposal: it can go out on its own",
         A,
         "R1",
-        signals={"extracted_amount": D("10.00")},
+        signals=words(amount=D("10")),
     ),
     Scenario(
         "S47",
@@ -1014,6 +1031,116 @@ SCENARIOS: tuple[Scenario, ...] = (
         proposal={"amount": D("300.00")},
         evidence=BIG,
         ledger={"refunds_stopped": True},
+    ),
+    Scenario(
+        "S103",
+        "The customer's message could not be read: the merchant decides",
+        E,
+        "R18",
+        ("R18",),
+        signals={"reading_status": ReadingStatus.UNAVAILABLE},
+    ),
+    Scenario(
+        "S104",
+        "The customer named a different order than the proposal",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(order_id="ORD-OTHER"),
+    ),
+    Scenario(
+        "S105",
+        "The customer named no order",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(order_id=None),
+    ),
+    Scenario(
+        "S106",
+        "The customer named no amount",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(amount=None),
+    ),
+    Scenario(
+        "S107",
+        "The customer wrote a different currency",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(currency="INR"),
+    ),
+    Scenario(
+        "S108",
+        "The customer wants the money sent somewhere else",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(wants_other_destination=True),
+    ),
+    Scenario(
+        "S109",
+        "Charged twice: the second charge is not on this order",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(reason="duplicate_charge"),
+    ),
+    Scenario(
+        "S110",
+        "Says an earlier refund never arrived",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(reason="refund_not_received"),
+    ),
+    Scenario(
+        "S111",
+        "Does not recognise the charge",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(reason="unrecognised_charge"),
+    ),
+    Scenario(
+        "S112",
+        "Changed their mind: the item normally comes back first",
+        E,
+        "R18",
+        ("R18",),
+        signals=words(reason="changed_mind"),
+    ),
+    Scenario(
+        "S113",
+        "Words differ and the message is an attack: refused",
+        X,
+        "R11",
+        ("R11", "R18"),
+        signals={
+            **words(order_id="ORD-OTHER"),
+            "screening": ScreeningVerdict.INJECTION,
+        },
+    ),
+    Scenario(
+        "S114",
+        "Words differ and the amount is over the automatic limit",
+        E,
+        "R18",
+        ("R2", "R18"),
+        proposal={"amount": D("40.00")},
+        signals=words(amount=D("40.00"), reason="changed_mind"),
+    ),
+    Scenario(
+        "S115",
+        "Words differ on a refund that is already over the maximum: refused",
+        X,
+        "R3",
+        ("R3", "R18"),
+        proposal={"amount": D("300.00")},
+        evidence=BIG,
+        signals=words(amount=D("30.00")),
     ),
 )
 
