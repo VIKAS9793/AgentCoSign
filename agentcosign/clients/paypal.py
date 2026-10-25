@@ -33,6 +33,20 @@ NOT_VERIFIED = "FAILURE"
 TOKEN_REFRESH_MARGIN_MS = 300_000
 PAYPAL_ID = re.compile(r"^[A-Z0-9-]{1,64}$")
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+# PayPal's published sandbox test cards, used only to create demo test orders
+# against the sandbox; the next is tried when the sandbox declines one.
+SANDBOX_TEST_CARDS = (
+    "4111111111111111",  # guardrail: allow fake-data-in-code -- sandbox test card
+    "4012000077777777",  # guardrail: allow fake-data-in-code -- sandbox test card
+    "5555555555554444",
+)
+SANDBOX_BILLING = {
+    "address_line_1": "123 Main St",
+    "admin_area_2": "San Jose",
+    "admin_area_1": "CA",
+    "postal_code": "95131",
+    "country_code": "US",
+}
 
 JsonObject = dict[str, Any]
 
@@ -74,6 +88,12 @@ class PayPalClient(Protocol):
 
     async def accept_claim(self, dispute_id: str, request_id: str) -> JsonObject:
         """Accept a dispute claim, conceding the disputed amount."""
+        ...
+
+    async def create_test_order(
+        self, amount: Decimal, currency: str, buyer: str, request_id: str
+    ) -> str:
+        """Create and capture a sandbox test order; returns its order id."""
         ...
 
     async def verify_webhook(
@@ -220,6 +240,27 @@ class LivePayPalClient:
         )
         return result
 
+    async def create_test_order(
+        self, amount: Decimal, currency: str, buyer: str, request_id: str
+    ) -> str:
+        """Create and capture a sandbox order paid by a test card, for the demo."""
+        request_id = checked_request_id(request_id)
+        last: PayPalClientError | None = None
+        for number in SANDBOX_TEST_CARDS:
+            try:
+                order = await self._send(
+                    "POST",
+                    "/v2/checkout/orders",
+                    body=_test_order_body(amount, currency, buyer, number),
+                    request_id=f"{request_id}-{number[-4:]}",
+                )
+            except PayPalClientError as exc:
+                last = exc
+                continue
+            if isinstance(order, dict) and order.get("status") == "COMPLETED":
+                return checked_id(str(order.get("id", "")), "order")
+        raise last or PayPalClientError("the test order was not completed", {})
+
     async def accept_claim(self, dispute_id: str, request_id: str) -> JsonObject:
         """Accept a dispute claim, conceding the disputed amount."""
         dispute = checked_id(dispute_id, "dispute")
@@ -287,8 +328,10 @@ class RecordedPayPalClient:
         orders: Mapping[str, JsonObject],
         disputes: Mapping[str, list[JsonObject]] | None = None,
         refund_status: str = "COMPLETED",
+        merchant_id: str = "",
     ) -> None:
         self._refund_status = refund_status
+        self._merchant_id = merchant_id
         self._orders = {
             key: json.loads(json.dumps(value)) for key, value in orders.items()
         }
@@ -353,6 +396,18 @@ class RecordedPayPalClient:
         self._writes[request_id] = refund
         return dict(refund)
 
+    async def create_test_order(
+        self, amount: Decimal, currency: str, buyer: str, request_id: str
+    ) -> str:
+        """Simulate a captured test order, readable like a real one afterwards."""
+        request_id = checked_request_id(request_id)
+        order_id = "TEST" + _short_id(request_id)
+        if order_id not in self._orders:
+            self._orders[order_id] = _recorded_order(
+                order_id, amount, currency, buyer, self._merchant_id
+            )
+        return order_id
+
     async def accept_claim(self, dispute_id: str, request_id: str) -> JsonObject:
         """Simulate accepting a recorded dispute claim."""
         checked_id(dispute_id, "dispute")
@@ -386,3 +441,46 @@ class RecordedPayPalClient:
 
 def _short_id(request_id: str) -> str:
     return hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:12].upper()
+
+
+def _test_order_body(
+    amount: Decimal, currency: str, buyer: str, number: str
+) -> JsonObject:
+    return {
+        "intent": "CAPTURE",
+        "purchase_units": [
+            {
+                "reference_id": "agentcosign-demo",
+                "amount": {"currency_code": currency, "value": f"{amount:.2f}"},
+            }
+        ],
+        "payment_source": {
+            "card": {
+                "number": number,
+                "expiry": "2030-12",
+                "security_code": "123",
+                "name": buyer,
+                "billing_address": SANDBOX_BILLING,
+            }
+        },
+    }
+
+
+def _recorded_order(
+    order_id: str, amount: Decimal, currency: str, buyer: str, merchant_id: str
+) -> JsonObject:
+    value = {"value": f"{amount:.2f}", "currency_code": currency}
+    capture = {"id": "CAP" + order_id[4:], "status": "COMPLETED", "amount": value}
+    return {
+        "id": order_id,
+        "status": "COMPLETED",
+        "purchase_units": [
+            {
+                "payee": {"merchant_id": merchant_id},
+                "payments": {"captures": [capture], "refunds": []},
+            }
+        ],
+        "payment_source": {
+            "card": {"brand": "VISA", "last_digits": "1111", "name": buyer}
+        },
+    }
