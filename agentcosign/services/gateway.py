@@ -48,14 +48,22 @@ from agentcosign.core.exceptions import (
     PayPalClientError,
 )
 from agentcosign.models.domain import Decision, ToolAction
-from agentcosign.models.policy import OrderEvidence, Proposal, ScreeningVerdict, Signals
+from agentcosign.models.policy import (
+    OrderEvidence,
+    Proposal,
+    ReadingStatus,
+    ScreeningVerdict,
+    Signals,
+)
 from agentcosign.services import customer_copy
+from agentcosign.services.ai_checks import CustomerChecks
 from agentcosign.services.approval_view import (
     RECENT_DONE,
     SECTIONS,
     UNKNOWN_NAME,
     business_reasons,
     checked_time,
+    customer_asked,
     decide_by,
     display_name,
     history_events,
@@ -80,6 +88,7 @@ from agentcosign.services.ledger import (
     ProposalState,
     Recorded,
 )
+from agentcosign.services.messages import MessageStore
 from agentcosign.services.order_reads import OrderReads, Read
 from agentcosign.services.passkeys import PasskeyRegistry
 from agentcosign.services.policy_engine import VELOCITY_WINDOW
@@ -103,6 +112,10 @@ VIEW_DIGEST = hashlib.sha256(b"view pending approvals").hexdigest()
 
 
 logger = logging.getLogger(__name__)
+
+# a request whose customer message was not checked: the safety scan counts as
+# "could not run", so a person decides and is told exactly that
+UNCHECKED = Signals(screening=ScreeningVerdict.UNAVAILABLE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,8 +238,12 @@ class Gateway:
         display: DisplaySettings,
         webhook_id: str = "",
         clock: Callable[[], datetime] = _utc_now,
+        messages: MessageStore | None = None,
+        checks: CustomerChecks | None = None,
     ) -> None:
         self._ledger = ledger
+        self._messages = messages
+        self._checks = checks
         self._passkeys = passkeys
         self._paypal = paypal
         self._policy = policy
@@ -273,7 +290,7 @@ class Gateway:
             if existing is not None:
                 return await self._already_paused(existing, proposal, now)
         evidence = await self._evidence(proposal, now)
-        signals = self._signals()
+        signals = await self._checked_signals(proposal, now)
         recorded = await asyncio.to_thread(
             self._ledger.decide, proposal, evidence, signals, self._screening, now
         )
@@ -356,7 +373,7 @@ class Gateway:
             evidence = await self._evidence(proposal, now)
             if evidence is None:
                 continue
-            signals = self._signals()
+            signals = await self._signals(request_id)
             try:
                 recorded = await asyncio.to_thread(
                     self._ledger.release,
@@ -621,6 +638,7 @@ class Gateway:
                     "safety_check": safety_check(triggered),
                     "scan_note": scan_note(triggered, self._policy),
                     "flag": short_flag(triggered, self._policy),
+                    "customer_asked": await self._customer_asked(item["request_id"]),
                     **money_view(facts, item["amount"], waiting),
                     "asked_at": item["created_at"],
                     "decide_by": decide_by(item["updated_at"], self._open_seconds),
@@ -1120,13 +1138,14 @@ class Gateway:
     ) -> Recorded:
         """Write the approval; one that cannot be applied stays on the record."""
         # the deadline is judged when the approval is written, after the PayPal read
+        signals = await self._signals(request_id)
         now = self._clock()
         try:
             return await asyncio.to_thread(
                 partial(self._ledger.approve, decide_within=self._open_seconds),
                 request_id,
                 evidence,
-                self._signals(),
+                signals,
                 self._screening,
                 now,
                 detail,
@@ -1150,7 +1169,49 @@ class Gateway:
         except (sqlite3.Error, AgentCoSignError):
             logger.exception("could not record an approval that moved nothing")
 
-    def _signals(self) -> Signals:
-        """Screening and extraction results for a decision. The safety scan is not
-        built yet, so it always reports that it could not run."""
-        return Signals(screening=ScreeningVerdict.UNAVAILABLE)
+    async def _signals(self, request_id: str) -> Signals:
+        """The checks a request was first decided on; a request without them is
+        treated as unchecked, which asks the merchant."""
+        if self._messages is not None:
+            stored = await asyncio.to_thread(self._messages.checks_for, request_id)
+            if stored is not None:
+                return stored.signals
+        return UNCHECKED
+
+    async def _customer_asked(self, request_id: str) -> str:
+        """The card's sentence on what the customer's message asked for."""
+        if self._messages is None:
+            return ""
+        stored = await asyncio.to_thread(self._messages.checks_for, request_id)
+        if stored is None or "checks" in stored.record:
+            return ""
+        signals = stored.signals
+        read = signals.reading_status is not ReadingStatus.UNAVAILABLE
+        return customer_asked(signals.reading, read)
+
+    async def _checked_signals(self, proposal: Proposal, now: datetime) -> Signals:
+        """Run the AI checks on the customer's message the proposal answers.
+
+        A repeat of the same request reuses the first result. A proposal with no
+        message, an unknown message or checks switched off is unchecked.
+        """
+        if proposal.message_id is None or self._messages is None:
+            return await self._signals(proposal.request_id)
+        stored = await asyncio.to_thread(self._messages.checks_for, proposal.request_id)
+        if stored is not None:
+            return stored.signals
+        text = await asyncio.to_thread(self._messages.text, proposal.message_id)
+        if text is None or self._checks is None:
+            signals: Signals = UNCHECKED
+            record = {"checks": "message unknown" if text is None else "checks off"}
+        else:
+            signals, record = await self._checks.run(text)
+        await asyncio.to_thread(
+            self._messages.save_checks,
+            proposal.request_id,
+            proposal.message_id,
+            signals,
+            record,
+            now,
+        )
+        return signals

@@ -62,7 +62,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 | R17 | Refunds sent without asking would pass the auto limit for the order, or for the customer in 24 h | ESCALATE (one refund cannot be split into several small automatic ones). Takes effect once the safety check of customer messages ships; until then every refund already asks the owner |
 | R18 | The customer's own message, read separately from the assistant, does not ask for exactly this refund (different or missing order or amount, other currency, money asked to go elsewhere), or gives a reason PayPal's record for the order cannot confirm (charged twice, an earlier refund missing, an unrecognised charge, a change of mind) | ESCALATE (a reading never refuses on its own). Takes effect once customer messages are read; until then every refund already asks the owner |
 
-### Four AI roles (designed; models verified live, roles not yet wired into the request path)
+### Four AI roles (wired into the request path for refunds that come with a customer message)
 AI reads and checks; it never approves money. A refund goes out without the merchant only when three independent witnesses agree: the agent's proposal, a separate reading of the customer's own words, and the facts PayPal returns. Any disagreement goes to the merchant.
 
 1. **Acting agent** (Groq `openai/gpt-oss-120b`) reads the customer's message and proposes a refund through the gateway. It holds no PayPal credentials.
@@ -70,7 +70,7 @@ AI reads and checks; it never approves money. A refund goes out without the merc
 3. **Screening** (Groq `openai/gpt-oss-20b`, falling back to `openai/gpt-oss-safeguard-20b`) looks for manipulation across the customer's messages, including social engineering such as a message claiming to be the shop or PayPal.
 4. **Prompt guard** (Groq `meta-llama/llama-prompt-guard-2-86m`, a different model family) scores open attack wording such as "ignore all previous instructions" from 0 to 1, reading long messages in overlapping pieces. It misses social engineering, which is why screening runs beside it; neither replaces the other.
 
-The approval card shows what the customer asked for as a fixed sentence built from the extracted fields, so no model writes text the merchant reads. Customer words go only to providers whose terms let the account turn off prompt retention and rule out training on prompts; startup refuses any other provider for these roles.
+The approval card shows what the customer asked for as a fixed sentence built from the extracted fields, so no model writes text the merchant reads. A customer message is masked (cards, security codes, emails, phone, UPI, IBAN, PAN, Aadhaar) before it is kept or read by any model; the checks run once per request and the saved result is reused on approval and release. Try it: `python -m agentcosign.cli message --text "Order <id> never arrived, please refund $9.00"`. Without a model key, requests with a message ask the merchant. Measured on 60 labelled threads: see `docs/evidence/ai/eval-2026-10-25.md`. Customer words go only to providers whose terms let the account turn off prompt retention and rule out training on prompts; startup refuses any other provider for these roles.
 
 ## Status (updated honestly)
 

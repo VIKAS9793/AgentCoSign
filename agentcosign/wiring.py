@@ -6,14 +6,17 @@ refunds keeps working when the web app itself cannot load.
 
 from pathlib import Path
 
+from agentcosign.clients.llm import OpenAICompatibleProvider
 from agentcosign.clients.paypal import (
     LivePayPalClient,
     PayPalClient,
     RecordedPayPalClient,
 )
 from agentcosign.core.config import Settings
+from agentcosign.services.ai_checks import CustomerChecks
 from agentcosign.services.gateway import Gateway
 from agentcosign.services.ledger import Ledger
+from agentcosign.services.messages import MessageStore
 from agentcosign.services.passkeys import PasskeyRegistry
 
 RECORDINGS_DIR = (
@@ -61,6 +64,30 @@ def open_passkeys(settings: Settings) -> PasskeyRegistry:
     )
 
 
+def open_messages(settings: Settings) -> MessageStore:
+    """Masked customer messages, kept in the same database as the ledger."""
+    return MessageStore(
+        _database(settings),
+        _audit_secret(settings),
+        settings.screening.max_document_chars,
+    )
+
+
+def build_checks(settings: Settings) -> CustomerChecks | None:
+    """The AI checks on customer messages, or None when no model key is set (then
+    every request with a message is treated as unchecked and asks the merchant)."""
+    key = settings.groq_api_key
+    if not key.get_secret_value():
+        return None
+    models = settings.models
+    return CustomerChecks(
+        guard_model=OpenAICompatibleProvider("guard", models.guard, key),
+        screening_model=OpenAICompatibleProvider("screening", models.screening, key),
+        reading_model=OpenAICompatibleProvider("extraction", models.extraction, key),
+        threshold=settings.screening.guard_threshold,
+    )
+
+
 def build_gateway(settings: Settings, paypal: PayPalClient | None = None) -> Gateway:
     """The gateway as the service runs it; the command line uses the same one."""
     return Gateway(
@@ -78,4 +105,6 @@ def build_gateway(settings: Settings, paypal: PayPalClient | None = None) -> Gat
         webhook_id=(
             settings.paypal_webhook_id if settings.paypal_execution == "sandbox" else ""
         ),
+        messages=open_messages(settings),
+        checks=build_checks(settings),
     )

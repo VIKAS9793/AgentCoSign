@@ -10,6 +10,7 @@ from agentcosign.models.policy import Proposal
 MONEY = r"^\d{1,9}(\.\d{1,2})?$"
 PAYPAL_ID = r"^[A-Z0-9-]{1,64}$"
 REQUEST_ID = r"^[A-Za-z0-9._:-]{1,38}$"
+MESSAGE_ID = r"^msg-[a-f0-9]{16}$"
 
 _STRICT = ConfigDict(extra="forbid", frozen=True)
 
@@ -29,6 +30,7 @@ class ProposalIn(BaseModel):
     reference: str | None = Field(default=None, min_length=1, max_length=64)
     claimed_captured: str | None = Field(default=None, pattern=MONEY)
     claimed_refunded: str | None = Field(default=None, pattern=MONEY)
+    message_id: str | None = Field(default=None, pattern=MESSAGE_ID)
 
     def to_proposal(self) -> Proposal:
         """Convert to the domain object, with money as exact decimals."""
@@ -48,6 +50,7 @@ class ProposalIn(BaseModel):
             reference=self.reference,
             claimed_captured=money(self.claimed_captured),
             claimed_refunded=money(self.claimed_refunded),
+            message_id=self.message_id,
         )
 
 

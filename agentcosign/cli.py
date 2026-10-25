@@ -8,6 +8,10 @@
     python -m agentcosign.cli propose --order ORDER_ID --amount 10.00
         Submit a refund proposal as the agent, the way an AI assistant would.
 
+    python -m agentcosign.cli message --text "Order ... never arrived, refund $9"
+        A customer writes in: the message is masked and kept, the AI assistant
+        reads it and proposes a refund, and the gateway checks both.
+
 Both need the gateway secrets set in the environment, because the running server
 and this command must share them.
 """
@@ -22,16 +26,18 @@ from datetime import UTC, datetime
 
 import httpx
 
+from agentcosign.clients.llm import OpenAICompatibleProvider
 from agentcosign.clients.paypal import PayPalClient
 from agentcosign.core.config import Settings, get_settings
 from agentcosign.core.exceptions import AuditIntegrityError
+from agentcosign.services.assistant import Suggestion, suggest
 from agentcosign.services.gateway import (
     issue_token,
 )
 from agentcosign.services.gateway import (
     revoke_approver as revoke_passkeys,
 )
-from agentcosign.wiring import build_gateway, open_ledger, open_passkeys
+from agentcosign.wiring import build_gateway, open_ledger, open_messages, open_passkeys
 
 TIMEOUT_SECONDS = 30
 
@@ -82,6 +88,10 @@ def propose(settings: Settings, order: str, amount: str, request_id: str | None)
         "currency": "USD",
         "order_id": order,
     }
+    return _post_proposal(settings, body)
+
+
+def _post_proposal(settings: Settings, body: dict[str, str]) -> int:
     headers = {"Authorization": f"Bearer {settings.agent_api_key.get_secret_value()}"}
     response = httpx.post(
         f"{settings.public_origin}/v1/proposals",
@@ -92,6 +102,49 @@ def propose(settings: Settings, order: str, amount: str, request_id: str | None)
     _out(f"HTTP {response.status_code}")
     _out(json.dumps(response.json(), indent=2))
     return 0 if response.status_code == 200 else 1
+
+
+def customer_message(settings: Settings, text: str) -> int:
+    """A customer writes in: keep the masked message, let the AI assistant
+    propose a refund for it, and send that proposal to the gateway."""
+    if not _require_shared_secrets(settings, ["agent_api_key", "audit_hmac_key"]):
+        return 1
+    if not settings.groq_api_key.get_secret_value():
+        _out("No model key is set, so the assistant cannot read the message.")
+        return 1
+    message_id = open_messages(settings).add(text, datetime.now(UTC))
+    _out(f"Message kept as {message_id} (masked)")
+    model = OpenAICompatibleProvider(
+        "agent", settings.models.agent, settings.groq_api_key
+    )
+    suggestion = asyncio.run(_suggest(model, open_messages(settings).text(message_id)))
+    if suggestion is None:
+        _out("The assistant proposed no refund. A person should read this message.")
+        return 0
+    _out(
+        f"Assistant proposes {suggestion.amount} {suggestion.currency} "
+        f"on order {suggestion.order_id}"
+    )
+    return _post_proposal(
+        settings,
+        {
+            "request_id": f"msg-{secrets.token_hex(6)}",
+            "tool": "create_refund",
+            "amount": f"{suggestion.amount:.2f}",
+            "currency": suggestion.currency,
+            "order_id": suggestion.order_id,
+            "message_id": message_id,
+        },
+    )
+
+
+async def _suggest(
+    model: OpenAICompatibleProvider, text: str | None
+) -> Suggestion | None:
+    try:
+        return None if text is None else await suggest(model, text)
+    finally:
+        await model.aclose()
 
 
 def stop_refunds(settings: Settings) -> int:
@@ -177,6 +230,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     proposal.add_argument("--order", required=True)
     proposal.add_argument("--amount", required=True)
     proposal.add_argument("--request-id")
+    message = commands.add_parser(
+        "message", help="a customer message, read and proposed by the assistant"
+    )
+    message.add_argument("--text", required=True)
     args = parser.parse_args(argv)
     settings = get_settings()
     if args.command == "enrol-link":
@@ -191,6 +248,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return reconcile(settings)
     if args.command == "verify-head":
         return verify_head(settings, args.seq, args.hash)
+    if args.command == "message":
+        return customer_message(settings, args.text)
     return propose(settings, args.order, args.amount, args.request_id)
 
 

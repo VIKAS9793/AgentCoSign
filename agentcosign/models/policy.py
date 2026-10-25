@@ -45,6 +45,8 @@ class Proposal:
     reference: str | None = None
     claimed_captured: Decimal | None = None
     claimed_refunded: Decimal | None = None
+    # the customer's message this proposal answers, kept by the gateway
+    message_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

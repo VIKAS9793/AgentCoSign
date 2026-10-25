@@ -857,6 +857,9 @@
     if (item.scan_note) {
       box.appendChild(el("p", item.scan_note, "small"));
     }
+    if (item.customer_asked) {
+      box.appendChild(el("p", "From the customer's message (read by AI): " + item.customer_asked, "small"));
+    }
     if (item.safety_check !== "passed") {
       box.appendChild(el("p", "Check the customer, order and amount before you approve.", "small strong"));
     }

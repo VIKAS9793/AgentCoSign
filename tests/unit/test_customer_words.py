@@ -25,7 +25,9 @@ import pytest
 from agentcosign.models.domain import Decision
 from agentcosign.models.policy import CustomerReading, ReadingStatus, Signals
 from agentcosign.services.approval_view import (
+    UNREAD_MESSAGE,
     business_reasons,
+    customer_asked,
     plain_reason,
     short_flag,
 )
@@ -111,3 +113,30 @@ def test_the_card_explains_it_in_the_owners_words() -> None:
     assert "—" not in line
     assert business_reasons([RULE_CUSTOMER_WORDS], rules) == [line]
     assert short_flag([RULE_CUSTOMER_WORDS], rules) == "Check the customer's message"
+
+
+# what was read, and the sentence the merchant sees
+ASKED_LINES = [
+    (
+        MATCH,
+        "Asked for $10.00 back on order ending RD-1. Reason: the item didn't arrive.",
+    ),
+    (replace(MATCH, currency="INR", amount=Decimal("1500")), "1,500.00 INR back"),
+    (replace(MATCH, amount=None), "a refund but didn't say how much"),
+    (replace(MATCH, order_id=None), "without naming an order"),
+    (replace(MATCH, wants_other_destination=True), "sent somewhere else"),
+]
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(("reading", "words"), ASKED_LINES)
+def test_the_card_line_says_what_was_read(reading: CustomerReading, words: str) -> None:
+    line = customer_asked(reading, read=True)
+    assert words in line
+    assert "—" not in line
+    assert not re.search(r"\bR\d+\b", line)
+
+
+def test_an_unread_message_is_said_plainly_and_no_message_says_nothing() -> None:
+    assert customer_asked(None, read=False) == UNREAD_MESSAGE
+    assert customer_asked(None, read=True) == ""

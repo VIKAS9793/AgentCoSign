@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Any
 
 from agentcosign.core.config import PolicySettings
+from agentcosign.models.policy import CustomerReading
 from agentcosign.services.policy_engine import (
     ESCALATE_PRIORITY,
     RULE_EVIDENCE,
@@ -130,6 +131,45 @@ def short_flag(triggered: Sequence[str], policy: PolicySettings) -> str:
         if rule in triggered:
             return flags[rule]
     return "Safety check didn't run" if RULE_SCREENING_DOWN in triggered else ""
+
+
+REASON_WORDS = {
+    "not_received": "the item didn't arrive",
+    "damaged": "the item arrived damaged",
+    "not_as_described": "the item isn't as described",
+    "wrong_item": "the wrong item was sent",
+    "duplicate_charge": "they were charged twice",
+    "refund_not_received": "an earlier refund didn't arrive",
+    "subscription_cancelled": "they were billed after cancelling",
+    "unrecognised_charge": "they don't recognise the charge",
+    "changed_mind": "they changed their mind",
+    "other": "another reason",
+}
+UNREAD_MESSAGE = "We couldn't read the customer's message. Read it yourself first."
+
+
+def customer_asked(reading: CustomerReading | None, read: bool) -> str:
+    """What the customer's own message asked for, as a fixed sentence built from
+    the AI's reading; empty when the request came with no message."""
+    if not read:
+        return UNREAD_MESSAGE
+    if reading is None:
+        return ""
+    if reading.amount is None:
+        amount = "a refund but didn't say how much"
+    elif reading.currency in (None, "USD"):
+        amount = f"${reading.amount:,.2f} back"
+    else:
+        amount = f"{reading.amount:,.2f} {reading.currency} back"
+    if reading.order_id:
+        order = f" on order ending {order_ending(reading.order_id)}"
+    else:
+        order = " without naming an order"
+    reason = REASON_WORDS.get(reading.reason or "other", REASON_WORDS["other"])
+    line = f"Asked for {amount}{order}. Reason: {reason}."
+    if reading.wants_other_destination:
+        line += " They want the money sent somewhere else."
+    return line
 
 
 def money_view(
