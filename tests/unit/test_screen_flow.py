@@ -77,3 +77,16 @@ def test_the_dashboard_folds_settings_and_links_recent_refunds() -> None:
     assert '<details class="fold">' in HTML
     assert 'id="done-list"' not in HTML
     assert '"See recent refunds ("' in JS
+
+
+@pytest.mark.edge
+def test_demo_progress_shows_above_the_scenarios() -> None:
+    """Progress appears where the eyes are, before the list that was tapped."""
+    assert HTML.index('id="demo-progress"') < HTML.index('id="scenario-list"')
+
+
+@pytest.mark.edge
+def test_a_closed_workspace_sends_the_visitor_to_set_up_again() -> None:
+    assert JS.count("response.status === 410") >= 2  # both reads and writes
+    assert "The demo restarted and cleared its test data." in JS
+    assert '"X-Workspace": workspace' in JS

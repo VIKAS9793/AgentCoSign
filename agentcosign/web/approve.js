@@ -25,7 +25,7 @@
   var QUIET_AFTER_READ_MS = 5000;
   var pageBuild = (document.querySelector('meta[name="build"]') || {}).content || "";
   var stale = false;
-  var VIEWS = ["enrol", "signin", "home", "review", "final", "sending", "outcome", "paused-view", "activity", "history"];
+  var VIEWS = ["enrol", "signin", "home", "demo", "review", "final", "sending", "outcome", "paused-view", "activity", "history"];
 
   function say(text) {
     statusBox.textContent = text;
@@ -50,6 +50,14 @@
   function remember(key, value) {
     try {
       window.localStorage.setItem(key, value);
+    } catch (ignored) {
+      return;
+    }
+  }
+
+  function forget(key) {
+    try {
+      window.localStorage.removeItem(key);
     } catch (ignored) {
       return;
     }
@@ -131,16 +139,38 @@
   }
 
   // --- talking to the gateway ------------------------------------------------
+  // On the hosted demo every request names the visitor's own workspace.
+  var workspace = recall("workspace");
+  var demoMode = false;
+
+  function workspaceHeaders() {
+    return workspace ? { "X-Workspace": workspace } : {};
+  }
+
   function sessionHeaders() {
-    return session ? { "X-Approver-Session": session } : {};
+    return Object.assign(workspaceHeaders(), session ? { "X-Approver-Session": session } : {});
+  }
+
+  // The demo slept or restarted and cleared its test data: say so and set up again.
+  function workspaceGone() {
+    workspace = "";
+    forget("workspace");
+    session = null;
+    stopListening();
+    showSetup();
+    say("The demo restarted and cleared its test data. Set up again (about a minute).");
   }
 
   function post(path, body, headers) {
     return fetch(path, {
       method: "POST",
-      headers: Object.assign({ "Content-Type": "application/json" }, headers || {}),
+      headers: Object.assign({ "Content-Type": "application/json" }, workspaceHeaders(), headers || {}),
       body: JSON.stringify(body || {}),
     }).then(function (response) {
+      if (response.status === 410) {
+        workspaceGone();
+        throw new Error("workspace gone");
+      }
       return response.json().then(function (data) {
         if (!response.ok) {
           var failure = new Error(data.detail || "The request was not accepted.");
@@ -154,6 +184,10 @@
 
   function get(path) {
     return fetch(path, { headers: sessionHeaders() }).then(function (response) {
+      if (response.status === 410) {
+        workspaceGone();
+        throw new Error("workspace gone");
+      }
       if (response.status === 401) {
         signedOut();
         throw new Error("signed out");
@@ -420,20 +454,45 @@
   // --- enrolment ---------------------------------------------------------------
   var enrolToken = new URLSearchParams(window.location.hash.slice(1)).get("enrol");
 
+  // On the hosted demo a visitor opens their own workspace first, which comes
+  // with a one-time setup token; elsewhere the token arrives in the link.
+  function ensureWorkspace() {
+    if (!demoMode || enrolToken) {
+      return Promise.resolve();
+    }
+    return post("/v1/demo/workspaces", {}).then(function (data) {
+      workspace = data.workspace;
+      remember("workspace", workspace);
+      enrolToken = data.enrolment;
+    });
+  }
+
+  function showSetup() {
+    if (demoMode) {
+      document.querySelector("#enrol h1").textContent = "Set up this device for test refunds";
+      document.getElementById("enrol-lead").textContent = "Use your fingerprint, face or PIN. It never leaves this device.";
+      show("enrol-demo-note", true);
+      show("enrol-footnote", false);
+      document.getElementById("enrol-button").lastChild.textContent = "Set up this device";
+    }
+    go("enrol");
+  }
+
   function enrol() {
     var name = document.getElementById("enrol-name").value.trim();
     if (!name) {
       say("Please enter your name first.");
       return;
     }
-    var headers = { "X-Enrolment-Token": enrolToken };
     say("Follow the prompt on your screen.");
-    post("/v1/approver/enrolment/options", { approver: name }, headers)
+    ensureWorkspace().then(function () {
+      return post("/v1/approver/enrolment/options", { approver: name }, { "X-Enrolment-Token": enrolToken });
+    })
       .then(function (options) {
         return navigator.credentials.create(creationOptions(options));
       })
       .then(function (credential) {
-        return post("/v1/approver/enrolment", { approver: name, credential: registrationJson(credential) }, headers);
+        return post("/v1/approver/enrolment", { approver: name, credential: registrationJson(credential) }, { "X-Enrolment-Token": enrolToken });
       })
       .then(function () {
         history.replaceState(null, "", window.location.pathname);
@@ -442,9 +501,13 @@
         say("This device is set up. Confirm it's you to open your refunds.");
       })
       .catch(function (error) {
+        if (error && error.status === 429) {
+          say(error.message);
+          return;
+        }
         say(error && error.name === "NotAllowedError"
-          ? "You closed the fingerprint prompt. This phone is not set up yet."
-          : "Set up did not finish. The link may have run out. Ask for a new link.");
+          ? "Set up was cancelled. This device is not set up yet."
+          : demoMode ? "Set up did not finish. Try again." : "Set up did not finish. The link may have run out. Ask for a new link.");
       });
   }
 
@@ -594,6 +657,7 @@
     renderDone(data.done);
     renderSettings(data.settings);
     renderStop(data.refunds_stopped === "yes");
+    show("demo-button", demoMode);
     show("home-loading", false);
     show("home-body", true);
   }
@@ -1771,6 +1835,82 @@
     }
   });
 
+  // --- hosted demo: ready scenarios and the visitor's own message ---------------
+  function openDemo() {
+    go("demo");
+    say("");
+    setDemoProgress("", false);
+    get("/v1/demo/scenarios").then(function (data) {
+      document.getElementById("demo-allowance").textContent =
+        "You can run " + data.per_day + " test scenarios a day.";
+      document.getElementById("own-message").maxLength = data.message_max_chars;
+      fill("scenario-list", data.scenarios, scenarioCard);
+    }).catch(function () {
+      setDemoProgress("Couldn't load the scenarios. Try again.", true);
+    });
+  }
+
+  function scenarioCard(scenario) {
+    var card = el("button", "", "card request-card");
+    card.type = "button";
+    card.appendChild(el("span", scenario.title, "card-name"));
+    card.appendChild(el("span", scenario.shows, "muted small"));
+    card.appendChild(icon("next", "card-go"));
+    card.addEventListener("click", function () {
+      runDemo("/v1/demo/scenarios/" + scenario.key, {});
+    });
+    return card;
+  }
+
+  function setDemoProgress(text, problem) {
+    var line = document.getElementById("demo-progress");
+    line.textContent = text;
+    line.hidden = !text;
+    line.classList.toggle("danger-text", Boolean(problem));
+  }
+
+  function demoBusy(busy) {
+    document.querySelectorAll("#demo button").forEach(function (b) { b.disabled = busy; });
+  }
+
+  function runDemo(path, body) {
+    demoBusy(true);
+    setDemoProgress("Making a test order with PayPal and asking your assistant.", false);
+    post(path, body, sessionHeaders())
+      .then(function (result) {
+        demoBusy(false);
+        openHome().then(function () { toast(demoResult(result)); });
+      })
+      .catch(function (failure) {
+        demoBusy(false);
+        if (failure && failure.status === 401) {
+          signedOut();
+          return;
+        }
+        setDemoProgress((failure && failure.message) || "That didn't go through. No money moved. Try again.", true);
+      });
+  }
+
+  // What happened to the test, in the merchant's words.
+  function demoResult(result) {
+    var outcome = result.outcome;
+    if (!outcome) {
+      return "Your assistant didn't suggest a refund for this message. No money moved.";
+    }
+    if (outcome.decision === "allow") {
+      return outcome.execution === "executed"
+        ? "Refunded on its own. See it in recent refunds."
+        : "Allowed and sent to PayPal. It will show when PayPal confirms.";
+    }
+    if (outcome.decision === "escalate") {
+      return "It needs your approval. It's waiting for you.";
+    }
+    if (outcome.decision === "pause") {
+      return "It's on hold. No money moved.";
+    }
+    return "Refused by your rules. No money moved.";
+  }
+
   // --- start -------------------------------------------------------------------------
   if (!window.PublicKeyCredential) {
     say("This browser can't confirm it's you. Open this page in Chrome.");
@@ -1790,9 +1930,29 @@
       refresh.lastChild.textContent = "Check for new requests";
     });
   });
-  if (enrolToken) {
-    go("enrol");
-  } else {
-    showSignin();
-  }
+  document.getElementById("demo-button").addEventListener("click", openDemo);
+  document.getElementById("own-message-button").addEventListener("click", function () {
+    var text = document.getElementById("own-message").value.trim();
+    if (!text) {
+      setDemoProgress("Write a customer message first.", true);
+      return;
+    }
+    runDemo("/v1/demo/messages", { text: text });
+  });
+  var demoView = document.getElementById("demo");
+  demoView.insertBefore(backLink("Refund requests", openHome), demoView.firstChild);
+
+  // The hosted demo says so in its health report; anything else is the owner's app.
+  fetch("/health").then(function (response) { return response.json(); })
+    .catch(function () { return {}; })
+    .then(function (health) {
+      demoMode = health.environment === "demo";
+      if (enrolToken) {
+        showSetup();
+      } else if (demoMode && !workspace) {
+        showSetup();
+      } else {
+        showSignin();
+      }
+    });
 })();

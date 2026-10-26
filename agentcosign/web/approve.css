@@ -398,7 +398,8 @@ label {
   font-weight: 600;
 }
 
-input {
+input,
+textarea {
   width: 100%;
   min-height: 48px;
   font: inherit;
@@ -802,6 +803,7 @@ button.link.has-icon {
   .home-grid > .section-title:first-child,
   #empty,
   #requests,
+  #demo-button,
   #cant-send-section,
   #paused-section {
     order: 1;
@@ -818,7 +820,8 @@ button.link.has-icon {
     order: 3;
   }
 
-  #refresh-button {
+  #refresh-button,
+  #demo-button {
     align-self: flex-start;
   }
 }
@@ -1035,4 +1038,14 @@ button.link.has-icon {
     margin: 16px 0 0;
     padding: 12px 0;
   }
+}
+
+/* the visitor's own customer message on the demo screen */
+textarea {
+  font: inherit;
+  resize: vertical;
+}
+
+#scenario-list .request-card {
+  margin-top: 10px;
 }

@@ -25,11 +25,12 @@
     <section id="enrol" class="view" hidden>
       <p class="eyebrow">Set up</p>
       <h1>Set up this phone for your refunds</h1>
-      <p class="lead">Your fingerprint or screen lock becomes how you approve money leaving your PayPal account. It never leaves this phone.</p>
+      <p id="enrol-lead" class="lead">Your fingerprint or screen lock becomes how you approve money leaving your PayPal account. It never leaves this phone.</p>
+      <p id="enrol-demo-note" class="footnote caution-text" hidden>Test mode: no real money moves. Test data resets when the demo sleeps; setting up again takes about a minute.</p>
       <label for="enrol-name">Your name</label>
       <input id="enrol-name" type="text" autocomplete="name" maxlength="64" value="">
       <button id="enrol-button" type="button" class="primary">Set up with fingerprint or screen lock</button>
-      <p class="footnote">Test mode: no real money moves</p>
+      <p id="enrol-footnote" class="footnote">Test mode: no real money moves</p>
     </section>
 
     <section id="signin" class="view" hidden>
@@ -65,6 +66,7 @@
           <h2 class="section-title">Waiting for your approval</h2>
           <p id="empty" class="muted" hidden>No refund requests right now. Your assistant will ask when one needs you.</p>
           <div id="requests"></div>
+          <button id="demo-button" type="button" class="primary" hidden>Try a scenario</button>
           <div id="cant-send-section" hidden>
             <h2 class="section-title">Can't be refunded</h2>
             <div id="cant-send-list"></div>
@@ -84,6 +86,17 @@
       </div>
     </section>
 
+    <section id="demo" class="view" hidden>
+      <p class="eyebrow">Demo</p>
+      <h1>Try a scenario</h1>
+      <p class="lead">Each one makes a real PayPal sandbox order, then a customer writes in. Your AI assistant and its checks handle it, and your rules decide.</p>
+      <p id="demo-allowance" class="muted small"></p>
+      <p id="demo-progress" class="progress" role="status" hidden></p>
+      <div id="scenario-list"></div>
+      <label for="own-message">Or write your own customer message</label>
+      <textarea id="own-message" rows="3"></textarea>
+      <button id="own-message-button" type="button" class="secondary">Send as the customer</button>
+    </section>
     <section id="review" class="view" hidden></section>
     <section id="final" class="view" hidden></section>
     <section id="sending" class="view" hidden>
