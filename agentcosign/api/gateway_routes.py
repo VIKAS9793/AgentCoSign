@@ -14,10 +14,20 @@ import json
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import StreamingResponse
 
 from agentcosign.api.site import site_build
+from agentcosign.core import trace
 from agentcosign.core.config import Settings
 from agentcosign.core.exceptions import (
     ConfigurationError,
@@ -45,6 +55,7 @@ from agentcosign.services.workspaces import Workspaces
 router = APIRouter(tags=["Gateway"])
 RequestId = Annotated[str, Path(pattern=REQUEST_ID)]
 ControlIntent = Annotated[str, Path(pattern="^(stop|resume)$")]
+TracePosition = Annotated[int, Query(ge=0)]
 ScenarioKey = Annotated[str, Path(pattern="^(" + "|".join(BY_KEY) + ")$")]
 # PayPal events are small; anything larger is refused before it is parsed
 WEBHOOK_MAX_BYTES = 65_536
@@ -65,11 +76,14 @@ def _gateway(request: Request) -> Gateway:
             status.HTTP_503_SERVICE_UNAVAILABLE, "Gateway is not ready."
         )
     workspace_id = request.headers.get(WORKSPACE_HEADER, "")
-    if not workspace_id:
-        return workspaces.default
-    gateway = workspaces.get(workspace_id)
+    gateway = workspaces.default if not workspace_id else workspaces.get(workspace_id)
     if gateway is None:
         raise HTTPException(status.HTTP_410_GONE, "This test setup has closed.")
+    settings: Settings = request.app.state.settings
+    if settings.env == "demo":
+        # on the hosted demo every step of this request joins the visitor's
+        # live record for the technical view
+        trace.use(workspaces.trace(workspace_id))
     return gateway
 
 
@@ -176,7 +190,41 @@ async def open_workspace(request: Request) -> dict[str, str]:
     gateway = workspaces.get(workspace_id)
     if gateway is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Try again.")
-    return {"workspace": workspace_id, "enrolment": gateway.enrolment_token()}
+    trace.use(workspaces.trace(workspace_id))
+    trace.emit(
+        "workspace",
+        "Private workspace opened",
+        workspace=workspace_id[:11] + "...",
+        storage="its own SQLite database",
+        signing="its own secret, derived from the audit key",
+    )
+    token = gateway.enrolment_token()
+    trace.emit("workspace", "One-time setup token issued (signed, expires soon)")
+    return {"workspace": workspace_id, "enrolment": token}
+
+
+@router.get("/v1/demo/trace", dependencies=[Depends(require_approver_session)])
+async def demo_trace(request: Request, after: TracePosition = 0) -> dict[str, Any]:
+    """Hosted demo only: the visitor's live step record after ``after``."""
+    _demo_only(request)
+    workspaces: Workspaces[Gateway] = request.app.state.workspaces
+    record = workspaces.trace(request.headers.get(WORKSPACE_HEADER, ""))
+    steps = [] if record is None else record.after(after)
+    return {
+        "steps": [
+            {
+                "seq": s.seq,
+                "at": s.at,
+                "layer": s.layer,
+                "title": s.title,
+                "status": s.status,
+                "ms": s.ms,
+                "detail": dict(s.detail),
+            }
+            for s in steps
+        ],
+        "last": steps[-1].seq if steps else after,
+    }
 
 
 def _demo_only(request: Request) -> Settings:

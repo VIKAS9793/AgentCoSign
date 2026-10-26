@@ -18,6 +18,7 @@ from decimal import Decimal
 
 from agentcosign.clients.llm import LLMProvider
 from agentcosign.clients.paypal import PayPalClient
+from agentcosign.core import trace
 from agentcosign.core.exceptions import (
     LimitReachedError,
     ModelUnavailableError,
@@ -144,6 +145,9 @@ class ScenarioRunner:
     ) -> ScenarioResult:
         """Run one ready scenario in the visitor's workspace."""
         scenario = BY_KEY[key]
+        trace.emit(
+            "demo", f"Scenario started: {scenario.title}", expects=scenario.shows
+        )
         return await self._run(
             gateway, workspace, scenario.paid, scenario.buyer, scenario.message
         )
@@ -152,6 +156,7 @@ class ScenarioRunner:
         self, gateway: Gateway, workspace: str, text: str
     ) -> ScenarioResult:
         """Run a visitor's own message against a fresh test order."""
+        trace.emit("demo", "Scenario started: the visitor's own message")
         return await self._run(
             gateway,
             workspace,

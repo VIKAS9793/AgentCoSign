@@ -32,6 +32,7 @@ from functools import partial
 from typing import Any
 
 from agentcosign.clients.paypal import PayPalClient
+from agentcosign.core import trace
 from agentcosign.core.config import (
     ApprovalSettings,
     AuditSettings,
@@ -523,7 +524,9 @@ class Gateway:
 
     def enrol(self, approver: str, credential: dict[str, Any]) -> str:
         """Finish enrolling an approver passkey."""
-        return self._passkeys.register(approver, credential, self._clock())
+        digest = self._passkeys.register(approver, credential, self._clock())
+        trace.emit("passkey", "Passkey registered (public key stored, WebAuthn)")
+        return digest
 
     def session_options(self) -> str:
         """Passkey challenge for opening an approver session to view requests."""
@@ -540,6 +543,7 @@ class Gateway:
         token = self._token(
             "approver-session", approver.credential_digest, self._session_seconds
         )
+        trace.emit("passkey", "Passkey signature verified: session opened")
         return token, display_name(approver.name)
 
     def session_minutes(self) -> int:
@@ -1072,6 +1076,12 @@ class Gateway:
         digest = self._pending_digest(request_id, intent)
         approver = self._passkeys.verify_approval(
             request_id, intent, digest, credential, now
+        )
+        trace.emit(
+            "passkey",
+            f"Passkey signature verified for {intent}",
+            request=request_id,
+            signed_digest=digest[:12],
         )
         detail = {
             "assurance": "passkey",

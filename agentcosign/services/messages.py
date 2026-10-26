@@ -19,6 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from agentcosign.core import trace
 from agentcosign.models.policy import (
     CustomerReading,
     ReadingStatus,
@@ -130,6 +131,14 @@ class MessageStore:
             conn.execute(
                 _Q_ADD, (message_id, masked.text, digest, counts, now.isoformat())
             )
+        removed = ", ".join(f"{n} {kind}" for kind, n in masked.counts.items())
+        trace.emit(
+            "message",
+            "Customer message masked and kept",
+            masked=removed or "nothing to mask",
+            text=masked.text,
+            digest=digest[:12],
+        )
         return message_id
 
     def text(self, message_id: str) -> str | None:

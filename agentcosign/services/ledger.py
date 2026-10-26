@@ -30,6 +30,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from agentcosign.core import trace
 from agentcosign.core.config import PolicySettings, ScreeningSettings
 from agentcosign.core.exceptions import AuditIntegrityError, FailClosedError
 from agentcosign.models.domain import Decision, PolicyResult, ToolAction
@@ -544,6 +545,8 @@ class Ledger:
             raise FailClosedError("the audit key must be at least 32 bytes")
         self._path = str(path)
         self._secret = secret
+        # record entries per open transaction, reported once it commits
+        self._unreported: dict[int, list[tuple[int, str, str, str]]] = {}
         self._policy = policy
         self._account = expected_account_id
         # the newest chain entry already checked, so a request's history checks
@@ -599,13 +602,19 @@ class Ledger:
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             committed = False
+            self._unreported[id(conn)] = []
             try:
                 yield conn
                 conn.execute("COMMIT")
                 committed = True
             finally:
+                entries = self._unreported.pop(id(conn), [])
                 if not committed:
                     conn.execute("ROLLBACK")
+                else:
+                    # an entry is reported only once it is really in the record
+                    for seq, event, entry, prev in entries:
+                        _report_entry(seq, event, entry, prev)
 
     # ----------------------------------------------------------- emergency stop
 
@@ -719,11 +728,19 @@ class Ledger:
             if storable:
                 row = conn.execute(_Q_GET, (proposal.request_id,)).fetchone()
                 if row is not None:
+                    trace.emit("rules", "Repeated request: earlier decision replayed")
                     return self._replay(row, digest)
             context = self._context(conn, proposal, evidence, now)
-            result = evaluate(
-                proposal, evidence, context, signals, self._policy, screening, now
-            )
+            # reported here, so the decision shows before the entry that keeps it
+            with trace.timed("rules", "Policy engine decided") as step:
+                result = evaluate(
+                    proposal, evidence, context, signals, self._policy, screening, now
+                )
+                step.update(
+                    decision=result.decision.value,
+                    deciding_rule=result.rule_id,
+                    triggered=", ".join(result.triggered_rules),
+                )
             if not storable:
                 return Recorded(proposal.request_id, None, result)
             state = STATE_FOR_DECISION[result.decision]
@@ -1537,7 +1554,15 @@ class Ledger:
         text = canonical_json(body)
         entry = _entry_hash(prev, created_at, request_id, event, text)
         mac = hmac.new(self._secret, entry.encode("ascii"), hashlib.sha256).hexdigest()
-        conn.execute(_Q_APPEND, (created_at, request_id, event, text, prev, entry, mac))
+        cursor = conn.execute(
+            _Q_APPEND, (created_at, request_id, event, text, prev, entry, mac)
+        )
+        seq = int(cursor.lastrowid or 0)
+        pending = self._unreported.get(id(conn))
+        if pending is None:
+            _report_entry(seq, event, entry, prev)
+        else:
+            pending.append((seq, event, entry, prev))
 
     def verify_chain(self) -> int:
         """Check every link and authentication tag; return the number of entries.
@@ -1794,3 +1819,14 @@ def _audit_body(
         "state": state.value,
         **({"release_at": _iso(result.release_at)} if result.release_at else {}),
     }
+
+
+def _report_entry(seq: int, event: str, entry: str, prev: str) -> None:
+    """Say that an entry joined the tamper-evident record, and what it links to."""
+    trace.emit(
+        "ledger",
+        f"Record entry #{seq}: {event}",
+        hash=entry[:12],
+        links_to=prev[:12],
+        sealed="SHA-256 chain + HMAC",
+    )

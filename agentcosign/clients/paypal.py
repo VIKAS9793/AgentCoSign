@@ -22,6 +22,7 @@ from typing import Any, Protocol
 import httpx
 from pydantic import SecretStr
 
+from agentcosign.core import trace
 from agentcosign.core.exceptions import PayPalClientError
 from agentcosign.models.policy import REQUEST_ID_PATTERN
 
@@ -187,6 +188,7 @@ class LivePayPalClient:
             }
             if request_id:
                 headers[REQUEST_ID_HEADER] = request_id
+            started = time.monotonic()
             try:
                 response = await self._http.request(
                     method,
@@ -197,10 +199,12 @@ class LivePayPalClient:
                     timeout=TIMEOUT_SECONDS,
                 )
             except httpx.HTTPError as exc:
+                _report_call(method, path, started, None, request_id)
                 raise PayPalClientError(
                     "PayPal could not be reached",
                     {"error": type(exc).__name__, "retryable": True},
                 ) from exc
+            _report_call(method, path, started, response.status_code, request_id)
             if response.status_code == 401 and attempt == 0:
                 self._token = None  # expired early: fetch a new token once
                 continue
@@ -368,6 +372,7 @@ class RecordedPayPalClient:
 
     async def get_order(self, order_id: str) -> JsonObject:
         """Return the recorded order, including refunds made since."""
+        trace.emit("paypal", f"PayPal (recorded) GET /v2/checkout/orders/{order_id}")
         order = self._orders.get(checked_id(order_id, "order"))
         if order is None:
             raise PayPalClientError(
@@ -384,6 +389,11 @@ class RecordedPayPalClient:
         self, capture_id: str, amount: Decimal, currency: str, request_id: str
     ) -> JsonObject:
         """Simulate an idempotent refund against a recorded capture."""
+        trace.emit(
+            "paypal",
+            f"PayPal (recorded) POST /v2/payments/captures/{capture_id}/refund",
+            request_id=request_id,
+        )
         capture = checked_id(capture_id, "capture")
         request_id = checked_request_id(request_id)
         if request_id in self._writes:
@@ -402,6 +412,7 @@ class RecordedPayPalClient:
         self, amount: Decimal, currency: str, buyer: str, request_id: str
     ) -> str:
         """Simulate a captured test order, readable like a real one afterwards."""
+        trace.emit("paypal", "PayPal (recorded) POST /v2/checkout/orders")
         request_id = checked_request_id(request_id)
         order_id = "TEST" + _short_id(request_id)
         if order_id not in self._orders:
@@ -486,3 +497,22 @@ def _recorded_order(
             "card": {"brand": "VISA", "last_digits": "1111", "name": buyer}
         },
     }
+
+
+def _report_call(
+    method: str,
+    path: str,
+    # guardrail: allow float-annotation -- monotonic seconds, not money
+    started: float,
+    status: int | None,
+    request_id: str | None,
+) -> None:
+    """One PayPal call for the live step record: no bodies, no credentials."""
+    trace.emit(
+        "paypal",
+        f"PayPal sandbox {method} {path}",
+        trace.OK if status is not None and status < 400 else trace.FAIL,
+        int((time.monotonic() - started) * 1000),
+        http="unreachable" if status is None else status,
+        request_id=request_id or "",
+    )

@@ -17,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from agentcosign.clients.llm import LLMProvider
+from agentcosign.core import trace
 from agentcosign.core.exceptions import ModelUnavailableError
 from agentcosign.models.policy import (
     CustomerReading,
@@ -171,4 +172,46 @@ class CustomerChecks:
             reading_status=status,
             reading=reading,
         )
-        return signals, {**g, **s, **r}
+        record = {**g, **s, **r}
+        _report(signals, record)
+        return signals, record
+
+
+def _report(signals: Signals, record: dict[str, str]) -> None:
+    """Say what each check found, for the live step record."""
+    _report_guard(signals.prescreen_hit, record.get("guard", "could not run"))
+    _report_screening(signals.screening, record.get("screening_model", ""))
+    _report_reading(signals.reading, record.get("reading_model", ""))
+
+
+def _report_guard(flagged: bool, score: str) -> None:
+    if flagged:
+        trace.emit("ai", "Prompt guard: attack wording found", trace.FAIL, score=score)
+    elif score == "could not run":
+        trace.emit("ai", "Prompt guard could not run", trace.WARN)
+    else:
+        trace.emit("ai", "Prompt guard: no attack wording", score=score)
+
+
+def _report_screening(verdict: ScreeningVerdict, model: str) -> None:
+    status = {
+        ScreeningVerdict.CLEAN: trace.OK,
+        ScreeningVerdict.INJECTION: trace.FAIL,
+    }.get(verdict, trace.WARN)
+    trace.emit("ai", f"Safety screening: {verdict.value}", status, model=model)
+
+
+def _report_reading(reading: CustomerReading | None, model: str) -> None:
+    if reading is None:
+        trace.emit("ai", "Reading the customer's words could not run", trace.WARN)
+        return
+    trace.emit(
+        "ai",
+        "Customer's words read",
+        order=reading.order_id or "none named",
+        amount="none named" if reading.amount is None else reading.amount,
+        currency=reading.currency or "",
+        reason=reading.reason or "",
+        money_elsewhere="yes" if reading.wants_other_destination else "no",
+        model=model,
+    )

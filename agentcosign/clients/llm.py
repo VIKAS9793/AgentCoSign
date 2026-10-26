@@ -21,6 +21,7 @@ from typing import Any, Protocol
 import httpx
 from pydantic import SecretStr
 
+from agentcosign.core import trace
 from agentcosign.core.config import ModelRoleConfig
 from agentcosign.core.exceptions import ModelUnavailableError
 
@@ -28,6 +29,13 @@ GROQ_BASE = "https://api.groq.com/openai/v1"
 # a rate-limited model that names no retry time rests for this long
 DEFAULT_REST_SECONDS = 60.0
 CUT_OFF = "length"
+# how each role is named in the live step record
+ROLE_NAMES = {
+    "agent": "Assistant",
+    "screening": "Safety screening",
+    "extraction": "Reading the customer's words",
+    "guard": "Prompt guard",
+}
 
 Message = Mapping[str, str]
 
@@ -118,7 +126,17 @@ class OpenAICompatibleProvider:
             left = deadline - self._clock()
             if left <= 0:
                 break
+            started = self._clock()
             answer = await self._ask(model, messages, left, primary)
+            name = ROLE_NAMES.get(self._role, self._role)
+            trace.emit(
+                "ai",
+                f"{name} model answered" if answer else f"{name} model gave no answer",
+                trace.OK if answer else trace.WARN,
+                int((self._clock() - started) * 1000),
+                model=model,
+                role="primary" if primary else "fallback",
+            )
             if answer is not None:
                 return answer
         raise ModelUnavailableError(

@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 from agentcosign.core.config import DemoSettings
 from agentcosign.core.exceptions import LimitReachedError
+from agentcosign.core.trace import Trace
 
 WORKSPACE_ID = re.compile(r"^ws-[0-9a-f]{32}$")
 DAY_SECONDS = 24 * 3600
@@ -39,6 +40,9 @@ class Workspaces[G]:
         self._limits = limits
         self._clock = clock
         self._open: OrderedDict[str, G] = OrderedDict()
+        # each workspace's live step record, for the technical view
+        self._traces: dict[str, Trace] = {}
+        self._default_trace = Trace()
         # guardrail: allow float-annotation -- wall-clock seconds, not money
         self._setups: dict[str, list[float]] = {}
         self._lock = threading.Lock()
@@ -55,8 +59,10 @@ class Workspaces[G]:
             self._setups[address] = [*recent, now]
             workspace_id = f"ws-{secrets.token_hex(16)}"
             self._open[workspace_id] = self._build(workspace_id)
+            self._traces[workspace_id] = Trace()
             while len(self._open) > self._limits.max_workspaces:
-                self._open.popitem(last=False)  # the least recently used closes
+                closed, _ = self._open.popitem(last=False)  # least recently used
+                self._traces.pop(closed, None)
             return workspace_id
 
     def get(self, workspace_id: str) -> G | None:
@@ -68,6 +74,13 @@ class Workspaces[G]:
             if gateway is not None:
                 self._open.move_to_end(workspace_id)
             return gateway
+
+    def trace(self, workspace_id: str) -> Trace | None:
+        """The workspace's live step record (the owner's for an empty id)."""
+        if not workspace_id:
+            return self._default_trace
+        with self._lock:
+            return self._traces.get(workspace_id)
 
     def live(self) -> list[G]:
         """Every workspace background work must cover, the owner's first."""
