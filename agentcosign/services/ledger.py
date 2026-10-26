@@ -48,8 +48,23 @@ from agentcosign.services.policy_engine import (
     VELOCITY_WINDOW,
     check_execution_drift,
     evaluate,
+    rule_title,
 )
 from agentcosign.services.reconciliation import Known, OurRefund
+
+# a decision as an action, for anyone reading the live step record
+DECISION_WORDS = {
+    Decision.ALLOW: "send automatically",
+    Decision.ESCALATE: "ask the merchant",
+    Decision.PAUSE: "hold, then decide again",
+    Decision.DENY: "refuse",
+}
+
+
+def rule_titles(rule_ids: Iterable[str]) -> str:
+    """The checks that fired, by what they mean rather than their ids."""
+    return "; ".join(rule_title(rule_id) for rule_id in rule_ids)
+
 
 # an error while deciding stops the request before anything can be sent
 STOPPED_BY_ERROR = "Nothing sent: an error stops the request (fails closed)"
@@ -742,9 +757,9 @@ class Ledger:
                     proposal, evidence, context, signals, self._policy, screening, now
                 )
                 step.update(
-                    decision=result.decision.value,
-                    deciding_rule=result.rule_id,
-                    triggered=", ".join(result.triggered_rules),
+                    decision=DECISION_WORDS[result.decision],
+                    why=result.explanation,
+                    checks_that_fired=rule_titles(result.triggered_rules),
                 )
             if not storable:
                 return Recorded(proposal.request_id, None, result)

@@ -105,6 +105,12 @@ _RULE_TITLES = {
     RULE_CUSTOMER_WORDS: "The customer's own words do not support sending this alone",
 }
 
+
+def rule_title(rule_id: str) -> str:
+    """What a rule means, in words, for anyone reading a decision."""
+    return _RULE_TITLES.get(rule_id, "Unknown check")
+
+
 # Reasons whose truth PayPal's record for the order cannot show: a second charge
 # elsewhere, an earlier refund, a charge the cardholder disowns, a return.
 UNPROVABLE_REASONS = frozenset(

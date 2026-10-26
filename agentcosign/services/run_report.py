@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from agentcosign.core import trace
 from agentcosign.models.domain import Decision
-from agentcosign.services.policy_engine import RULE_INJECTION
+from agentcosign.services.policy_engine import RULE_INJECTION, rule_title
 
 AUTOMATICALLY = "automatically"
 AFTER_APPROVAL = "after the merchant's fingerprint or PIN"
@@ -105,7 +105,7 @@ def finish(begun: Begun, ending: Ending, how: str) -> None:
         status,
         int((time.monotonic() - begun.started) * 1000),
         money_moved=moved,
-        triggered=", ".join(ending.triggered),
+        checks_that_fired="; ".join(rule_title(r) for r in ending.triggered),
         steps=len(steps),
         paypal_calls=layers.count("paypal"),
         ai_steps=layers.count("ai"),

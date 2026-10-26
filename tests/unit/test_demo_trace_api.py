@@ -17,9 +17,11 @@ Edge cases (written before the code):
 | An attack in the message | Named, and nothing moved |
 | An approval with a fingerprint or PIN | Its own closing step after the refund |
 | A PayPal call | Carries PayPal's own id and status for what it returned |
+| Any step, any outcome | Rules named by what they mean, never by an internal id |
 """
 
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -86,7 +88,7 @@ def test_a_scenario_shows_every_layer_in_order(demo: Env) -> None:
         assert layer in layers
     assert layers.index("demo") < layers.index("rules") < layers.index("ledger")
     decided = next(s for s in steps if s["layer"] == "rules")
-    assert decided["detail"]["decision"] == "allow"
+    assert decided["detail"]["decision"] == "send automatically"
     assert [s["seq"] for s in steps] == sorted({s["seq"] for s in steps})
 
 
@@ -210,3 +212,16 @@ def test_health_says_whether_the_models_are_live(tmp_path: Path) -> None:
         settings = env.settings.model_copy(update={"groq_api_key": SecretStr(key)})
         with TestClient(create_app(settings, env.paypal)) as client:
             assert client.get("/health").json()["ai_models"] == expected
+
+
+@pytest.mark.edge
+def test_no_step_names_a_rule_by_its_internal_id(demo: Env) -> None:
+    session = demo.session()
+    _state(demo).scenarios = _runner(demo, "9.00")
+    _checks(demo, "manipulation", "9.00")
+    demo.client.post("/v1/demo/scenarios/fake_system", headers=session)
+    steps = _read(demo, session)["steps"]
+    assert not re.search(r"\bR\d{1,2}\b", json.dumps(steps))
+    decided = next(s for s in steps if s["layer"] == "rules")
+    assert decided["detail"]["decision"] == "refuse"
+    assert "injection" in decided["detail"]["checks_that_fired"]
