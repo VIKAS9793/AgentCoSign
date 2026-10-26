@@ -1150,6 +1150,10 @@ textarea {
   font-size: 14px;
 }
 
+.trace-links {
+  margin: 12px 0 0;
+}
+
 .trace-stages {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1179,6 +1183,19 @@ textarea {
   background: var(--chip);
   color: var(--ink);
   font-weight: 700;
+}
+
+.trace-stages li b {
+  display: grid;
+  gap: 2px;
+  font-weight: 700;
+}
+
+.trace-stages li small {
+  font: 400 14px/1.3 var(--sans, inherit);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-muted);
 }
 
 .trace-stages li.seen {
@@ -1266,6 +1283,59 @@ textarea {
 
 .trace-step.fail .trace-title {
   color: var(--danger);
+}
+
+.trace-safe {
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  border-left: 3px solid var(--ink);
+  background: var(--surface);
+  font-weight: 700;
+}
+
+.trace-outcome {
+  margin: 12px 0;
+  padding: 14px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.trace-outcome.warn {
+  border-color: var(--caution);
+}
+
+.trace-outcome.fail {
+  border-color: var(--danger);
+}
+
+.trace-outcome .trace-kicker {
+  color: var(--signal);
+}
+
+.trace-headline {
+  margin: 6px 0 10px;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.trace-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+  font: 14px/1.4 var(--mono);
+}
+
+.trace-facts dt {
+  color: var(--ink-muted);
+}
+
+.trace-facts dd {
+  margin: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .trace-detail summary {

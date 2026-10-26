@@ -14,6 +14,9 @@ Edge cases (written before the change):
 | Behind the scenes, laptop | The app and the backend side by side |
 | Behind the scenes, steps | Shown as text only, never as markup |
 | Behind the scenes, sign-out or reset | Polling stops; a new setup starts over |
+| Behind the scenes, failed step | Where the money stands, before the step's title |
+| Behind the scenes, end of a run | One outcome block with the server's headline |
+| Behind the scenes, connections | From the server's health report, never assumed |
 
 Phone and laptop rendering is checked in Chrome at both widths; these tests
 keep the rules from being undone silently.
@@ -135,3 +138,29 @@ def test_behind_the_scenes_stops_on_sign_out_and_starts_over_on_reset() -> None:
     script = _trace_script()
     assert "setInterval" not in script
     assert "if (!session || traceBusy)" in script  # one read in flight at a time
+
+
+@pytest.mark.edge
+def test_a_failed_step_says_where_the_money_stands_first() -> None:
+    script = _trace_script()
+    item = script[script.index("function stepItem(step)") :]
+    assert item.index('"trace-safe"') < item.index('"trace-title"')
+    assert 'k !== "safe"' in item  # not repeated in the folded details
+
+
+@pytest.mark.edge
+def test_a_run_ends_with_the_servers_outcome_block() -> None:
+    script = _trace_script()
+    assert 'step.layer === "outcome" ? outcomeCard(step) : stepItem(step)' in script
+    card = script[script.index("function outcomeCard(step)") :]
+    assert 'el("p", step.title, "trace-headline")' in card
+    assert '["Money moved", d.money_moved]' in card
+
+
+@pytest.mark.edge
+def test_connections_come_from_the_servers_health_report() -> None:
+    script = _trace_script()
+    assert 'serverModes.paypal_execution === "sandbox"' in script
+    assert 'serverModes.ai_models === "live"' in script
+    assert "serverModes = health;" in JS
+    assert 'id="trace-links"' in HTML

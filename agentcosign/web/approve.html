@@ -123,11 +123,12 @@
       <span class="trace-pill">Sandbox only</span>
       <button id="trace-close" type="button" class="trace-close">Close</button>
     </div>
+    <dl id="trace-links" class="trace-facts trace-links" aria-label="Connections"></dl>
     <ol class="trace-stages">
-      <li data-stage="propose"><span>01</span>Propose</li>
-      <li data-stage="policy"><span>02</span>Policy check</li> <!-- // guardrail: allow merchant-jargon -- technical view for reviewers, never shown to merchants -->
-      <li data-stage="cosign"><span>03</span>Passkey co-sign</li> <!-- // guardrail: allow merchant-jargon -- technical view for reviewers, never shown to merchants -->
-      <li data-stage="record"><span>04</span>Signed record</li>
+      <li data-stage="propose"><span>01</span><b>Propose<small>The AI only proposes; it holds no PayPal keys</small></b></li>
+      <li data-stage="policy"><span>02</span><b>Policy check<small>Plain code decides, never a model</small></b></li> <!-- // guardrail: allow merchant-jargon -- technical view for reviewers, never shown to merchants -->
+      <li data-stage="cosign"><span>03</span><b>Passkey co-sign<small>A fingerprint or PIN signs this exact refund</small></b></li> <!-- // guardrail: allow merchant-jargon -- technical view for reviewers, never shown to merchants -->
+      <li data-stage="record"><span>04</span><b>Signed record<small>Tamper-evident: every entry seals the one before</small></b></li>
     </ol>
     <p class="trace-note">Live from this demo's server: real PayPal sandbox calls, the AI models, the rules and the tamper-evident record, as they happen. Merchants never see this panel.</p>
     <ol id="trace-list" class="trace-list" aria-live="polite"></ol>

@@ -1921,18 +1921,36 @@
   // --- behind the scenes: the backend's live steps, for technical reviewers ----
   // Merchants never see this; it is the demo's own record of what the server did.
   var TRACE_POLL_MS = 1500;
+  var MS_PER_SECOND = 1000;
   var traceTimer = null;
   var traceBusy = false;
   var traceLast = 0;
+  var serverModes = {};
   var STAGE_OF = { demo: "propose", workspace: "propose", message: "propose", ai: "propose", rules: "policy", passkey: "cosign", ledger: "record" };
   var STAGE_LABEL = { propose: "01 Propose", policy: "02 Policy check", cosign: "03 Passkey co-sign", record: "04 Signed record" }; // guardrail: allow merchant-jargon -- technical view, never shown to merchants
-  var LAYER_LABEL = { paypal: "PayPal sandbox", ai: "AI", rules: "Rules engine", ledger: "Record", passkey: "Passkey", message: "Message", workspace: "Workspace", demo: "Demo" };
+  var LAYER_LABEL = { paypal: "PayPal sandbox", ai: "AI", rules: "Rules engine", ledger: "Record", passkey: "Passkey", message: "Message", workspace: "Workspace", demo: "Demo", outcome: "Outcome" };
   var STATUS_MARK = { ok: "\u2713", warn: "!", fail: "\u2715" };
+
+  // what this server is connected to, from its own health report (no extra calls)
+  function showLinks() {
+    var links = document.getElementById("trace-links");
+    links.textContent = "";
+    [
+      ["PayPal", serverModes.paypal_execution === "sandbox"
+        ? "live sandbox, api-m.sandbox.paypal.com"
+        : "recorded answers, no live calls"],
+      ["AI models", serverModes.ai_models === "live" ? "live on Groq" : "off"]
+    ].forEach(function (pair) {
+      links.appendChild(el("dt", pair[0], ""));
+      links.appendChild(el("dd", pair[1], ""));
+    });
+  }
 
   function openTrace() {
     if (traceTimer || traceBusy) {
       return;
     }
+    showLinks();
     remember("trace", "on");
     document.body.classList.add("trace-on");
     show("trace", true);
@@ -1990,6 +2008,39 @@
   function addStep(step) {
     var panel = document.getElementById("trace");
     var atBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 80;
+    var item = step.layer === "outcome" ? outcomeCard(step) : stepItem(step);
+    document.getElementById("trace-list").appendChild(item);
+    show("trace-empty", false);
+    if (atBottom) {
+      panel.scrollTop = panel.scrollHeight;
+    }
+  }
+
+  // the closing block of a run: what happened to the money, from the server
+  function outcomeCard(step) {
+    var d = step.detail || {};
+    var item = el("li", "", "trace-outcome " + step.status);
+    item.appendChild(el("p", "Outcome", "trace-kicker"));
+    item.appendChild(el("p", step.title, "trace-headline"));
+    var facts = el("dl", "", "trace-facts");
+    [
+      ["Money moved", d.money_moved],
+      ["Took", step.ms === null || step.ms === undefined ? "" : (step.ms / MS_PER_SECOND).toFixed(1) + " s"],
+      ["PayPal calls", d.paypal_calls],
+      ["AI steps", d.ai_steps],
+      ["Record entries", d.record_entries],
+      ["Rules triggered", d.triggered]
+    ].forEach(function (pair) {
+      if (pair[1]) {
+        facts.appendChild(el("dt", pair[0], ""));
+        facts.appendChild(el("dd", pair[1], ""));
+      }
+    });
+    item.appendChild(facts);
+    return item;
+  }
+
+  function stepItem(step) {
     var item = el("li", "", "trace-step " + step.status);
     var row = el("div", "", "trace-row");
     row.appendChild(el("span", STATUS_MARK[step.status] || "", "trace-mark"));
@@ -2004,8 +2055,11 @@
       row.appendChild(el("span", step.ms + " ms", "trace-ms"));
     }
     item.appendChild(row);
+    if (step.detail && step.detail.safe) {
+      item.appendChild(el("p", step.detail.safe, "trace-safe")); // where the money stands, first
+    }
     item.appendChild(el("p", step.title, "trace-title"));
-    var keys = Object.keys(step.detail || {}).filter(function (k) { return step.detail[k] !== ""; });
+    var keys = Object.keys(step.detail || {}).filter(function (k) { return k !== "safe" && step.detail[k] !== ""; });
     if (keys.length) {
       var more = el("details", "", "trace-detail");
       more.appendChild(el("summary", "Details", ""));
@@ -2017,11 +2071,7 @@
       more.appendChild(list);
       item.appendChild(more);
     }
-    document.getElementById("trace-list").appendChild(item);
-    show("trace-empty", false);
-    if (atBottom) {
-      panel.scrollTop = panel.scrollHeight;
-    }
+    return item;
   }
 
   function markStage(stage) {
@@ -2085,6 +2135,7 @@
     .catch(function () { return {}; })
     .then(function (health) {
       demoMode = health.environment === "demo";
+      serverModes = health;
       if (enrolToken) {
         showSetup();
       } else if (demoMode && !workspace) {
