@@ -72,6 +72,12 @@ class Trace:
         with self._lock:
             return [step for step in self._steps if step.seq > seq]
 
+    @property
+    def last(self) -> int:
+        """The number of the newest step (0 before any)."""
+        with self._lock:
+            return self._seq
+
 
 _current: ContextVar[Trace | None] = ContextVar("trace", default=None)
 
@@ -94,16 +100,36 @@ def emit(
         trace.add(layer, title, status, ms, {k: str(v) for k, v in detail.items()})
 
 
+def position() -> int:
+    """The newest step number in the current workspace's record (0 if none)."""
+    trace = _current.get()
+    return 0 if trace is None else trace.last
+
+
+def since(seq: int) -> list[Step]:
+    """The current workspace's steps newer than ``seq`` (none if not traced)."""
+    trace = _current.get()
+    return [] if trace is None else trace.after(seq)
+
+
+def active() -> bool:
+    """Whether this request's steps are being kept."""
+    return _current.get() is not None
+
+
 @contextmanager
-def timed(layer: str, title: str, **detail: object) -> Iterator[dict[str, object]]:
-    """Report a step with its duration; a failure is reported as failed and
-    raised again. The caller may add details to the yielded mapping."""
+def timed(
+    layer: str, title: str, on_fail: str = "", **detail: object
+) -> Iterator[dict[str, object]]:
+    """Report a step with its duration; a failure is reported as failed, with
+    ``on_fail`` saying where things stand, and raised again. The caller may add
+    details to the yielded mapping."""
     extra: dict[str, object] = {}
     started = time.monotonic()
     try:
         yield extra
     except Exception:  # guardrail: allow blind-except -- reported, then raised again
-        emit(layer, title, FAIL, _elapsed(started), **detail, **extra)
+        emit(layer, title, FAIL, _elapsed(started), **detail, **extra, safe=on_fail)
         raise
     emit(layer, title, OK, _elapsed(started), **detail, **extra)
 

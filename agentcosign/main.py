@@ -170,6 +170,7 @@ def _register_system_routes(
             "hermetic": settings.is_hermetic,
             "replay_mode": settings.replay_mode,
             "paypal_execution": settings.paypal_execution,
+            "ai_models": "live" if settings.has_live_models else "off",
             "capacity": guard.capacity_mode(monotonic_ms()).value,
         }
 

@@ -184,26 +184,48 @@ def _report(signals: Signals, record: dict[str, str]) -> None:
     _report_reading(signals.reading, record.get("reading_model", ""))
 
 
+# where things stand after each finding, as the rules will treat it
+ATTACK_REFUSED = "Attack found: the rules refuse this request, nothing is sent"
+NOT_ON_ITS_OWN = "Could not run: the merchant decides, nothing goes out on its own"
+SCREENING_STILL_RUNS = "The safety screening still checks the message"
+
+
 def _report_guard(flagged: bool, score: str) -> None:
     if flagged:
-        trace.emit("ai", "Prompt guard: attack wording found", trace.FAIL, score=score)
+        trace.emit(
+            "ai",
+            "Prompt guard: attack wording found",
+            trace.WARN,
+            score=score,
+            safe=ATTACK_REFUSED,
+        )
     elif score == "could not run":
-        trace.emit("ai", "Prompt guard could not run", trace.WARN)
+        trace.emit(
+            "ai", "Prompt guard could not run", trace.WARN, safe=SCREENING_STILL_RUNS
+        )
     else:
         trace.emit("ai", "Prompt guard: no attack wording", score=score)
 
 
 def _report_screening(verdict: ScreeningVerdict, model: str) -> None:
-    status = {
-        ScreeningVerdict.CLEAN: trace.OK,
-        ScreeningVerdict.INJECTION: trace.FAIL,
-    }.get(verdict, trace.WARN)
-    trace.emit("ai", f"Safety screening: {verdict.value}", status, model=model)
+    safe = {
+        ScreeningVerdict.CLEAN: "",
+        ScreeningVerdict.INJECTION: ATTACK_REFUSED,
+    }.get(verdict, NOT_ON_ITS_OWN)
+    status = trace.OK if verdict is ScreeningVerdict.CLEAN else trace.WARN
+    trace.emit(
+        "ai", f"Safety screening: {verdict.value}", status, model=model, safe=safe
+    )
 
 
 def _report_reading(reading: CustomerReading | None, model: str) -> None:
     if reading is None:
-        trace.emit("ai", "Reading the customer's words could not run", trace.WARN)
+        trace.emit(
+            "ai",
+            "Reading the customer's words could not run",
+            trace.WARN,
+            safe=NOT_ON_ITS_OWN,
+        )
         return
     trace.emit(
         "ai",

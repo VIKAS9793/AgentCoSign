@@ -464,6 +464,11 @@ class Settings(BaseSettings):
         return urlparse(self.public_origin).hostname or "localhost"
 
     @property
+    def has_live_models(self) -> bool:
+        """True when the AI models are called live (a model key is set)."""
+        return bool(self.groq_api_key.get_secret_value())
+
+    @property
     def is_hermetic(self) -> bool:
         """True when no live external dependency is used for any decision input."""
         return self.replay_mode and self.paypal_execution == "recorded"

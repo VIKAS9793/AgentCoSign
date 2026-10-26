@@ -56,7 +56,7 @@ from agentcosign.models.policy import (
     ScreeningVerdict,
     Signals,
 )
-from agentcosign.services import customer_copy
+from agentcosign.services import customer_copy, run_report
 from agentcosign.services.ai_checks import CustomerChecks
 from agentcosign.services.approval_view import (
     RECENT_DONE,
@@ -1072,6 +1072,32 @@ class Gateway:
         self, request_id: str, intent: str, credential: dict[str, Any]
     ) -> Outcome:
         """Apply a passkey-signed approve or reject, then execute if approved."""
+        begun = run_report.silent_begin()
+        outcome = await self._decide_signed(request_id, intent, credential)
+        await self._report_approval(begun, request_id, outcome)
+        return outcome
+
+    async def _report_approval(
+        self, begun: run_report.Begun, request_id: str, outcome: Outcome
+    ) -> None:
+        """The closing step of an approval or decline, for the live step record."""
+        if not trace.active():
+            return
+        loaded = await asyncio.to_thread(self._ledger.load, request_id)
+        proposal = None if loaded is None else loaded[0]
+        ending = run_report.Ending(
+            outcome.decision,
+            outcome.state,
+            outcome.triggered,
+            outcome.paypal_status,
+            None if proposal is None else proposal.amount,
+            "USD" if proposal is None else proposal.currency,
+        )
+        run_report.finish(begun, ending, run_report.AFTER_APPROVAL)
+
+    async def _decide_signed(
+        self, request_id: str, intent: str, credential: dict[str, Any]
+    ) -> Outcome:
         now = self._clock()
         digest = self._pending_digest(request_id, intent)
         approver = self._passkeys.verify_approval(

@@ -34,6 +34,8 @@ NOT_VERIFIED = "FAILURE"
 TOKEN_REFRESH_MARGIN_MS = 300_000
 PAYPAL_ID = re.compile(r"^[A-Z0-9-]{1,64}$")
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+HTTP_FIRST_ERROR = 400
+HTTP_FIRST_SERVER_ERROR = 500
 # PayPal's published sandbox test cards, used only to create demo test orders
 # against the sandbox; the next is tried when the sandbox declines one.
 SANDBOX_TEST_CARDS = (
@@ -204,13 +206,18 @@ class LivePayPalClient:
                     "PayPal could not be reached",
                     {"error": type(exc).__name__, "retryable": True},
                 ) from exc
-            _report_call(method, path, started, response.status_code, request_id)
+            if response.status_code >= HTTP_FIRST_ERROR:
+                _report_call(method, path, started, response.status_code, request_id)
             if response.status_code == 401 and attempt == 0:
                 self._token = None  # expired early: fetch a new token once
                 continue
-            if response.status_code >= 400:
+            if response.status_code >= HTTP_FIRST_ERROR:
                 raise _error_from(response)
-            return response.json() if response.content else {}
+            answer = response.json() if response.content else {}
+            _report_call(
+                method, path, started, response.status_code, request_id, answer
+            )
+            return answer
         raise PayPalClientError("PayPal rejected the credentials", {"status": 401})
 
     async def get_order(self, order_id: str) -> JsonObject:
@@ -506,13 +513,33 @@ def _report_call(
     started: float,
     status: int | None,
     request_id: str | None,
+    answer: object = None,
 ) -> None:
-    """One PayPal call for the live step record: no bodies, no credentials."""
+    """One PayPal call for the live step record: PayPal's own id and status for
+    the object it returned, never bodies or credentials."""
+    failed = status is None or status >= HTTP_FIRST_ERROR
+    returned = answer if isinstance(answer, dict) else {}
     trace.emit(
         "paypal",
         f"PayPal sandbox {method} {path}",
-        trace.OK if status is not None and status < 400 else trace.FAIL,
+        trace.FAIL if failed else trace.OK,
         int((time.monotonic() - started) * 1000),
         http="unreachable" if status is None else status,
         request_id=request_id or "",
+        paypal_id=returned.get("id", ""),
+        paypal_status=returned.get("status", ""),
+        safe=safe_state(method, status) if failed else "",
+    )
+
+
+def safe_state(method: str, status: int | None) -> str:
+    """Where the money stands after a failed PayPal call, stated first."""
+    if method == "GET":
+        return "Reading only: nothing was sent"
+    if status is not None and status < HTTP_FIRST_SERVER_ERROR:
+        return "PayPal refused it: no money moved by this call"
+    # no answer: the call may or may not have landed, so it is never called either
+    return (
+        "Answer lost, so treated as unknown: PayPal is read again before any "
+        "retry, and the same request id prevents a duplicate"
     )

@@ -18,14 +18,14 @@ from decimal import Decimal
 
 from agentcosign.clients.llm import LLMProvider
 from agentcosign.clients.paypal import PayPalClient
-from agentcosign.core import trace
 from agentcosign.core.exceptions import (
     LimitReachedError,
     ModelUnavailableError,
     PayPalClientError,
 )
 from agentcosign.models.policy import Proposal
-from agentcosign.services.assistant import suggest
+from agentcosign.services import run_report
+from agentcosign.services.assistant import Suggestion, suggest
 from agentcosign.services.gateway import Gateway, Outcome
 
 DAY_SECONDS = 24 * 3600
@@ -145,28 +145,35 @@ class ScenarioRunner:
     ) -> ScenarioResult:
         """Run one ready scenario in the visitor's workspace."""
         scenario = BY_KEY[key]
-        trace.emit(
+        begun = run_report.begin(
             "demo", f"Scenario started: {scenario.title}", expects=scenario.shows
         )
         return await self._run(
-            gateway, workspace, scenario.paid, scenario.buyer, scenario.message
+            gateway, workspace, scenario.paid, scenario.buyer, scenario.message, begun
         )
 
     async def run_own(
         self, gateway: Gateway, workspace: str, text: str
     ) -> ScenarioResult:
         """Run a visitor's own message against a fresh test order."""
-        trace.emit("demo", "Scenario started: the visitor's own message")
+        begun = run_report.begin("demo", "Scenario started: the visitor's own message")
         return await self._run(
             gateway,
             workspace,
             OWN_MESSAGE_ORDER,
             OWN_MESSAGE_BUYER,
             "Order {order}: " + text,
+            begun,
         )
 
     async def _run(
-        self, gateway: Gateway, workspace: str, paid: Decimal, buyer: str, message: str
+        self,
+        gateway: Gateway,
+        workspace: str,
+        paid: Decimal,
+        buyer: str,
+        message: str,
+        begun: run_report.Begun,
     ) -> ScenarioResult:
         if self._assistant is None:
             raise ModelUnavailableError("the assistant is not available")
@@ -186,6 +193,7 @@ class ScenarioRunner:
         text = await gateway.message_text(message_id)
         suggestion = None if text is None else await suggest(self._assistant, text)
         if suggestion is None:
+            run_report.finish(begun, run_report.Ending(None), run_report.AUTOMATICALLY)
             return ScenarioResult(order_id, None)
         proposal = Proposal(
             request_id=stamp,
@@ -195,4 +203,19 @@ class ScenarioRunner:
             order_id=suggestion.order_id,
             message_id=message_id,
         )
-        return ScenarioResult(order_id, await gateway.propose(proposal))
+        outcome = await gateway.propose(proposal)
+        _finish(begun, outcome, suggestion)
+        return ScenarioResult(order_id, outcome)
+
+
+def _finish(begun: run_report.Begun, outcome: Outcome, suggestion: Suggestion) -> None:
+    """The run's closing step: what happened to the money."""
+    ending = run_report.Ending(
+        outcome.decision,
+        outcome.state,
+        outcome.triggered,
+        outcome.paypal_status,
+        suggestion.amount,
+        suggestion.currency,
+    )
+    run_report.finish(begun, ending, run_report.AUTOMATICALLY)

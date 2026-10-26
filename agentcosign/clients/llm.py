@@ -136,6 +136,7 @@ class OpenAICompatibleProvider:
                 int((self._clock() - started) * 1000),
                 model=model,
                 role="primary" if primary else "fallback",
+                safe="" if answer else model_safe_state(primary=primary),
             )
             if answer is not None:
                 return answer
@@ -192,3 +193,11 @@ class RecordedProvider:
                 {"role": self._role},
             )
         return ModelAnswer(text, "recorded", recorded=True)
+
+
+def model_safe_state(*, primary: bool) -> str:
+    """Where things stand when a model gives no answer, stated first."""
+    then = (
+        "the fallback model is tried next" if primary else "the rules decide without it"
+    )
+    return f"Models never move money or approve refunds: {then}"

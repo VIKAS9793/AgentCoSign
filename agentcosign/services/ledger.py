@@ -51,6 +51,9 @@ from agentcosign.services.policy_engine import (
 )
 from agentcosign.services.reconciliation import Known, OurRefund
 
+# an error while deciding stops the request before anything can be sent
+STOPPED_BY_ERROR = "Nothing sent: an error stops the request (fails closed)"
+
 GENESIS_HASH = "0" * 64
 # the emergency stop is recorded in the chain under this id, so it is provable
 CONTROL_REQUEST = "control:refunds"
@@ -732,7 +735,9 @@ class Ledger:
                     return self._replay(row, digest)
             context = self._context(conn, proposal, evidence, now)
             # reported here, so the decision shows before the entry that keeps it
-            with trace.timed("rules", "Policy engine decided") as step:
+            with trace.timed(
+                "rules", "Policy engine decided", on_fail=STOPPED_BY_ERROR
+            ) as step:
                 result = evaluate(
                     proposal, evidence, context, signals, self._policy, screening, now
                 )

@@ -12,6 +12,11 @@ Edge cases (written before the code):
 | A negative position | Refused at the edge |
 | Steps in a visitor's workspace | Never in anyone else's record |
 | A closed workspace | 410, so the app can set up again |
+| A run ends | One closing step: the headline and what moved, from the server |
+| A refund PayPal confirmed | Money moved is the amount |
+| An attack in the message | Named, and nothing moved |
+| An approval with a fingerprint or PIN | Its own closing step after the refund |
+| A PayPal call | Carries PayPal's own id and status for what it returned |
 """
 
 import json
@@ -21,6 +26,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from agentcosign.core import trace
 from agentcosign.main import create_app
@@ -142,3 +148,65 @@ def test_a_closed_workspace_answers_gone(demo: Env) -> None:
         "/v1/demo/trace", headers={"x-workspace": "ws-" + "0" * 32}
     )
     assert response.status_code == 410
+
+
+def _outcome(env: Env, session: dict[str, str]) -> Any:
+    steps = _read(env, session)["steps"]
+    assert steps[-1]["layer"] == "outcome"
+    return steps[-1]
+
+
+def test_a_confirmed_refund_ends_with_what_moved(demo: Env) -> None:
+    session = demo.session()
+    _run_genuine(demo, session)
+    end = _outcome(demo, session)
+    assert end["title"] == "Refund of $9.00 sent automatically: PayPal confirmed"
+    assert end["detail"]["money_moved"] == "$9.00"
+    assert int(end["detail"]["paypal_calls"]) >= 1
+    assert int(end["detail"]["record_entries"]) >= 1
+
+
+@pytest.mark.edge
+def test_an_attack_ends_with_nothing_moved(demo: Env) -> None:
+    session = demo.session()
+    _state(demo).scenarios = _runner(demo, "9.00")
+    _checks(demo, "manipulation", "9.00")
+    demo.client.post("/v1/demo/scenarios/fake_system", headers=session)
+    steps = _read(demo, session)["steps"]
+    screening = next(s for s in steps if s["title"].startswith("Safety screening"))
+    assert screening["detail"]["safe"].startswith("Attack found")
+    end = _outcome(demo, session)
+    assert end["title"].startswith("Attack in the customer's message caught")
+    assert end["detail"]["money_moved"] == "$0.00"
+
+
+@pytest.mark.edge
+def test_an_approval_ends_with_its_own_outcome(demo: Env) -> None:
+    demo.propose("r1", "10.00")
+    session = demo.session()
+    response, _ = demo.decide("r1", "approve", session)
+    assert response.json()["paypal_status"] == "COMPLETED"
+    end = _outcome(demo, session)
+    assert end["title"] == (
+        "Refund of $10.00 sent after the merchant's fingerprint or PIN: "
+        "PayPal confirmed"
+    )
+
+
+@pytest.mark.edge
+def test_a_declined_approval_ends_with_nothing_sent(demo: Env) -> None:
+    demo.propose("r1", "10.00")
+    session = demo.session()
+    demo.decide("r1", "reject", session)
+    end = _outcome(demo, session)
+    assert end["title"] == "Declined by the merchant: nothing sent"
+    assert end["detail"]["money_moved"] == "$0.00"
+
+
+@pytest.mark.edge
+def test_health_says_whether_the_models_are_live(tmp_path: Path) -> None:
+    for key, expected in (("", "off"), ("k" * 40, "live")):
+        env = Env(tmp_path / expected)
+        settings = env.settings.model_copy(update={"groq_api_key": SecretStr(key)})
+        with TestClient(create_app(settings, env.paypal)) as client:
+            assert client.get("/health").json()["ai_models"] == expected
