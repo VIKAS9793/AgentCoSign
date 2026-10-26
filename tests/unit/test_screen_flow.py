@@ -17,6 +17,8 @@ Edge cases (written before the change):
 | Behind the scenes, failed step | Where the money stands, before the step's title |
 | Behind the scenes, end of a run | One outcome block with the server's headline |
 | Behind the scenes, connections | From the server's health report, never assumed |
+| Behind the scenes, first visit | A cue points at the switch until it is opened once |
+| Done screen | Next steps spaced in one row; history sits with the record |
 
 Phone and laptop rendering is checked in Chrome at both widths; these tests
 keep the rules from being undone silently.
@@ -164,3 +166,20 @@ def test_connections_come_from_the_servers_health_report() -> None:
     assert 'serverModes.ai_models === "live"' in script
     assert "serverModes = health;" in JS
     assert 'id="trace-links"' in HTML
+
+
+@pytest.mark.edge
+def test_a_cue_points_at_the_switch_until_it_is_opened() -> None:
+    assert 'classList.toggle("cue", demoMode && recall("trace-seen") !== "yes")' in JS
+    assert 'remember("trace-seen", "yes");' in _trace_script()
+    assert re.search(r"\.trace-toggle\.cue::before \{[^}]*content: \"\"", CSS)
+    reduced = CSS[CSS.index("@keyframes trace-cue-hand") :]
+    assert re.search(r"prefers-reduced-motion[^{]*\{[^@]*animation: none", reduced)
+
+
+@pytest.mark.edge
+def test_done_screen_next_steps_are_spaced_in_one_row() -> None:
+    assert re.search(r"\.done-actions \{[^}]*display: flex[^}]*gap: 12px", CSS)
+    done = JS[JS.index('var next = el("div", "", "done-actions")') :][:600]
+    assert done.index('"primary", openHome') < done.index('"secondary", openActivity')
+    assert "record.appendChild(history);" in done

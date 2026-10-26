@@ -662,6 +662,8 @@
     renderStop(data.refunds_stopped === "yes");
     show("demo-button", demoMode);
     show("trace-toggle", demoMode);
+    // points at the switch until the panel has been opened once on this device
+    document.getElementById("trace-toggle").classList.toggle("cue", demoMode && recall("trace-seen") !== "yes");
     if (demoMode && recall("trace") === "on") {
       openTrace();
     }
@@ -1435,11 +1437,19 @@
       record.appendChild(el("p", "Saved with your name and the time.", "muted small"));
       view.appendChild(record);
     }
-    view.appendChild(button("Back to refund requests", "primary", openHome));
-    view.appendChild(button("All refund activity", "secondary", openActivity));
-    view.appendChild(withIcon("history", button("This refund's history", "link", function () {
+    // the history belongs to this refund's record; the row keeps where to go next
+    var history = withIcon("history", button("This refund's history", "link", function () {
       openHistory(item.request_id, function () { go("outcome"); });
-    })));
+    }));
+    var next = el("div", "", "done-actions");
+    next.appendChild(button("Back to refund requests", "primary", openHome));
+    next.appendChild(button("All refund activity", "secondary", openActivity));
+    if (reference) {
+      record.appendChild(history);
+    } else {
+      next.appendChild(history);
+    }
+    view.appendChild(next);
     go("outcome", item.request_id);
     heading.focus({ preventScroll: true });
   }
@@ -1952,6 +1962,8 @@
     }
     showLinks();
     remember("trace", "on");
+    remember("trace-seen", "yes");
+    document.getElementById("trace-toggle").classList.remove("cue");
     document.body.classList.add("trace-on");
     show("trace", true);
     document.getElementById("trace-toggle").setAttribute("aria-pressed", "true");
@@ -2029,7 +2041,7 @@
       ["PayPal calls", d.paypal_calls],
       ["AI steps", d.ai_steps],
       ["Record entries", d.record_entries],
-      ["Rules triggered", d.triggered]
+      ["Checks that fired", d.checks_that_fired]
     ].forEach(function (pair) {
       if (pair[1]) {
         facts.appendChild(el("dt", pair[0], ""));

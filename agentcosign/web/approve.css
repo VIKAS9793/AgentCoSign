@@ -396,6 +396,19 @@ button.row-button {
   flex-basis: 100%;
 }
 
+/* the done screen's next steps: one primary, one secondary, spaced and aligned */
+.done-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.done-actions button {
+  margin: 0;
+}
+
 label {
   display: block;
   margin: 12px 0 4px;
@@ -1068,6 +1081,61 @@ textarea {
   font: 700 14px/1 var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+/* until the panel is first opened: a pulsing ring and a hand pointing at it */
+.trace-toggle {
+  position: relative;
+}
+
+.trace-toggle.cue {
+  border-color: var(--signal);
+  animation: trace-cue-ring 1.6s ease-out infinite;
+}
+
+/* an arrow drawn in CSS, so it looks the same on every device and font */
+.trace-toggle.cue::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 10px);
+  width: 30px;
+  height: 22px;
+  transform: translateY(-50%);
+  background: var(--signal);
+  clip-path: polygon(0 35%, 55% 35%, 55% 0, 100% 50%, 55% 100%, 55% 65%, 0 65%);
+  animation: trace-cue-hand 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes trace-cue-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgb(194 65 12 / 55%);
+  }
+
+  100% {
+    box-shadow: 0 0 0 12px rgb(194 65 12 / 0%);
+  }
+}
+
+@keyframes trace-cue-hand {
+  from {
+    transform: translate(-6px, -50%);
+  }
+
+  to {
+    transform: translate(0, -50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trace-toggle.cue,
+  .trace-toggle.cue::before {
+    animation: none;
+  }
+
+  .trace-toggle.cue {
+    box-shadow: 0 0 0 4px rgb(194 65 12 / 35%);
+  }
 }
 
 .trace-toggle[aria-pressed="true"] {
