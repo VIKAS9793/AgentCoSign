@@ -157,6 +157,8 @@
     forget("workspace");
     session = null;
     stopListening();
+    stopTrace();
+    resetTrace();
     showSetup();
     say("The demo restarted and cleared its test data. Set up again (about a minute).");
   }
@@ -202,6 +204,7 @@
   function signedOut() {
     session = null;
     stopListening();
+    stopTrace();
     showSignin();
     say(sessionMinutes
       ? "Signed out after " + plural(sessionMinutes, "minute", "minutes") + ", for your safety. Confirm it's you to open again."
@@ -658,6 +661,10 @@
     renderSettings(data.settings);
     renderStop(data.refunds_stopped === "yes");
     show("demo-button", demoMode);
+    show("trace-toggle", demoMode);
+    if (demoMode && recall("trace") === "on") {
+      openTrace();
+    }
     show("home-loading", false);
     show("home-body", true);
   }
@@ -1911,6 +1918,129 @@
     return "Refused by your rules. No money moved.";
   }
 
+  // --- behind the scenes: the backend's live steps, for technical reviewers ----
+  // Merchants never see this; it is the demo's own record of what the server did.
+  var TRACE_POLL_MS = 1500;
+  var traceTimer = null;
+  var traceBusy = false;
+  var traceLast = 0;
+  var STAGE_OF = { demo: "propose", workspace: "propose", message: "propose", ai: "propose", rules: "policy", passkey: "cosign", ledger: "record" };
+  var STAGE_LABEL = { propose: "01 Propose", policy: "02 Policy check", cosign: "03 Passkey co-sign", record: "04 Signed record" }; // guardrail: allow merchant-jargon -- technical view, never shown to merchants
+  var LAYER_LABEL = { paypal: "PayPal sandbox", ai: "AI", rules: "Rules engine", ledger: "Record", passkey: "Passkey", message: "Message", workspace: "Workspace", demo: "Demo" };
+  var STATUS_MARK = { ok: "\u2713", warn: "!", fail: "\u2715" };
+
+  function openTrace() {
+    if (traceTimer || traceBusy) {
+      return;
+    }
+    remember("trace", "on");
+    document.body.classList.add("trace-on");
+    show("trace", true);
+    document.getElementById("trace-toggle").setAttribute("aria-pressed", "true");
+    pollTrace();
+  }
+
+  function closeTrace() {
+    remember("trace", "off");
+    stopTrace();
+    document.body.classList.remove("trace-on");
+    show("trace", false);
+    document.getElementById("trace-toggle").setAttribute("aria-pressed", "false");
+  }
+
+  function stopTrace() {
+    if (traceTimer) {
+      window.clearTimeout(traceTimer);
+      traceTimer = null;
+    }
+  }
+
+  // a new test setup numbers its steps from one again, so the panel starts over
+  function resetTrace() {
+    traceLast = 0;
+    document.getElementById("trace-list").textContent = "";
+    show("trace-empty", true);
+    document.querySelectorAll(".trace-stages li").forEach(function (li) {
+      li.classList.remove("active", "seen");
+    });
+  }
+
+  function pollTrace() {
+    stopTrace();
+    if (!session || traceBusy) {
+      return;
+    }
+    traceBusy = true;
+    get("/v1/demo/trace?after=" + traceLast)
+      .then(function (data) {
+        data.steps.forEach(addStep);
+        traceLast = data.last;
+      })
+      .catch(function () {
+        return null;
+      })
+      .then(function () {
+        traceBusy = false;
+        if (!document.getElementById("trace").hidden && session && !traceTimer) {
+          traceTimer = window.setTimeout(pollTrace, TRACE_POLL_MS);
+        }
+      });
+  }
+
+  function addStep(step) {
+    var panel = document.getElementById("trace");
+    var atBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 80;
+    var item = el("li", "", "trace-step " + step.status);
+    var row = el("div", "", "trace-row");
+    row.appendChild(el("span", STATUS_MARK[step.status] || "", "trace-mark"));
+    row.appendChild(el("span", clockMs(step.at), "trace-time"));
+    var stage = STAGE_OF[step.layer];
+    if (stage) {
+      row.appendChild(el("span", STAGE_LABEL[stage], "trace-tag stage"));
+      markStage(stage);
+    }
+    row.appendChild(el("span", LAYER_LABEL[step.layer] || step.layer, "trace-tag layer-" + step.layer));
+    if (step.ms !== null && step.ms !== undefined) {
+      row.appendChild(el("span", step.ms + " ms", "trace-ms"));
+    }
+    item.appendChild(row);
+    item.appendChild(el("p", step.title, "trace-title"));
+    var keys = Object.keys(step.detail || {}).filter(function (k) { return step.detail[k] !== ""; });
+    if (keys.length) {
+      var more = el("details", "", "trace-detail");
+      more.appendChild(el("summary", "Details", ""));
+      var list = el("dl", "", "");
+      keys.forEach(function (k) {
+        list.appendChild(el("dt", k.replace(/_/g, " "), ""));
+        list.appendChild(el("dd", step.detail[k], ""));
+      });
+      more.appendChild(list);
+      item.appendChild(more);
+    }
+    document.getElementById("trace-list").appendChild(item);
+    show("trace-empty", false);
+    if (atBottom) {
+      panel.scrollTop = panel.scrollHeight;
+    }
+  }
+
+  function markStage(stage) {
+    document.querySelectorAll(".trace-stages li").forEach(function (li) {
+      var mine = li.getAttribute("data-stage") === stage;
+      li.classList.toggle("active", mine);
+      if (mine) {
+        li.classList.add("seen");
+      }
+    });
+  }
+
+  function clockMs(iso) {
+    var moment = new Date(iso);
+    var pad = function (n, w) { return String(n).padStart(w, "0"); };
+    return pad(moment.getHours(), 2) + ":" + pad(moment.getMinutes(), 2) + ":" +
+      pad(moment.getSeconds(), 2) + "." + pad(moment.getMilliseconds(), 3);
+  }
+
   // --- start -------------------------------------------------------------------------
   if (!window.PublicKeyCredential) {
     say("This browser can't confirm it's you. Open this page in Chrome.");
@@ -1931,6 +2061,14 @@
     });
   });
   document.getElementById("demo-button").addEventListener("click", openDemo);
+  document.getElementById("trace-toggle").addEventListener("click", function () {
+    if (document.getElementById("trace").hidden) {
+      openTrace();
+    } else {
+      closeTrace();
+    }
+  });
+  document.getElementById("trace-close").addEventListener("click", closeTrace);
   document.getElementById("own-message-button").addEventListener("click", function () {
     var text = document.getElementById("own-message").value.trim();
     if (!text) {

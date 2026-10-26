@@ -16,6 +16,7 @@
       <div class="brand-row">
         <span class="wordmark">AgentCoSign</span>
         <span class="mode-pill">Test mode</span>
+        <button id="trace-toggle" type="button" class="trace-toggle" aria-pressed="false" hidden>Behind the scenes</button>
       </div>
       <p id="identity" class="identity" hidden></p>
       <div id="header-stop" class="header-stop"></div>
@@ -116,6 +117,22 @@
     <section id="activity" class="view" hidden></section>
     <section id="history" class="view" hidden></section>
   </main>
+  <aside id="trace" class="trace" aria-label="Behind the scenes" hidden>
+    <div class="trace-head">
+      <p class="trace-kicker">Behind the scenes // live backend</p>
+      <span class="trace-pill">Sandbox only</span>
+      <button id="trace-close" type="button" class="trace-close">Close</button>
+    </div>
+    <ol class="trace-stages">
+      <li data-stage="propose"><span>01</span>Propose</li>
+      <li data-stage="policy"><span>02</span>Policy check</li> <!-- // guardrail: allow merchant-jargon -- technical view for reviewers, never shown to merchants -->
+      <li data-stage="cosign"><span>03</span>Passkey co-sign</li> <!-- // guardrail: allow merchant-jargon -- technical view for reviewers, never shown to merchants -->
+      <li data-stage="record"><span>04</span>Signed record</li>
+    </ol>
+    <p class="trace-note">Live from this demo's server: real PayPal sandbox calls, the AI models, the rules and the tamper-evident record, as they happen. Merchants never see this panel.</p>
+    <ol id="trace-list" class="trace-list" aria-live="polite"></ol>
+    <p id="trace-empty" class="trace-note">Run a scenario or approve a request and every step appears here.</p>
+  </aside>
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
   <script src="/assets/approve.js" defer></script>
 </body>

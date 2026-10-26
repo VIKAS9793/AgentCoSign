@@ -10,6 +10,10 @@ Edge cases (written before the change):
 | Flow | At most four screens: dashboard, review, confirm, done |
 | Buttons | Hug their label; only cards and rows that open run full width |
 | Dashboard | Settings fold away; recent refunds is a link, not a list |
+| Behind the scenes | Hidden unless the hosted demo; off until switched on |
+| Behind the scenes, laptop | The app and the backend side by side |
+| Behind the scenes, steps | Shown as text only, never as markup |
+| Behind the scenes, sign-out or reset | Polling stops; a new setup starts over |
 
 Phone and laptop rendering is checked in Chrome at both widths; these tests
 keep the rules from being undone silently.
@@ -90,3 +94,44 @@ def test_a_closed_workspace_sends_the_visitor_to_set_up_again() -> None:
     assert JS.count("response.status === 410") >= 2  # both reads and writes
     assert "The demo restarted and cleared its test data." in JS
     assert '"X-Workspace": workspace' in JS
+
+
+def _trace_script() -> str:
+    """The panel's part of the app script."""
+    start = JS.index("// --- behind the scenes")
+    return JS[start : JS.index("// --- start ---", start)]
+
+
+@pytest.mark.edge
+def test_behind_the_scenes_is_hidden_unless_the_hosted_demo() -> None:
+    assert re.search(r'<aside id="trace"[^>]*\shidden', HTML)
+    assert re.search(r'id="trace-toggle"[^>]*\shidden', HTML)
+    assert 'show("trace-toggle", demoMode);' in JS
+    assert 'demoMode && recall("trace") === "on"' in JS
+
+
+@pytest.mark.edge
+def test_behind_the_scenes_sits_beside_the_app_on_a_laptop() -> None:
+    laptop = CSS[CSS.index("/* laptop: the merchant app on the left") :]
+    assert re.search(r"body\.trace-on \{[^}]*display:\s*grid", laptop)
+    assert re.search(r"body\.trace-on \.trace \{[^}]*position:\s*sticky", laptop)
+
+
+@pytest.mark.edge
+def test_behind_the_scenes_shows_steps_as_text_only() -> None:
+    script = _trace_script()
+    assert "innerHTML" not in script
+    assert "insertAdjacentHTML" not in script
+    assert "el(" in script
+
+
+@pytest.mark.edge
+def test_behind_the_scenes_stops_on_sign_out_and_starts_over_on_reset() -> None:
+    signed_out = JS[JS.index("function signedOut()") :][:200]
+    gone = JS[JS.index("function workspaceGone()") :][:250]
+    assert "stopTrace();" in signed_out
+    assert "stopTrace();" in gone
+    assert "resetTrace();" in gone
+    script = _trace_script()
+    assert "setInterval" not in script
+    assert "if (!session || traceBusy)" in script  # one read in flight at a time

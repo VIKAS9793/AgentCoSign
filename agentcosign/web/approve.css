@@ -13,6 +13,10 @@
   --primary: #1f2a24;
   --on-primary: #ffffff;
   --focus: #c2410c;
+  /* behind-the-scenes panel, after the brand banner: one orange signal, peach chips */
+  --signal: #c2410c;
+  --chip: #f4e1d2;
+  --panel: #efeadf;
   --ok: #1e6b43;
   --ok-bg: #e7f0e8;
   --ok-line: #7fae8f;
@@ -1048,4 +1052,263 @@ textarea {
 
 #scenario-list .request-card {
   margin-top: 10px;
+}
+
+/* --- behind the scenes (hosted demo, for technical reviewers) --------------------
+   After the brand banner: spaced monospace labels, numbered stage chips, dashed
+   rules, crosshair corners and one orange signal. Merchants never see it. */
+.trace-toggle {
+  min-height: 40px;
+  margin: 0 0 0 auto;
+  padding: 0 14px;
+  border: 1.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font: 700 14px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.trace-toggle[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--on-primary);
+}
+
+.trace {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  overflow-y: auto;
+  padding: 20px 20px 40px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.trace::before,
+.trace::after {
+  content: "+";
+  position: absolute;
+  font: 400 18px/1 var(--mono);
+  color: var(--signal);
+}
+
+.trace::before {
+  top: 8px;
+  left: 8px;
+}
+
+.trace::after {
+  top: 8px;
+  right: 8px;
+}
+
+.trace-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1.5px dashed var(--rule);
+}
+
+.trace-kicker,
+.trace-stages li,
+.trace-tag,
+.trace-time,
+.trace-ms,
+.trace-close,
+.trace-detail summary {
+  font-family: var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.trace-kicker {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.trace-pill {
+  white-space: nowrap;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--signal);
+  color: var(--on-primary);
+  font: 700 14px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.trace-close {
+  min-height: 40px;
+  margin: 0 0 0 auto;
+  padding: 0 12px;
+  border: 1.5px solid var(--ink);
+  border-radius: 10px;
+  background: transparent;
+  font-size: 14px;
+}
+
+.trace-stages {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.trace-stages li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 8px;
+  border: 1.5px dashed var(--rule);
+  border-radius: 10px;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.trace-stages li span {
+  flex: none;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--chip);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.trace-stages li.seen {
+  border-style: solid;
+  color: var(--ink);
+}
+
+.trace-stages li.active {
+  border-color: var(--signal);
+  box-shadow: inset 0 0 0 1px var(--signal);
+}
+
+.trace-note {
+  margin: 8px 0 14px;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.trace-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trace-step {
+  padding: 10px 0;
+  border-top: 1.5px dashed var(--rule);
+}
+
+.trace-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.trace-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font: 700 14px/1 var(--mono);
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.trace-step.warn .trace-mark {
+  background: var(--caution-bg);
+  color: var(--caution);
+}
+
+.trace-step.fail .trace-mark {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.trace-time,
+.trace-ms {
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.trace-ms {
+  margin-left: auto;
+}
+
+.trace-tag {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--chip);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.trace-tag.layer-paypal {
+  background: var(--surface);
+  border: 1px solid var(--ink);
+}
+
+.trace-title {
+  margin: 4px 0 0;
+  font-weight: 700;
+}
+
+.trace-step.fail .trace-title {
+  color: var(--danger);
+}
+
+.trace-detail summary {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.trace-detail dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 4px 0 0;
+  font: 14px/1.4 var(--mono);
+}
+
+.trace-detail dt {
+  color: var(--ink-muted);
+}
+
+.trace-detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* laptop: the merchant app on the left, the backend on the right */
+@media (min-width: 1024px) {
+  body.trace-on {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(380px, 42%);
+  }
+
+  body.trace-on .trace {
+    position: sticky;
+    top: 0;
+    inset: auto;
+    height: 100vh;
+    border-left: 1.5px dashed var(--rule);
+  }
+
+  body.trace-on main {
+    width: 100%;
+  }
 }
