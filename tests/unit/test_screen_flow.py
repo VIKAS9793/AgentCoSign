@@ -19,6 +19,9 @@ Edge cases (written before the change):
 | Behind the scenes, connections | From the server's health report, never assumed |
 | Behind the scenes, first visit | A cue points at the switch until it is opened once |
 | Done screen | Next steps spaced in one row; history sits with the record |
+| Scenario needs approval | Opens straight into review for that request |
+| Scenario decided alone | Ends on the outcome screen, with no review steps |
+| Demo restarted | Its notice stays until the visitor sets up again |
 
 Phone and laptop rendering is checked in Chrome at both widths; these tests
 keep the rules from being undone silently.
@@ -183,3 +186,47 @@ def test_done_screen_next_steps_are_spaced_in_one_row() -> None:
     done = JS[JS.index('var next = el("div", "", "done-actions")') :][:600]
     assert done.index('"primary", openHome') < done.index('"secondary", openActivity')
     assert "record.appendChild(history);" in done
+
+
+FUNCTION_END = "\n  }\n"
+ON_ITS_OWN_ENDING = (
+    "showOutcome(ending[0], ending[1], ending[2], item, ending[3], true);"
+)
+NO_STEPPER_ON_ITS_OWN = "if (!onItsOwn) {\n      view.appendChild(stepper(2));"
+HOLD_RESTART_NOTICE = "if (restartNotice) {\n      return;"
+
+
+def _function(name: str) -> str:
+    """One top-level function of the app script, by name."""
+    start = JS.index(f"  function {name}(")
+    return JS[start : JS.index(FUNCTION_END, start)]
+
+
+@pytest.mark.edge
+def test_a_scenario_that_needs_approval_opens_its_review() -> None:
+    result = _function("showDemoResult")
+    assert 'outcome.decision === "escalate"' in result
+    assert "openReview(waiting);" in result
+    assert ON_ITS_OWN_ENDING in result
+    run = _function("runDemo")
+    assert "showDemoResult(result)" in run
+    assert "toast(demoResult(result))" not in run
+
+
+@pytest.mark.edge
+def test_a_scenario_decided_alone_has_no_review_steps() -> None:
+    outcome = _function("showOutcome")
+    assert NO_STEPPER_ON_ITS_OWN in outcome
+    assert 'onItsOwn ? "Saved with the time."' in outcome
+    ending = _function("demoEnding")
+    sent = ending.index("refunded to")
+    assert 'outcome.paypal_status === "COMPLETED"' in ending[:sent]
+
+
+@pytest.mark.edge
+def test_the_restart_notice_is_not_replaced_until_setup_starts_again() -> None:
+    assert HOLD_RESTART_NOTICE in _function("say")
+    assert HOLD_RESTART_NOTICE in _function("toast")
+    gone = _function("workspaceGone")
+    assert gone.index("say(") < gone.index("restartNotice = true;")
+    assert "restartNotice = false;" in _function("enrol")

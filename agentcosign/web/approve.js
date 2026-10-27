@@ -27,7 +27,14 @@
   var stale = false;
   var VIEWS = ["enrol", "signin", "home", "demo", "review", "final", "sending", "outcome", "paused-view", "activity", "history"];
 
+  // after the test setup closed, its notice stays until the visitor sets up again,
+  // so a request that failed on the way cannot replace it with a vaguer message
+  var restartNotice = false;
+
   function say(text) {
+    if (restartNotice) {
+      return;
+    }
     statusBox.textContent = text;
     statusBox.hidden = !text;
   }
@@ -161,6 +168,15 @@
     resetTrace();
     showSetup();
     say("The demo restarted and cleared its test data. Set up again (about a minute).");
+    restartNotice = true;
+  }
+
+  // the test setup closed: the restart message is already on screen, so callers
+  // must not replace it with their own
+  function goneError() {
+    var gone = new Error("workspace gone");
+    gone.gone = true;
+    return gone;
   }
 
   function post(path, body, headers) {
@@ -171,7 +187,7 @@
     }).then(function (response) {
       if (response.status === 410) {
         workspaceGone();
-        throw new Error("workspace gone");
+        throw goneError();
       }
       return response.json().then(function (data) {
         if (!response.ok) {
@@ -188,7 +204,7 @@
     return fetch(path, { headers: sessionHeaders() }).then(function (response) {
       if (response.status === 410) {
         workspaceGone();
-        throw new Error("workspace gone");
+        throw goneError();
       }
       if (response.status === 401) {
         signedOut();
@@ -482,6 +498,7 @@
   }
 
   function enrol() {
+    restartNotice = false;
     var name = document.getElementById("enrol-name").value.trim();
     if (!name) {
       say("Please enter your name first.");
@@ -1403,7 +1420,8 @@
   // --- outcome: what happened, the PayPal reference, and what next ------------------
   var BADGES = { sent: ["Refunded", "ok-pill", "done"], stopped: ["No money moved", "neutral-pill", "declined"], check: ["Check this", "caution-pill", "caution"] };
 
-  function showOutcome(kind, title, lines, item, reference) {
+  // ``onItsOwn``: decided without the merchant, so no review steps and no name on the record
+  function showOutcome(kind, title, lines, item, reference, onItsOwn) {
     if (kind === "sent") {
       try {
         navigator.vibrate(40);
@@ -1413,7 +1431,9 @@
     }
     var view = document.getElementById("outcome");
     view.replaceChildren();
-    view.appendChild(stepper(2));
+    if (!onItsOwn) {
+      view.appendChild(stepper(2));
+    }
     var box = el("div", "", kind === "sent" ? "card ok-box center" : "card center");
     box.setAttribute("role", "status");
     box.appendChild(pill(BADGES[kind][0], BADGES[kind][1], BADGES[kind][2]));
@@ -1434,7 +1454,7 @@
       }));
       refRow.appendChild(copyButton);
       record.appendChild(refRow);
-      record.appendChild(el("p", "Saved with your name and the time.", "muted small"));
+      record.appendChild(el("p", onItsOwn ? "Saved with the time." : "Saved with your name and the time.", "muted small"));
       view.appendChild(record);
     }
     // the history belongs to this refund's record; the row keeps where to go next
@@ -1444,7 +1464,9 @@
     var next = el("div", "", "done-actions");
     next.appendChild(button("Back to refund requests", "primary", openHome));
     next.appendChild(button("All refund activity", "secondary", openActivity));
-    if (reference) {
+    if (!item.request_id) {
+      history = null; // nothing was proposed, so there is no history to open
+    } else if (reference) {
       record.appendChild(history);
     } else {
       next.appendChild(history);
@@ -1835,6 +1857,9 @@
   }
 
   function toast(text) {
+    if (restartNotice) {
+      return;
+    }
     var box = document.getElementById("toasts");
     var note = withIcon("info", el("p", text, "toast"));
     box.appendChild(note);
@@ -1896,16 +1921,55 @@
     post(path, body, sessionHeaders())
       .then(function (result) {
         demoBusy(false);
-        openHome().then(function () { toast(demoResult(result)); });
+        openHome().then(function () { showDemoResult(result); });
       })
       .catch(function (failure) {
         demoBusy(false);
+        if (failure && failure.gone) {
+          return;
+        }
         if (failure && failure.status === 401) {
           signedOut();
           return;
         }
         setDemoProgress((failure && failure.message) || "That didn't go through. No money moved. Try again.", true);
       });
+  }
+
+  // After a scenario the flow carries on: a request that needs the merchant opens
+  // for review; anything decided on its own ends on the outcome screen.
+  function showDemoResult(result) {
+    var outcome = result.outcome;
+    if (outcome && outcome.decision === "escalate") {
+      var waiting = findItem(outcome.request_id);
+      if (waiting) {
+        openReview(waiting);
+        return;
+      }
+    }
+    if (outcome && (outcome.decision === "escalate" || outcome.decision === "pause")) {
+      toast(demoResult(result));
+      return;
+    }
+    var ending = demoEnding(result);
+    var item = { request_id: outcome ? outcome.request_id : "", customer: result.customer };
+    showOutcome(ending[0], ending[1], ending[2], item, ending[3], true);
+  }
+
+  // The outcome screen for a decision made without the merchant, from the server's answer.
+  function demoEnding(result) {
+    var outcome = result.outcome;
+    var amount = result.amount ? "$" + result.amount : "The refund";
+    if (!outcome) {
+      return ["stopped", "No refund suggested. No money moved.", ["Your assistant didn't find a refund to suggest in this message."], ""];
+    }
+    if (outcome.decision === "allow" && outcome.paypal_status === "COMPLETED") {
+      return ["sent", amount + " refunded to " + result.customer, ["Handled on its own: it was within your automatic limit and the checks passed.", "PayPal confirmed it."], outcome.paypal_id];
+    }
+    if (outcome.decision === "allow") {
+      return ["check", "Waiting for PayPal", ["It won't be sent twice. You'll see the result in Refund requests as soon as PayPal answers."], ""];
+    }
+    return ["stopped", "Refused. No money moved.", ["Your checks found a problem with this request, so it was never sent."], ""];
   }
 
   // What happened to the test, in the merchant's words.
@@ -1938,7 +2002,7 @@
   var serverModes = {};
   var STAGE_OF = { demo: "propose", workspace: "propose", message: "propose", ai: "propose", rules: "policy", passkey: "cosign", ledger: "record" };
   var STAGE_LABEL = { propose: "01 Propose", policy: "02 Policy check", cosign: "03 Passkey co-sign", record: "04 Signed record" }; // guardrail: allow merchant-jargon -- technical view, never shown to merchants
-  var LAYER_LABEL = { paypal: "PayPal sandbox", ai: "AI", rules: "Rules engine", ledger: "Record", passkey: "Passkey", message: "Message", workspace: "Workspace", demo: "Demo", outcome: "Outcome" };
+  var LAYER_LABEL = { paypal: "PayPal sandbox", ai: "AI", rules: "Rules engine", ledger: "Record", passkey: "Passkey", message: "Message", workspace: "Workspace", demo: "Demo", outcome: "Outcome", app: "Dashboard" };
   var STATUS_MARK = { ok: "\u2713", warn: "!", fail: "\u2715" };
 
   // what this server is connected to, from its own health report (no extra calls)
