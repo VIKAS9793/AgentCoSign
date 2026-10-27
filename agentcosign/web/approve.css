@@ -71,6 +71,7 @@ p {
 
 .brand-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1084,8 +1085,12 @@ textarea {
 }
 
 /* until the panel is first opened: a pulsing ring and a hand pointing at it */
+/* one line always; on a narrow phone the whole switch moves under the brand */
 .trace-toggle {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .trace-toggle.cue {
@@ -1094,14 +1099,15 @@ textarea {
 }
 
 /* an arrow drawn in CSS, so it looks the same on every device and font */
+/* inside the switch, before its label, so it never covers the header on a phone */
 .trace-toggle.cue::before {
   content: "";
-  position: absolute;
-  top: 50%;
-  right: calc(100% + 10px);
-  width: 30px;
-  height: 22px;
-  transform: translateY(-50%);
+  display: inline-block;
+  flex: none;
+  width: 22px;
+  height: 16px;
+  margin-right: 8px;
+  vertical-align: middle;
   background: var(--signal);
   clip-path: polygon(0 35%, 55% 35%, 55% 0, 100% 50%, 55% 100%, 55% 65%, 0 65%);
   animation: trace-cue-hand 0.9s ease-in-out infinite alternate;
@@ -1119,11 +1125,11 @@ textarea {
 
 @keyframes trace-cue-hand {
   from {
-    transform: translate(-6px, -50%);
+    transform: translateX(-4px);
   }
 
   to {
-    transform: translate(0, -50%);
+    transform: translateX(2px);
   }
 }
 
@@ -1171,11 +1177,17 @@ textarea {
   right: 8px;
 }
 
+/* pinned, so Close stays in reach however far the steps have scrolled */
 .trace-head {
+  position: sticky;
+  top: -20px;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding-bottom: 12px;
+  margin: -20px -20px 0;
+  padding: 20px 20px 12px;
+  background: var(--panel);
   border-bottom: 1.5px dashed var(--rule);
 }
 
@@ -1342,6 +1354,13 @@ textarea {
 .trace-tag.layer-paypal {
   background: var(--surface);
   border: 1px solid var(--ink);
+}
+
+/* long PayPal paths and ids break inside the panel instead of widening it */
+.trace-title,
+.trace-headline,
+.trace-safe {
+  overflow-wrap: anywhere;
 }
 
 .trace-title {

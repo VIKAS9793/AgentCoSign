@@ -230,3 +230,19 @@ def test_the_restart_notice_is_not_replaced_until_setup_starts_again() -> None:
     gone = _function("workspaceGone")
     assert gone.index("say(") < gone.index("restartNotice = true;")
     assert "restartNotice = false;" in _function("enrol")
+
+
+@pytest.mark.edge
+def test_the_panel_keeps_close_in_reach_and_the_cue_inside_the_switch() -> None:
+    assert re.search(r"\.trace-head \{[^}]*position: sticky", CSS)
+    cue = CSS[CSS.index(".trace-toggle.cue::before {") :][:400]
+    assert "position: absolute" not in cue
+    assert "display: inline-block" in cue
+    assert re.search(r"\.trace-toggle \{[^}]*white-space: nowrap", CSS)
+
+
+@pytest.mark.edge
+def test_long_paypal_paths_break_inside_the_panel() -> None:
+    breaking = r"\.trace-title,\s*\.trace-headline,\s*\.trace-safe \{([^}]*)\}"
+    rule = re.search(breaking, CSS)
+    assert rule and "overflow-wrap: anywhere" in rule.group(1)
