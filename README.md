@@ -107,6 +107,14 @@ Live sandbox runs (Oct 26): refunds sent on their own and after a passkey approv
 
 Python 3.12+ · FastAPI · Pydantic v2 · PayPal Sandbox REST (the official `paypal-agent-toolkit` is an optional extra: it supports Python < 3.14 only) · Groq (OpenAI-compatible API, Zero Data Retention on) · SQLite (WAL) · WebAuthn · Ruff, mypy, bandit, pytest, hypothesis, gitleaks.
 
+## How this was built (use of AI tools)
+
+Built by one person, Vikas Sahani, with **Claude Code** (Anthropic, Claude Pro plan) as the engineering partner. The split mirrors the product: the AI proposes, a person decides.
+
+- **Owner: decision maker and business problem solver.** Defined the problem and the product (the rules and their limits, when a refund may go out alone, how the merchant's screens read), approved every specification before it was built, and kept every action with real consequences: the PayPal and Groq accounts and keys, Zero Data Retention, the PayPal webhook, deployment, repository visibility, and every passkey approval in testing.
+- **Claude Code: engineering partner, steered by the owner.** Researched options and sources, wrote and revised code, tests and documentation drafts, ran the test suites and drove the browser during acceptance runs while the owner signed. It never held PayPal or model credentials and could not approve anything.
+- **Held to the product's own standard.** Every change passes the offline test suite with a coverage floor, lint and type checks, secret scanning and a project checklist on each commit; every safety check is mutation-tested; live sandbox runs were checked by the owner.
+
 ## Develop
 
 ```bash
