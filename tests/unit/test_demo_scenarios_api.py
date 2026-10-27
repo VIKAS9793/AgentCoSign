@@ -12,6 +12,7 @@ Edge cases (written before the code):
 | Allowance used up | 429 with the reason |
 | No assistant | 503, no money moved |
 | PayPal can't create the order | 502, no money moved |
+| Any run | The customer's name and the amount decided, from the server |
 """
 
 import json
@@ -125,3 +126,16 @@ def test_a_paypal_failure_says_no_money_moved(demo: Env) -> None:
     response = _post(demo, "/v1/demo/messages", {"text": json.dumps("hi")})
     assert response.status_code == 502
     assert "No money moved" in response.json()["detail"]
+
+
+@pytest.mark.edge
+def test_a_run_returns_the_customer_and_the_amount_decided(demo: Env) -> None:
+    _runner(demo)
+    _checks(demo, "clean", "9.00")
+    body = _post(demo, "/v1/demo/scenarios/genuine").json()
+    assert body["customer"] == "Riya Sharma"
+    assert body["amount"] == "9.00"
+    _runner(demo, amount=None)
+    body = _post(demo, "/v1/demo/scenarios/genuine").json()
+    assert body["outcome"] is None
+    assert body["amount"] is None

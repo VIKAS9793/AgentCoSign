@@ -266,6 +266,8 @@ async def _run_demo(run: Any) -> dict[str, Any]:
     outcome = result.outcome
     return {
         "order_id": result.order_id,
+        "customer": result.customer,
+        "amount": None if result.amount is None else str(result.amount),
         "outcome": None if outcome is None else _out(outcome).model_dump(),
     }
 
@@ -408,7 +410,10 @@ async def chain_head(request: Request) -> dict[str, Any]:
 async def merchant_home(request: Request) -> dict[str, Any]:
     """Everything the merchant's home shows, with every state decided here."""
     token = request.headers.get("x-approver-session", "")
-    return {**await _gateway(request).home(token), "build": site_build()}
+    gateway = _gateway(request)
+    # the dashboard's own PayPal reads follow, so they are not taken for a run's
+    trace.emit("app", "Merchant's dashboard refreshed: figures re-read from PayPal")
+    return {**await gateway.home(token), "build": site_build()}
 
 
 @router.get("/v1/approvals/stream", dependencies=[Depends(require_approver_session)])
