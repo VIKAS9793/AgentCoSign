@@ -23,7 +23,7 @@
 | Use my own PayPal sandbox | [Testing guide](docs/TESTING.md) and `.env.example` |
 | Review the exact submitted code | Tag `v1.0-submission` (created at freeze) |
 
-**Honesty note on "hermetic" mode:** by default the policy engine, approval flow and ledger run as real code, while PayPal execution comes from *recorded real-sandbox evidence* (stated on the landing page and in `/health`). Set sandbox keys and `AGENTCOSIGN_PAYPAL_EXECUTION=sandbox` to send refunds to the PayPal sandbox.
+**Honesty note on modes:** the hosted demo runs live: real PayPal sandbox calls and live AI models. A local run with no keys is "hermetic": the policy engine, approval flow and ledger run as real code, while PayPal execution comes from *recorded real-sandbox evidence*. Each mode is stated in `/health` (`paypal_execution`, `ai_models`) and in the behind-the-scenes panel. Set sandbox keys and `AGENTCOSIGN_PAYPAL_EXECUTION=sandbox` to send refunds to the PayPal sandbox yourself.
 
 ## The problem
 
@@ -85,8 +85,10 @@ The approval card shows what the customer asked for as a fixed sentence built fr
 | Ledger (hash chain + HMAC, atomic reservations), PayPal evidence fetcher, idempotent executor with a hard cap just before each PayPal call, retry of unanswered refunds with the same request id, propose and approve API | ✅ Built; sandbox refunds executed end to end from a real phone |
 | Prompt guard, screening and a separate reading of the customer's words in the request path | ✅ Built; measured on 60 labelled threads (see Results) |
 | Mobile PWA approver with WebAuthn passkey co-sign (approval bound to the exact refund) | ✅ Built; tested on a real Android phone and in Chrome against the PayPal sandbox |
-| Audit viewer | 🚧 Planned |
-| Payouts adapter, PayPal webhooks, native Android approver | ⏳ Optional |
+| Audit: each refund's own history in the app, checked against the sealed record; a public record head (`/api/v1/audit/head`) and command-line tools to publish and verify it | ✅ Built |
+| A full record browser for auditors | 🚧 Not built |
+| PayPal webhooks (refund and dispute events, signature verified by PayPal itself before anything is trusted) | ✅ Built and registered on the sandbox app; end-to-end delivery test after the redeploy |
+| Payouts adapter, native Android approver | ⏳ Optional, not built |
 
 ## Results
 
