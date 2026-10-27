@@ -53,7 +53,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
        && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
       fail "non-fast-forward push to ${remote_ref#refs/heads/} (no force-push; fetch and rebase)."
     fi
-    ranges+=("$remote_sha..$local_sha")
+    # only commits not yet on the remote in any branch: moving a branch forward to
+    # commits already pushed (and checked) elsewhere does not check them twice
+    ranges+=("$local_sha --not --remotes")
   fi
 done
 
