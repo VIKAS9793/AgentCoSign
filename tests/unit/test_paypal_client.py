@@ -1,6 +1,7 @@
 """The PayPal client: tokens, idempotency headers, error handling, safe ids."""
 
 import json
+from contextvars import Token
 from decimal import Decimal
 
 import httpx
@@ -13,6 +14,7 @@ from agentcosign.clients.paypal import (
     LivePayPalClient,
     RecordedPayPalClient,
 )
+from agentcosign.core import trace
 from agentcosign.core.exceptions import PayPalClientError
 from tests.unit.paypal_fixtures import order_json
 
@@ -226,3 +228,82 @@ async def test_the_simulated_paypal_verifies_no_webhook_unless_a_test_opts_in() 
     assert await client.verify_webhook(WEBHOOK_HEADERS, event, "WEBHOOK-1") is False
     client.set_webhook_verification("SUCCESS")
     assert await client.verify_webhook(WEBHOOK_HEADERS, event, "WEBHOOK-1") is True
+
+
+# --- PayPal sign-in reports itself: refused, unreachable, or fine --------------------
+# A wrong app id or secret must be visible at once: named in the step record and the
+# log, with nothing sent.
+
+
+def _sign_in_client(answer: object) -> LivePayPalClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/oauth2/token":
+            if isinstance(answer, Exception):
+                raise answer
+            assert isinstance(answer, httpx.Response)
+            return answer
+        return httpx.Response(200, json=order_json("ORD-1"))
+
+    http = httpx.AsyncClient(
+        base_url=SANDBOX_BASE, transport=httpx.MockTransport(handler)
+    )
+    return LivePayPalClient("client-id", SECRET, http=http, clock=lambda: 0)
+
+
+def _recorded_steps() -> tuple[trace.Trace, Token[trace.Trace | None]]:
+    record = trace.Trace()
+    return record, trace.use(record)
+
+
+@pytest.mark.edge
+async def test_refused_credentials_are_named_and_nothing_is_sent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    refused = httpx.Response(
+        401, json={"error": "invalid_client", "error_description": "Client failed"}
+    )
+    record, token = _recorded_steps()
+    try:
+        with pytest.raises(PayPalClientError) as error:
+            await _sign_in_client(refused).get_order("ORD-1")
+    finally:
+        trace._current.reset(token)
+    (step,) = record.after(0)
+    assert step.title.startswith("PayPal sign-in")
+    assert step.status == trace.FAIL
+    assert step.detail["http"] == "401"
+    assert step.detail["paypal_error"] == "invalid_client"
+    assert step.detail["safe"].endswith("nothing was sent")
+    assert error.value.details["name"] == "invalid_client"
+    assert "invalid_client" in caplog.text
+    assert "sandbox-secret" not in caplog.text + str(step.detail)
+
+
+@pytest.mark.edge
+async def test_an_unreachable_sign_in_is_a_paypal_error_not_a_crash() -> None:
+    record, token = _recorded_steps()
+    try:
+        with pytest.raises(PayPalClientError) as error:
+            await _sign_in_client(httpx.ConnectError("down")).get_order("ORD-1")
+    finally:
+        trace._current.reset(token)
+    assert error.value.details["retryable"] is True
+    (step,) = record.after(0)
+    assert step.detail["http"] == "unreachable"
+    assert step.detail["safe"] == "PayPal could not be reached: nothing was sent"
+
+
+@pytest.mark.edge
+async def test_a_good_sign_in_is_reported_without_the_token() -> None:
+    issued = httpx.Response(
+        200, json={"access_token": "SECRET-TOKEN", "expires_in": 60}
+    )
+    record, token = _recorded_steps()
+    try:
+        await _sign_in_client(issued).get_order("ORD-1")
+    finally:
+        trace._current.reset(token)
+    sign_in = record.after(0)[0]
+    assert sign_in.title.startswith("PayPal sign-in")
+    assert sign_in.status == trace.OK
+    assert "SECRET-TOKEN" not in str([s.detail for s in record.after(0)])

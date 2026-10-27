@@ -12,6 +12,7 @@ arrive from the agent and must never be able to alter the path.
 
 import hashlib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -26,6 +27,8 @@ from agentcosign.core import trace
 from agentcosign.core.exceptions import PayPalClientError
 from agentcosign.models.policy import REQUEST_ID_PATTERN
 
+logger = logging.getLogger(__name__)
+
 SANDBOX_BASE = "https://api-m.sandbox.paypal.com"  # sandbox only; not configurable
 REQUEST_ID_HEADER = "PayPal-Request-Id"
 TIMEOUT_SECONDS = 15
@@ -34,6 +37,8 @@ NOT_VERIFIED = "FAILURE"
 TOKEN_REFRESH_MARGIN_MS = 300_000
 PAYPAL_ID = re.compile(r"^[A-Z0-9-]{1,64}$")
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+SIGN_IN_PATH = "/v1/oauth2/token"
+SIGN_IN_TITLE = "PayPal sign-in (OAuth, this app's credentials)"
 HTTP_FIRST_ERROR = 400
 HTTP_FIRST_SERVER_ERROR = 500
 # PayPal's published sandbox test cards, used only to create demo test orders
@@ -119,7 +124,8 @@ def _error_from(response: httpx.Response) -> PayPalClientError:
         f"PayPal returned {response.status_code}",
         {
             "status": response.status_code,
-            "name": body.get("name", ""),
+            # REST errors give a name; the sign-in endpoint gives an "error" code
+            "name": body.get("name") or body.get("error", ""),
             "issues": [i for i in issues if i][:5],
             "retryable": response.status_code in RETRYABLE_STATUSES,
         },
@@ -153,15 +159,26 @@ class LivePayPalClient:
         await self._http.aclose()
 
     async def _fetch_token(self) -> str:
-        response = await self._http.post(
-            "/v1/oauth2/token",
-            auth=(self._client_id, self._client_secret.get_secret_value()),
-            data={"grant_type": "client_credentials"},
-            headers={"Accept": "application/json"},
-            timeout=TIMEOUT_SECONDS,
-        )
-        if response.status_code != 200:
-            raise _error_from(response)
+        started = time.monotonic()
+        try:
+            response = await self._http.post(
+                SIGN_IN_PATH,
+                auth=(self._client_id, self._client_secret.get_secret_value()),
+                data={"grant_type": "client_credentials"},
+                headers={"Accept": "application/json"},
+                timeout=TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            _report_sign_in(started, None)
+            raise PayPalClientError(
+                "PayPal could not be reached",
+                {"error": type(exc).__name__, "retryable": True},
+            ) from exc
+        if response.status_code != httpx.codes.OK:
+            error = _error_from(response)
+            _report_sign_in(started, response.status_code, str(error.details["name"]))
+            raise error
+        _report_sign_in(started, response.status_code)
         body = response.json()
         lifetime_ms = int(body.get("expires_in", 0)) * 1000
         self._token = str(body["access_token"])
@@ -529,6 +546,35 @@ def _report_call(
         paypal_id=returned.get("id", ""),
         paypal_status=returned.get("status", ""),
         safe=safe_state(method, status) if failed else "",
+    )
+
+
+# guardrail: allow float-annotation -- monotonic seconds, not money
+def _report_sign_in(started: float, status: int | None, refused_as: str = "") -> None:
+    """PayPal's sign-in for this app, for the live step record and the log: the
+    status and PayPal's error name only, never the token or the credentials."""
+    ms = int((time.monotonic() - started) * 1000)
+    if status == httpx.codes.OK:
+        trace.emit("paypal", SIGN_IN_TITLE, trace.OK, ms, http=status)
+        return
+    safe = (
+        "PayPal could not be reached: nothing was sent"
+        if status is None
+        else "PayPal didn't accept this app's credentials: nothing was sent"
+    )
+    logger.warning(
+        "PayPal sign-in failed: http=%s error=%s",
+        "unreachable" if status is None else status,
+        refused_as or "-",
+    )
+    trace.emit(
+        "paypal",
+        SIGN_IN_TITLE,
+        trace.FAIL,
+        ms,
+        http="unreachable" if status is None else status,
+        paypal_error=refused_as,
+        safe=safe,
     )
 
 
