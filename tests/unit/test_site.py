@@ -83,3 +83,29 @@ def test_the_landing_page_names_the_mode_the_server_reports(
     health = {"paypal_execution": execution, "capacity": "normal"}
     text = run_js(["describe"], f"describe({json.dumps(health)})", "landing.js")
     assert says in text and never not in text
+
+
+# (what /health says about the models, words that must appear, words that must not)
+AI_MODES = [
+    ("live", "AI checks run on live models", "are off"),
+    ("off", "AI checks are off", "live models"),
+]
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(("models", "says", "never"), AI_MODES)
+def test_the_landing_page_names_the_ai_mode_the_server_reports(
+    models: str, says: str, never: str
+) -> None:
+    health = {"paypal_execution": "sandbox", "ai_models": models, "capacity": "normal"}
+    text = run_js(["describe"], f"describe({json.dumps(health)})", "landing.js")
+    assert says in text and never not in text
+
+
+@pytest.mark.edge
+def test_the_landing_page_leads_into_the_app() -> None:
+    page = get("/").text
+    assert re.search(r'<a class="start" href="/approve">Open the app</a>', page)
+    assert "Try a scenario" in page and "Behind the scenes" in page
+    assert "no public way" not in page
+    assert get("/approve").status_code == 200

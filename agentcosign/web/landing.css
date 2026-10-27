@@ -110,3 +110,25 @@ footer {
   font-size: 0.9rem;
   border-top: 1px dashed var(--rule);
 }
+
+/* the one thing to do on this page: open the app */
+.start {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 22px;
+  border-radius: 12px;
+  background: var(--ink);
+  color: var(--surface);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.start:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+ol li {
+  margin-bottom: 8px;
+}
