@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
-from agentcosign.clients.llm import OpenAICompatibleProvider
+from agentcosign.clients.llm import OpenAICompatibleProvider, QuotaListener
 from agentcosign.clients.paypal import (
     LivePayPalClient,
     PayPalClient,
@@ -80,7 +80,9 @@ def open_messages(settings: Settings) -> MessageStore:
     )
 
 
-def build_checks(settings: Settings) -> CustomerChecks | None:
+def build_checks(
+    settings: Settings, on_quota: QuotaListener | None = None
+) -> CustomerChecks | None:
     """The AI checks on customer messages, or None when no model key is set (then
     every request with a message is treated as unchecked and asks the merchant)."""
     key = settings.groq_api_key
@@ -88,22 +90,36 @@ def build_checks(settings: Settings) -> CustomerChecks | None:
         return None
     models = settings.models
     return CustomerChecks(
-        guard_model=OpenAICompatibleProvider("guard", models.guard, key),
-        screening_model=OpenAICompatibleProvider("screening", models.screening, key),
-        reading_model=OpenAICompatibleProvider("extraction", models.extraction, key),
+        guard_model=OpenAICompatibleProvider(
+            "guard", models.guard, key, on_quota=on_quota
+        ),
+        screening_model=OpenAICompatibleProvider(
+            "screening", models.screening, key, on_quota=on_quota
+        ),
+        reading_model=OpenAICompatibleProvider(
+            "extraction", models.extraction, key, on_quota=on_quota
+        ),
         threshold=settings.screening.guard_threshold,
     )
 
 
-def build_assistant(settings: Settings) -> OpenAICompatibleProvider | None:
+def build_assistant(
+    settings: Settings, on_quota: QuotaListener | None = None
+) -> OpenAICompatibleProvider | None:
     """The refund assistant's model, or None when no model key is set."""
     key = settings.groq_api_key
     if not key.get_secret_value():
         return None
-    return OpenAICompatibleProvider("agent", settings.models.agent, key)
+    return OpenAICompatibleProvider(
+        "agent", settings.models.agent, key, on_quota=on_quota
+    )
 
 
-def build_gateway(settings: Settings, paypal: PayPalClient | None = None) -> Gateway:
+def build_gateway(
+    settings: Settings,
+    paypal: PayPalClient | None = None,
+    on_quota: QuotaListener | None = None,
+) -> Gateway:
     """The gateway as the service runs it; the command line uses the same one."""
     return Gateway(
         ledger=open_ledger(settings),
@@ -121,12 +137,15 @@ def build_gateway(settings: Settings, paypal: PayPalClient | None = None) -> Gat
             settings.paypal_webhook_id if settings.paypal_execution == "sandbox" else ""
         ),
         messages=open_messages(settings),
-        checks=build_checks(settings),
+        checks=build_checks(settings, on_quota),
     )
 
 
 def build_workspaces(
-    settings: Settings, default: Gateway, paypal: PayPalClient | None = None
+    settings: Settings,
+    default: Gateway,
+    paypal: PayPalClient | None = None,
+    on_quota: QuotaListener | None = None,
 ) -> Workspaces[Gateway]:
     """The owner's gateway plus, in the hosted demo, one private gateway per visitor.
 
@@ -148,7 +167,7 @@ def build_workspaces(
                 "audit_hmac_key": SecretStr(secret.hexdigest()),
             }
         )
-        return build_gateway(own, shared_paypal)
+        return build_gateway(own, shared_paypal, on_quota)
 
     return Workspaces(
         default=default, build=build, demo=settings.env == "demo", limits=settings.demo

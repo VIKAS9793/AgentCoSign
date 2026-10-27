@@ -198,15 +198,22 @@ def _register_policy_routes(app: FastAPI, settings: Settings) -> None:
 
 
 def _install_gateway(
-    app: FastAPI, settings: Settings, paypal: PayPalClient | None
+    app: FastAPI, settings: Settings, paypal: PayPalClient | None, guard: TrafficGuard
 ) -> None:
     """Build the gateway and add its routes."""
     shared = paypal or paypal_client(settings)
-    app.state.gateway = build_gateway(settings, shared)
-    app.state.workspaces = build_workspaces(settings, app.state.gateway, shared)
+
+    def on_quota(model: str, left: int | None, limit: int | None) -> None:
+        """Each model's own daily quota, so the demo stops before it runs out."""
+        guard.observe_provider_quota(left, limit, model)
+
+    app.state.gateway = build_gateway(settings, shared, on_quota)
+    app.state.workspaces = build_workspaces(
+        settings, app.state.gateway, shared, on_quota
+    )
     app.state.scenarios = ScenarioRunner(
         paypal=shared,
-        assistant=build_assistant(settings),
+        assistant=build_assistant(settings, on_quota),
         per_day=settings.demo.scenarios_per_workspace_per_day,
     )
     app.include_router(gateway_router)
@@ -231,7 +238,7 @@ def create_app(
         lifespan=lifespan,
     )
     guard = _install_traffic_protection(app, settings)
-    _install_gateway(app, settings, paypal)
+    _install_gateway(app, settings, paypal, guard)
     _install_security_headers(app)
     register_site(app, docs_enabled=not is_prod)
     _register_system_routes(app, settings, guard)

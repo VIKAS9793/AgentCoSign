@@ -38,6 +38,11 @@ ROLE_NAMES = {
 }
 
 Message = Mapping[str, str]
+# the provider's daily request quota for the model that answered
+QUOTA_REMAINING = "x-ratelimit-remaining-requests"
+QUOTA_LIMIT = "x-ratelimit-limit-requests"
+# told each primary model's quota: (model, requests left today, daily limit)
+QuotaListener = Callable[[str, int | None, int | None], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +84,19 @@ def _usable_text(response: httpx.Response) -> str | None:
     return text if isinstance(text, str) and text.strip() else None
 
 
+def _quota(response: httpx.Response) -> tuple[int | None, int | None]:
+    """Requests left today and the daily limit, when the provider says."""
+
+    def number(name: str) -> int | None:
+        """A whole number from a header, or None when it is missing or not one."""
+        try:
+            return int(response.headers.get(name, ""))
+        except ValueError:
+            return None
+
+    return number(QUOTA_REMAINING), number(QUOTA_LIMIT)
+
+
 # guardrail: allow float-annotation -- seconds to rest, not money
 def _rest_seconds(response: httpx.Response) -> float:
     try:
@@ -100,9 +118,11 @@ class OpenAICompatibleProvider:
         http: httpx.AsyncClient | None = None,
         # guardrail: allow float-annotation -- monotonic seconds, not money
         clock: Callable[[], float] = time.monotonic,
+        on_quota: QuotaListener | None = None,
     ) -> None:
         if not api_key.get_secret_value():
             raise ModelUnavailableError(f"no key is configured for {role}")
+        self._on_quota = on_quota
         self._role = role
         self._config = config
         self._key = api_key
@@ -167,6 +187,9 @@ class OpenAICompatibleProvider:
             )
         except httpx.HTTPError:
             return None
+        if primary and self._on_quota is not None:
+            # fallbacks have their own quotas and answer only when a primary cannot
+            self._on_quota(model, *_quota(response))
         if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
             if primary:
                 self._primary_rests_until = self._clock() + _rest_seconds(response)

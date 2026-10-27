@@ -26,6 +26,7 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 
+from agentcosign.api.protection import ClientContext, monotonic_ms
 from agentcosign.api.site import site_build
 from agentcosign.core import trace
 from agentcosign.core.config import Settings
@@ -37,6 +38,7 @@ from agentcosign.core.exceptions import (
     PayPalClientError,
     SignatureError,
 )
+from agentcosign.core.limits import TrafficGuard, WorkKind
 from agentcosign.schemas.gateway import (
     REQUEST_ID,
     CredentialIn,
@@ -276,6 +278,50 @@ def _workspace_key(request: Request) -> str:
     return request.headers.get(WORKSPACE_HEADER, "") or "owner"
 
 
+# what a visitor is told when a test run cannot start, safe state first
+LIVE_RUN_REFUSED = {
+    "client_quota": (
+        "No money moved. You've run several tests in a row: wait a few minutes, "
+        "then try again."
+    ),
+    "daily_budget": "No money moved. Today's live test runs are used up: try later.",
+    "provider_exhausted": (
+        "No money moved. Today's live test runs are used up: try later."
+    ),
+}
+
+
+def _spend_live_run(request: Request, runner: ScenarioRunner) -> None:
+    """A test run spends live model calls: it starts only within the visitor's own
+    allowance, their rate and today's shared budget, and nothing is created when
+    it cannot start."""
+    try:
+        runner.check_allowance(_workspace_key(request))
+    except LimitReachedError as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, exc.message) from exc
+    settings: Settings = request.app.state.settings
+    if not settings.has_live_models:
+        return  # no live models: nothing to spend, the run says so itself
+    guard: TrafficGuard = request.app.state.guard
+    context: ClientContext = request.state.client
+    decision = guard.request_live(
+        context.key, context.tier, WorkKind.LIVE_LLM, monotonic_ms()
+    )
+    if decision.live:
+        return
+    trace.emit(
+        "demo",
+        "Test run not started: live model budget used up",
+        trace.WARN,
+        reason=decision.reason,
+        safe="No money moved: no order was created",
+    )
+    raise HTTPException(
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        LIVE_RUN_REFUSED.get(decision.reason, LIVE_RUN_REFUSED["daily_budget"]),
+    )
+
+
 @router.post(
     "/v1/demo/scenarios/{key}", dependencies=[Depends(require_approver_session)]
 )
@@ -283,7 +329,9 @@ async def run_scenario(key: ScenarioKey, request: Request) -> dict[str, Any]:
     """Hosted demo only: run one ready scenario in the visitor's own workspace."""
     _demo_only(request)
     runner: ScenarioRunner = request.app.state.scenarios
-    run = runner.run_ready(_gateway(request), _workspace_key(request), key)
+    gateway = _gateway(request)
+    _spend_live_run(request, runner)
+    run = runner.run_ready(gateway, _workspace_key(request), key)
     return await _run_demo(run)
 
 
@@ -296,7 +344,9 @@ async def run_own_message(body: DemoMessageIn, request: Request) -> dict[str, An
             status.HTTP_422_UNPROCESSABLE_CONTENT, "That message is too long."
         )
     runner: ScenarioRunner = request.app.state.scenarios
-    run = runner.run_own(_gateway(request), _workspace_key(request), body.text)
+    gateway = _gateway(request)
+    _spend_live_run(request, runner)
+    run = runner.run_own(gateway, _workspace_key(request), body.text)
     return await _run_demo(run)
 
 

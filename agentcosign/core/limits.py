@@ -194,6 +194,8 @@ class TrafficGuard:
         }
         self._provider_remaining_percent: int | None = None
         self._provider_exhausted = False
+        # each model's latest daily quota from the provider: (left, limit)
+        self._provider_quotas: dict[str, tuple[int, int]] = {}
 
     # ----------------------------------------------------------------- admission
 
@@ -294,12 +296,22 @@ class TrafficGuard:
             return LiveDecision(live=True)
         return LiveDecision(live=False, reason="daily_budget")
 
-    def observe_provider_quota(self, remaining: int | None, limit: int | None) -> None:
-        """Feed the provider's own quota headers; they outrank local counters."""
+    def observe_provider_quota(
+        self, remaining: int | None, limit: int | None, source: str = ""
+    ) -> None:
+        """Feed the provider's own quota headers; they outrank local counters.
+
+        Each model has its own daily quota, so each ``source`` is kept apart and
+        the tightest one decides: one model running out is enough to stop.
+        """
         if remaining is None or not limit or limit <= 0:
             return
-        self._provider_exhausted = remaining <= 0
-        self._provider_remaining_percent = (remaining * 100) // limit
+        self._provider_quotas[source] = (max(remaining, 0), limit)
+        quotas = self._provider_quotas.values()
+        self._provider_exhausted = any(left <= 0 for left, _ in quotas)
+        self._provider_remaining_percent = min(
+            (left * 100) // total for left, total in quotas
+        )
 
     def capacity_mode(self, now_ms: int) -> CapacityMode:
         """Summarise what can be served live right now."""

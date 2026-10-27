@@ -136,6 +136,18 @@ class ScenarioRunner:
             self._used[workspace] = [*recent, now]
             return now
 
+    def check_allowance(self, workspace: str) -> None:
+        """Refuse a run the workspace has no allowance left for, spending nothing.
+
+        Asked before any shared budget is spent, so a visitor past their own
+        daily allowance cannot use up what other visitors need.
+        """
+        with self._lock:
+            now = self._clock()
+            recent = [t for t in self._used.get(workspace, []) if now - t < DAY_SECONDS]
+            if len(recent) >= self._per_day:
+                raise LimitReachedError("today's test scenarios are used up")
+
     # guardrail: allow float-annotation -- wall-clock seconds, not money
     def _give_back(self, workspace: str, taken: float) -> None:
         """A test order PayPal could not create does not use up the allowance."""
