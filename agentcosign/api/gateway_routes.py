@@ -461,9 +461,18 @@ async def merchant_home(request: Request) -> dict[str, Any]:
     """Everything the merchant's home shows, with every state decided here."""
     token = request.headers.get("x-approver-session", "")
     gateway = _gateway(request)
-    # the dashboard's own PayPal reads follow, so they are not taken for a run's
-    trace.emit("app", "Merchant's dashboard refreshed: figures re-read from PayPal")
-    return {**await gateway.home(token), "build": site_build()}
+    before = trace.position()
+    home = await gateway.home(token)
+    # the dashboard's own PayPal reads, named so they are not taken for a run's;
+    # a refresh that read nothing from PayPal reports nothing
+    reads = sum(1 for step in trace.since(before) if step.layer == "paypal")
+    if reads:
+        trace.emit(
+            "app",
+            "Merchant's dashboard refreshed: the PayPal reads above were for it",
+            paypal_reads=reads,
+        )
+    return {**home, "build": site_build()}
 
 
 @router.get("/v1/approvals/stream", dependencies=[Depends(require_approver_session)])

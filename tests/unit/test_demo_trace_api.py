@@ -19,6 +19,7 @@ Edge cases (written before the code):
 | A PayPal call | Carries PayPal's own id and status for what it returned |
 | Any step, any outcome | Rules named by what they mean, never by an internal id |
 | The dashboard re-reads PayPal | Labelled as the dashboard, not part of a run |
+| The dashboard reads nothing from PayPal | No dashboard step at all |
 """
 
 import json
@@ -230,8 +231,19 @@ def test_no_step_names_a_rule_by_its_internal_id(demo: Env) -> None:
 
 @pytest.mark.edge
 def test_dashboard_reads_are_labelled_as_the_dashboard(demo: Env) -> None:
+    demo.propose("r1", "10.00")  # waiting for approval, so the dashboard reads it
     session = demo.session()
     demo.client.get("/v1/approvals/home", headers=session)
-    dashboard = [s for s in _read(demo, session)["steps"] if s["layer"] == "app"]
-    assert dashboard
-    assert dashboard[-1]["title"].startswith("Merchant's dashboard refreshed")
+    steps = _read(demo, session)["steps"]
+    label = steps[-1]
+    assert label["layer"] == "app"
+    assert label["title"].startswith("Merchant's dashboard refreshed")
+    assert int(label["detail"]["paypal_reads"]) >= 1
+    assert steps[-2]["layer"] == "paypal"
+
+
+@pytest.mark.edge
+def test_a_dashboard_refresh_that_read_nothing_reports_nothing(demo: Env) -> None:
+    session = demo.session()
+    demo.client.get("/v1/approvals/home", headers=session)
+    assert not [s for s in _read(demo, session)["steps"] if s["layer"] == "app"]
