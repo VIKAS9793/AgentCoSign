@@ -1822,6 +1822,10 @@
   }
 
   // --- notices: short messages about changes the server reported -------------------
+  // the request a test scenario just produced: its own screen already says what
+  // happened, so only a later failure of it is announced
+  var shownByRun = "";
+
   function noticesFor(previous, next) {
     if (!previous) {
       return [];
@@ -1831,6 +1835,9 @@
     Object.keys(previous.sections).forEach(function (key) {
       previous.sections[key].forEach(function (item) { before[item.request_id] = key; });
     });
+    if (shownByRun) {
+      before[shownByRun] = "shown";
+    }
     next.sections.needs_decision.forEach(function (item) {
       if (!before[item.request_id]) {
         notes.push("New refund request: " + money(item.amount) + " for " + item.customer);
@@ -1921,6 +1928,8 @@
     post(path, body, sessionHeaders())
       .then(function (result) {
         demoBusy(false);
+        // its review or outcome screen opens next, so no notice repeats it
+        shownByRun = result.outcome ? result.outcome.request_id : "";
         openHome().then(function () { showDemoResult(result); });
       })
       .catch(function (failure) {
@@ -1965,6 +1974,12 @@
     }
     if (outcome.decision === "allow" && outcome.paypal_status === "COMPLETED") {
       return ["sent", amount + " refunded to " + result.customer, ["Handled on its own: it was within your automatic limit and the checks passed.", "PayPal confirmed it."], outcome.paypal_id];
+    }
+    if (outcome.decision === "allow" && outcome.state === "failed") {
+      // stopped before sending, or answered as failed by PayPal: either way nothing reached the customer
+      return outcome.execution === "exceeds_refundable"
+        ? ["stopped", "Not sent: it would refund more than was paid. No money moved.", ["PayPal's figures changed before sending."], ""]
+        : ["stopped", "PayPal didn't complete the refund. No money moved.", ["Ask your assistant to try again."], ""];
     }
     if (outcome.decision === "allow") {
       return ["check", "Waiting for PayPal", ["It won't be sent twice. You'll see the result in Refund requests as soon as PayPal answers."], ""];

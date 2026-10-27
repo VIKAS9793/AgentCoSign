@@ -1,0 +1,124 @@
+"""What the app shows after a test scenario, run in Node from the shipped script.
+
+Edge cases (written before the code):
+
+| Case | Expected |
+|---|---|
+| PayPal confirmed the refund | "refunded to" the customer, with PayPal's reference |
+| Allowed, PayPal not answered yet | "Waiting for PayPal": not sent, not "no money" |
+| Allowed, PayPal answered failed | No money moved, PayPal named as not completing |
+| Allowed, stopped before sending | No money moved, and not blamed on PayPal |
+| Refused by the checks | No money moved |
+| No refund suggested | No money moved |
+| The scenario's own request changes | No notice repeats what its screen says |
+| That request later fails | Still announced |
+| Any other request changes | Announced as before |
+"""
+
+import json
+from typing import Any
+
+import pytest
+
+from tests.unit.web_js import run_js, script_function
+
+ENDING = ["demoEnding"]
+NOTICES = ["money", "noticesFor"]
+ORDER = {"customer": "Riya Sharma", "amount": "9.00"}
+
+
+def _ending(outcome: dict[str, Any] | None) -> Any:
+    result = {**ORDER, "outcome": outcome}
+    return run_js(ENDING, f"demoEnding({json.dumps(result)})")
+
+
+def _allowed(**extra: Any) -> dict[str, Any]:
+    return {"request_id": "r1", "decision": "allow", **extra}
+
+
+# (outcome, first words of the headline, words that must not appear)
+NOTHING_MOVED = [
+    (_allowed(state="failed", execution="paypal_failed"), "PayPal didn't complete"),
+    (_allowed(state="failed", execution="exceeds_refundable"), "Not sent: it would"),
+    ({"request_id": "r1", "decision": "deny", "state": "denied"}, "Refused."),
+    (None, "No refund suggested."),
+]
+
+
+def test_a_refund_paypal_confirmed_names_the_customer_and_reference() -> None:
+    outcome = _allowed(state="executed", paypal_status="COMPLETED", paypal_id="RF-1")
+    kind, title, _, reference = _ending(outcome)
+    assert (kind, title, reference) == ("sent", "$9.00 refunded to Riya Sharma", "RF-1")
+
+
+@pytest.mark.edge
+def test_a_refund_paypal_has_not_answered_is_waiting_not_sent() -> None:
+    kind, title, lines, reference = _ending(_allowed(state="executing"))
+    assert (kind, title, reference) == ("check", "Waiting for PayPal", "")
+    assert "No money moved" not in " ".join([title, *lines])
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(("outcome", "starts"), NOTHING_MOVED)
+def test_nothing_moved_is_said_only_where_nothing_reached_the_customer(
+    outcome: dict[str, Any] | None, starts: str
+) -> None:
+    kind, title, _, reference = _ending(outcome)
+    assert title.startswith(starts)
+    assert "No money moved" in title
+    assert "refunded to" not in title
+    assert (kind, reference) == ("stopped", "")
+
+
+@pytest.mark.edge
+def test_stopped_before_sending_is_not_blamed_on_paypal() -> None:
+    _, title, _, _ = _ending(_allowed(state="failed", execution="exceeds_refundable"))
+    assert "PayPal didn't" not in title
+
+
+def _notices(shown: str, before: dict[str, Any], after: dict[str, Any]) -> Any:
+    expression = (
+        f"(shownByRun = {json.dumps(shown)}, "
+        f"noticesFor({json.dumps(before)}, {json.dumps(after)}))"
+    )
+    return run_js(NOTICES, expression, constants=("shownByRun",))
+
+
+def _home(**sections: list[dict[str, str]]) -> dict[str, Any]:
+    names = ("needs_decision", "paused", "sending", "failed")
+    return {
+        "sections": {name: sections.get(name, []) for name in names},
+        "done": {"recent": sections.get("recent", [])},
+    }
+
+
+SENDING = {"request_id": "r1", "amount": "9.00", "customer": "Riya Sharma"}
+SENT = {**SENDING, "outcome": "executed", "paypal_status": "COMPLETED"}
+OTHER = {"request_id": "r2", "amount": "40.00", "customer": "Arjun Mehta"}
+
+
+@pytest.mark.edge
+def test_the_scenarios_own_request_is_not_announced_again() -> None:
+    sent = _notices("r1", _home(sending=[SENDING]), _home(recent=[SENT]))
+    new = _notices("r2", _home(), _home(needs_decision=[OTHER]))
+    assert sent == []
+    assert new == []
+
+
+@pytest.mark.edge
+def test_a_later_failure_of_that_request_is_still_announced() -> None:
+    notes = _notices("r1", _home(sending=[SENDING]), _home(failed=[SENDING]))
+    assert notes == [
+        "The $9.00 refund to Riya Sharma didn't go through. No money reached them."
+    ]
+
+
+def test_other_requests_are_announced_as_before() -> None:
+    notes = _notices("r1", _home(), _home(needs_decision=[OTHER]))
+    assert notes == ["New refund request: $40.00 for Arjun Mehta"]
+
+
+@pytest.mark.edge
+def test_a_run_marks_its_request_before_the_dashboard_reloads() -> None:
+    run = script_function("runDemo")
+    assert run.index("shownByRun = result.outcome") < run.index("openHome()")
