@@ -10,6 +10,7 @@ Edge cases (written before the code):
 | Allowed, stopped before sending | No money moved, and not blamed on PayPal |
 | Refused by the checks | No money moved |
 | No refund suggested | No money moved |
+| No refund, the checks caught a trick | A likely trick, nothing moved, see activity |
 | The scenario's own request changes | No notice repeats what its screen says |
 | That request later fails | Still announced |
 | Any other request changes | Announced as before |
@@ -27,8 +28,8 @@ NOTICES = ["money", "noticesFor"]
 ORDER = {"customer": "Riya Sharma", "amount": "9.00"}
 
 
-def _ending(outcome: dict[str, Any] | None) -> Any:
-    result = {**ORDER, "outcome": outcome}
+def _ending(outcome: dict[str, Any] | None, caught: bool = False) -> Any:
+    result = {**ORDER, "outcome": outcome, "caught": caught}
     return run_js(ENDING, f"demoEnding({json.dumps(result)})")
 
 
@@ -122,3 +123,13 @@ def test_other_requests_are_announced_as_before() -> None:
 def test_a_run_marks_its_request_before_the_dashboard_reloads() -> None:
     run = script_function("runDemo")
     assert run.index("shownByRun = result.outcome") < run.index("openHome()")
+
+
+@pytest.mark.edge
+def test_a_caught_trick_says_so_and_that_nothing_moved() -> None:
+    kind, title, lines, reference = _ending(None, caught=True)
+    assert (kind, reference) == ("stopped", "")
+    assert title == "Looked like a trick. No money moved."
+    assert "refund activity" in " ".join(lines)
+    _, clean_title, _, _ = _ending(None)
+    assert clean_title.startswith("No refund suggested.")

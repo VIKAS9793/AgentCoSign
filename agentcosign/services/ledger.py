@@ -74,6 +74,8 @@ GENESIS_HASH = "0" * 64
 CONTROL_REQUEST = "control:refunds"
 RECONCILE_REQUEST = "control:reconciliation"
 WEBHOOK_REQUEST = "control:webhooks"
+# messages the checks caught trying to steer the assistant, with no refund proposed
+ATTACKS_REQUEST = "control:messages"
 STOP_CONTROL = "refunds_stopped"
 STOP_EVENTS = {"refunds_stopped": "yes", "refunds_resumed": "no"}
 BUSY_TIMEOUT_SECONDS = 5
@@ -702,6 +704,19 @@ class Ledger:
         """Record one run's counts in the chain."""
         with self._transaction() as conn:
             self._append(conn, RECONCILE_REQUEST, "reconciled", summary, now)
+
+    def record_attack(self, body: dict[str, Any], now: datetime) -> None:
+        """Record a message the checks caught, by id and digest only: the
+        message's words and any amount stay out of the record."""
+        with self._transaction() as conn:
+            self._append(conn, ATTACKS_REQUEST, "attack_caught", body, now)
+
+    def attacks_since(self, now: datetime) -> list[dict[str, Any]]:
+        """Caught messages of the last 24 hours, newest first, at most a list's
+        worth; the same window as the refunds that ended."""
+        day_ago = _iso(_utc(now) - VELOCITY_WINDOW)
+        caught = [e for e in self.events(ATTACKS_REQUEST) if e["at"] >= day_ago]
+        return caught[::-1][:RECENT_LIMIT]
 
     def last_reconciliation(self) -> dict[str, Any] | None:
         """The most recent reconciliation run, from the chain, or None."""

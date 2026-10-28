@@ -1469,3 +1469,9 @@ textarea {
     width: 100%;
   }
 }
+
+/* a customer's own words: kept as written, long words wrap */
+.message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

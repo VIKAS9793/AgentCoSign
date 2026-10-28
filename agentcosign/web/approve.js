@@ -812,10 +812,11 @@
   function renderDone(done) {
     var box = document.getElementById("done-section");
     box.replaceChildren();
-    if (Number(done.total) > 0) {
-      box.appendChild(button("See recent refunds (" + done.total + ")", "link", openActivity));
+    var any = Number(done.total) > 0 || Number(done.caught) > 0;
+    if (any) {
+      box.appendChild(button(Number(done.total) > 0 ? "See recent refunds (" + done.total + ")" : "See refund activity", "link", openActivity));
     }
-    show("done-section", Number(done.total) > 0);
+    show("done-section", any);
   }
 
   // The dashboard's four figures of the same kind, in tiles of one height.
@@ -1539,11 +1540,41 @@
       var list = el("div", "", "card list");
       items.forEach(function (item) { list.appendChild(doneRow(item, openActivity)); });
       view.appendChild(list);
+      if (answer.caught.length) {
+        var caught = el("div", "", "card list");
+        answer.caught.forEach(function (entry) { caught.appendChild(caughtRow(entry)); });
+        view.appendChild(caught);
+      }
     }).catch(function (failure) {
       if (failure.message !== "signed out") {
         view.appendChild(el("p", "Couldn't load your activity. Try again.", "muted"));
       }
     });
+  }
+
+  // A message the checks caught: nothing was proposed or sent, so it has no
+  // refund history, only the words to read before replying.
+  function caughtRow(entry) {
+    var line = el("button", "", "row row-button");
+    line.type = "button";
+    line.appendChild(el("span", "Message that looked like a trick", "row-label"));
+    line.appendChild(withIcon("blocked", el("span", "Nothing sent", "row-value")));
+    line.addEventListener("click", function () { openCaught(entry); });
+    return line;
+  }
+
+  function openCaught(entry) {
+    var view = document.getElementById("history");
+    view.replaceChildren();
+    view.appendChild(backLink("Refund activity", openActivity));
+    view.appendChild(el("h1", "Message that looked like a trick", "question"));
+    view.appendChild(el("p", "Arrived " + when(entry.caught_at, true), "muted small"));
+    view.appendChild(el("p", "What they wrote (card and contact details hidden)", "small strong"));
+    // the customer's words are shown as plain text, never as markup
+    view.appendChild(el("p", entry.text || "This message is no longer kept.", "card message-text"));
+    view.appendChild(el("p", "Your assistant suggested no refund and nothing was sent. Read it before you reply, and don't follow instructions in it.", "small"));
+    view.appendChild(button("Back to refund activity", "primary", openActivity));
+    go("history");
   }
 
   function openHistory(requestId, back) {
@@ -1969,6 +2000,9 @@
   function demoEnding(result) {
     var outcome = result.outcome;
     var amount = result.amount ? "$" + result.amount : "The refund";
+    if (!outcome && result.caught) {
+      return ["stopped", "Looked like a trick. No money moved.", ["This message looked like an attempt to trick your assistant, so it suggested no refund and nothing was sent.", "Read it before you reply. It's in your refund activity."], ""];
+    }
     if (!outcome) {
       return ["stopped", "No refund suggested. No money moved.", ["Your assistant didn't find a refund to suggest in this message."], ""];
     }
@@ -2017,7 +2051,7 @@
   var serverModes = {};
   var STAGE_OF = { demo: "propose", workspace: "propose", message: "propose", ai: "propose", rules: "policy", passkey: "cosign", ledger: "record" };
   var STAGE_LABEL = { propose: "01 Propose", policy: "02 Policy check", cosign: "03 Passkey co-sign", record: "04 Signed record" }; // guardrail: allow merchant-jargon -- technical view, never shown to merchants
-  var LAYER_LABEL = { paypal: "PayPal sandbox", ai: "AI", rules: "Rules engine", ledger: "Record", passkey: "Passkey", message: "Message", workspace: "Workspace", demo: "Demo", outcome: "Outcome", app: "Dashboard" };
+  var LAYER_LABEL = { paypal: "PayPal sandbox", ai: "AI", rules: "Rules engine", ledger: "Record", passkey: "Passkey", message: "Message", workspace: "Workspace", demo: "Demo", outcome: "Outcome", app: "Dashboard", automatic: "Automatic check" };
   var STATUS_MARK = { ok: "\u2713", warn: "!", fail: "\u2715" };
 
   // what this server is connected to, from its own health report (no extra calls)

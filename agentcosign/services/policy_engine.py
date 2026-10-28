@@ -387,10 +387,19 @@ def _rule_customer_words(case: _Case) -> RuleHit | None:
     )
 
 
+def looks_like_attack(signals: Signals) -> bool:
+    """Whether the checks found an attempt to steer the assistant.
+
+    Either check is enough: the screening calls the message manipulation, or
+    the prompt guard finds attack wording. A check that could not run is not
+    a finding.
+    """
+    return signals.screening is ScreeningVerdict.INJECTION or signals.prescreen_hit
+
+
 def _rule_injection(case: _Case) -> RuleHit | None:
     """A screening verdict or a deterministic pre-screen hit denies."""
-    signals = case.signals
-    if signals.screening is ScreeningVerdict.INJECTION or signals.prescreen_hit:
+    if looks_like_attack(case.signals):
         return _hit(
             RULE_INJECTION,
             Decision.DENY,

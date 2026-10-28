@@ -41,6 +41,7 @@ class Ending:
     paypal_status: str | None = None
     amount: Decimal | None = None
     currency: str = "USD"
+    caught: bool = False  # no refund proposed, but the checks caught a trick
 
 
 def begin(layer: str, title: str, expects: str = "") -> Begun:
@@ -59,6 +60,9 @@ def headline(ending: Ending, how: str) -> tuple[str, str, str]:
     """The headline, its status mark and the money that moved."""
     money = f"${ending.amount}" if ending.amount is not None else "the refund"
     match ending.decision:
+        case None if ending.caught:
+            title = "Attack in the customer's message caught: no refund, nothing sent"
+            return title, trace.OK, NOTHING
         case None:
             return "No refund proposed: nothing sent", trace.WARN, NOTHING
         case "rejected":

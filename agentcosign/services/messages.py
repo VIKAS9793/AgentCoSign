@@ -42,6 +42,7 @@ _Q_ADD = (
     "received_at) VALUES (?, ?, ?, ?, ?)"
 )
 _Q_TEXT = "SELECT masked_text FROM messages WHERE message_id = ?"
+_Q_DIGEST = "SELECT digest FROM messages WHERE message_id = ?"
 _Q_SAVE = (
     "INSERT OR IGNORE INTO message_checks (request_id, message_id, signals_json, "
     "record_json, checked_at) VALUES (?, ?, ?, ?, ?)"
@@ -146,6 +147,12 @@ class MessageStore:
         with self._connection() as conn:
             row = conn.execute(_Q_TEXT, (message_id,)).fetchone()
         return None if row is None else str(row["masked_text"])
+
+    def digest(self, message_id: str) -> str | None:
+        """The keyed digest of the masked message, or None if it is not kept."""
+        with self._connection() as conn:
+            row = conn.execute(_Q_DIGEST, (message_id,)).fetchone()
+        return None if row is None else str(row["digest"])
 
     def save_checks(
         self,

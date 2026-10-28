@@ -5,6 +5,7 @@ Edge cases (written before the code):
 | Case | Expected |
 |---|---|
 | No refund proposed | Nothing sent |
+| No refund proposed, but the checks caught a trick | The trick is named; nothing sent |
 | Refused by the rules | Nothing sent; an attack found in the message is named |
 | Waiting for approval, or on hold | Nothing sent yet |
 | Declined by the merchant | Nothing sent |
@@ -36,6 +37,7 @@ HOW = run_report.AUTOMATICALLY
 # (ending, words the headline must contain, status mark, money moved)
 NOTHING_MOVED_CASES = [
     (Ending(None), "No refund proposed", trace.WARN),
+    (Ending(None, caught=True), "Attack in the customer's message caught", trace.OK),
     (Ending("deny", "denied", ("R14",)), "Refused by the rules", trace.OK),
     (Ending("deny", "denied", ("R11", "R14")), "Attack", trace.OK),
     (Ending("escalate", "pending_approval"), "Waiting for the merchant", trace.OK),

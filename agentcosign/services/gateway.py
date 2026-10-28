@@ -92,7 +92,7 @@ from agentcosign.services.ledger import (
 from agentcosign.services.messages import MessageStore
 from agentcosign.services.order_reads import OrderReads, Read
 from agentcosign.services.passkeys import PasskeyRegistry
-from agentcosign.services.policy_engine import VELOCITY_WINDOW
+from agentcosign.services.policy_engine import VELOCITY_WINDOW, looks_like_attack
 from agentcosign.services.reconciliation import Report, compare
 
 # longer than one PayPal call can take, so a retry never overlaps a live attempt
@@ -764,10 +764,28 @@ class Gateway:
 
     async def done_page(self) -> dict[str, Any]:
         """The latest ended requests and how many ended in all, so a capped list
-        is never presented as the whole day."""
+        is never presented as the whole day, plus the messages caught trying to
+        trick the assistant."""
         items = await self.done_today()
         total = await asyncio.to_thread(self._ledger.recent_count, self._clock())
-        return {"items": items, "total": str(total)}
+        return {"items": items, "total": str(total), "caught": await self.caught()}
+
+    async def caught(self) -> list[dict[str, str]]:
+        """Messages of the last 24 hours the checks caught, newest first, each
+        with its masked words for the merchant to read before replying."""
+        entries = await asyncio.to_thread(self._ledger.attacks_since, self._clock())
+        views: list[dict[str, str]] = []
+        for entry in entries:
+            message_id = str(entry["message_id"])
+            text = await self.message_text(message_id)
+            views.append(
+                {
+                    "message_id": message_id,
+                    "caught_at": str(entry["at"]),
+                    "text": text or "",
+                }
+            )
+        return views
 
     async def history(self, request_id: str) -> dict[str, Any] | None:
         """One request's record in owner words, and whether the record checks out."""
@@ -908,6 +926,7 @@ class Gateway:
         stopped = await asyncio.to_thread(self._ledger.refunds_stopped)
         last_run = await asyncio.to_thread(self._ledger.last_reconciliation)
         done_total = await asyncio.to_thread(self._ledger.recent_count, now)
+        caught = await asyncio.to_thread(self._ledger.attacks_since, now)
         sections: dict[str, list[dict[str, Any]]] = {name: [] for name in SECTIONS}
         for view in views:
             place = placement(view, now, stopped=stopped)
@@ -931,7 +950,11 @@ class Gateway:
             "counts": {key: str(len(items)) for key, items in sections.items()},
             "soonest_decide_by": min(decidable, default=""),
             "sections": sections,
-            "done": {"recent": done, "total": str(done_total)},
+            "done": {
+                "recent": done,
+                "total": str(done_total),
+                "caught": str(len(caught)),
+            },
             "today": {k: v for k, v in day.items() if k not in SETTING_KEYS},
             "settings": {k: day[k] for k in SETTING_KEYS},
         }
@@ -1232,6 +1255,35 @@ class Gateway:
         if self._messages is None:
             return None
         return await asyncio.to_thread(self._messages.text, message_id)
+
+    async def check_unproposed(self, message_id: str) -> bool:
+        """Run the AI checks on a message the assistant proposed nothing for.
+
+        No money is at stake, but a message that tried to trick the assistant
+        is still recorded and shown to the merchant, so they read it before
+        replying. Only a check that found something counts: clean or unable to
+        run is not an attack. Returns whether the checks caught it.
+        """
+        if self._messages is None or self._checks is None:
+            return False
+        text = await self.message_text(message_id)
+        if text is None:
+            return False
+        signals, record = await self._checks.run(text)
+        if not looks_like_attack(signals):
+            return False
+        digest = await asyncio.to_thread(self._messages.digest, message_id)
+        body = {
+            "message_id": message_id,
+            "message_digest": digest or "",
+            "prompt_guard": record.get("guard", "could not run"),
+            "screening": signals.screening.value,
+        }
+        try:
+            await asyncio.to_thread(self._ledger.record_attack, body, self._clock())
+        except (sqlite3.Error, AgentCoSignError):
+            logger.exception("could not record a message the checks caught")
+        return True
 
     async def _customer_asked(self, request_id: str, order_id: str = "") -> str:
         """The card's sentence on what the customer's message asked for."""
