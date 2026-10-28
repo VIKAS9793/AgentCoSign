@@ -78,7 +78,7 @@ The approval card shows what the customer asked for as a fixed sentence built fr
 | Component | Status |
 |---|---|
 | Strict fail-closed config, security headers, domain types, offline test suite, CI, container | ✅ Built (CI and the container image verified green) |
-| Hosted demo on Render with traffic protection (per-client limits, penalty box, reserved reviewer capacity, daily live-call pools), landing page, API reference | ✅ Built and verified on the live host (earlier release; the redeploy with everything below is pending) |
+| Hosted demo on Render with traffic protection (per-client limits, penalty box, reserved reviewer capacity, daily live-call pools), landing page, API reference | ✅ Live: real PayPal sandbox and live AI models; a refund verified end to end on the hosted site (Oct 27) |
 | Visitor sandbox: a private workspace per visitor (own database, own signing secret), five ready scenarios plus your own customer message, each on a real PayPal sandbox order | ✅ Built; verified live against the PayPal sandbox with live models (Oct 26) |
 | Behind the scenes: a live record of every backend step beside the app (PayPal calls with PayPal's ids, model answers, rule decisions in plain words, signed record entries, an outcome block per run), never carrying secrets or unmasked customer text | ✅ Built; verified live (Oct 26) |
 | Policy engine R1–R18 plus execution-drift check: 113-row scenario table, property tests for bounded exposure | ✅ Built and called by the propose route |
@@ -87,7 +87,7 @@ The approval card shows what the customer asked for as a fixed sentence built fr
 | Mobile PWA approver with WebAuthn passkey co-sign (approval bound to the exact refund) | ✅ Built; tested on a real Android phone and in Chrome against the PayPal sandbox |
 | Audit: each refund's own history in the app, checked against the sealed record; a public record head (`/api/v1/audit/head`) and command-line tools to publish and verify it | ✅ Built |
 | A full record browser for auditors | 🚧 Not built |
-| PayPal webhooks (refund and dispute events, signature verified by PayPal itself before anything is trusted) | ✅ Built and registered on the sandbox app; end-to-end delivery test after the redeploy |
+| PayPal webhooks (refund and dispute events, signature verified by PayPal itself before anything is trusted) | ✅ Built, registered on the sandbox app, and verified end to end on the hosted demo ([evidence](docs/evidence/sandbox/webhook-2026-10-28.md)) |
 | Payouts adapter, native Android approver | ⏳ Optional, not built |
 
 ## Results
