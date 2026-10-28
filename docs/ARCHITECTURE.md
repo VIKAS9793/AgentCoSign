@@ -69,9 +69,9 @@ sequenceDiagram
     else ESCALATE
         G->>G: reserve budget, write ledger
         G-->>A: 202 pending_approval (request_id)
-        H->>G: GET /approvals (facts first; what the AI read is labelled, no model-written text)
+        H->>G: GET /approvals (facts first, what the AI read is labelled, no model-written text)
         H->>G: approve (WebAuthn assertion over action hash)
-        G->>P: re-fetch evidence; abort if changed (R14)
+        G->>P: re-fetch evidence, abort if changed (R14)
         G->>P: create_refund (same request_id)
         G-->>A: (agent polls) executed
     else DENY
@@ -99,7 +99,7 @@ stateDiagram-v2
     PendingApproval --> Paused: co-sign, but the customer is now over the repeat limit
     PendingApproval --> Expired: open window elapsed (reservation released)
     Executing --> Executed: PayPal ID returned
-    Executing --> Failed: PayPal error (reservation released; retry only with the same key)
+    Executing --> Failed: PayPal error (reservation released, retry only with the same key)
     Executed --> [*]: PayPal COMPLETED (webhooks, signature verified, reconcile later changes)
     Denied --> [*]
     Expired --> [*]
