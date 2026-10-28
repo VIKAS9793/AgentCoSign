@@ -1,0 +1,20 @@
+{
+ "commit": "cc575fa",
+ "machine": "Windows AMD64, Python 3.12.10",
+ "rules_alone": {
+  "count": 226,
+  "p50_ms": 0.056,
+  "p95_ms": 0.083,
+  "max_ms": 0.16,
+  "mean_ms": 0.056
+ },
+ "full_decision_step": {
+  "count": 226,
+  "p50_ms": 12.228,
+  "p95_ms": 16.033,
+  "max_ms": 26.271,
+  "mean_ms": 12.398
+ },
+ "target_p95_ms": 300.0,
+ "meets_target": true
+}

@@ -103,7 +103,14 @@ AI checks, measured live on 60 labelled synthetic threads (Oct 25; full report a
 | Reading the customer's words (order, amount, currency, reason) | 20 of 20 each; "send it elsewhere" 19 of 20 |
 | Screening alone on held-out attacks | 13 of 19 (68%, 95% CI 46% to 85%): the checks are one layer; the limits and the merchant's approval are what keep money safe when they miss |
 
-Live sandbox runs (Oct 26): refunds sent on their own and after a passkey approval, each confirmed by PayPal with its own refund id, shown in the behind-the-scenes panel. To be added before submission with the commit they came from: policy scenario pass rate, p95 decision latency, ledger tamper detection.
+Rules, speed, record and PayPal (all measured at commit `cc575fa`):
+
+| Check | Result | Evidence |
+|---|---|---|
+| Policy scenario table | 113 of 113 rows decide as expected (248 engine tests pass) | `tests/scenarios/policy_scenarios.py` |
+| Decision speed, excluding AI and the person | p95 **0.033 ms** for the rules alone, **14.4 ms** for the full step with the signed record write (226 decisions each; target under 300 ms) | [`docs/evidence/performance/decision-latency-2026-10-28.md`](docs/evidence/performance/decision-latency-2026-10-28.md) |
+| Tamper detection | 7 of 7: an edited row, a deleted row, a rewrite without the key, a wrong key, a rewrite with the key (caught by a published head), a cut chain | [`docs/evidence/ledger/tamper-detection-2026-10-28.md`](docs/evidence/ledger/tamper-detection-2026-10-28.md) |
+| Live PayPal sandbox refunds | 7 sent (4 on their own, 3 after a passkey approval), all read back from PayPal as COMPLETED | [`docs/evidence/sandbox/refunds-2026-10.md`](docs/evidence/sandbox/refunds-2026-10.md) |
 
 ## Tech stack
 
