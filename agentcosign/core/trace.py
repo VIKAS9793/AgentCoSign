@@ -87,6 +87,11 @@ def use(trace: Trace | None) -> Token[Trace | None]:
     return _current.set(trace)
 
 
+def reset(token: Token[Trace | None]) -> None:
+    """Report into whatever record was in use before ``use`` returned ``token``."""
+    _current.reset(token)
+
+
 def emit(
     layer: str,
     title: str,

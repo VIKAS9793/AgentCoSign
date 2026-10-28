@@ -82,7 +82,13 @@ class Workspaces[G]:
         with self._lock:
             return self._traces.get(workspace_id)
 
-    def live(self) -> list[G]:
-        """Every workspace background work must cover, the owner's first."""
+    def tended(self) -> list[tuple[G, Trace | None]]:
+        """Every workspace background work must cover, the owner's first, each
+        with the step record its timed work reports into (none outside the
+        demo, the same as requests)."""
         with self._lock:
-            return [self.default, *self._open.values()]
+            pairs = [
+                (self.default, self._default_trace),
+                *((g, self._traces.get(w)) for w, g in self._open.items()),
+            ]
+        return [(g, record if self._demo else None) for g, record in pairs]

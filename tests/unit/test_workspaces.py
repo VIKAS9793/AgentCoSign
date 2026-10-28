@@ -55,7 +55,7 @@ def test_outside_the_demo_no_workspace_can_be_opened() -> None:
     registry = _registry(demo=False)
     with pytest.raises(LimitReachedError):
         registry.open("1.2.3.4")
-    assert registry.live() == ["owner"]
+    assert registry.tended() == [("owner", None)]
 
 
 def test_two_visitors_get_separate_workspaces() -> None:
@@ -110,4 +110,6 @@ def test_the_least_recently_used_workspace_closes_first() -> None:
 def test_background_work_covers_every_live_workspace() -> None:
     registry = _registry()
     opened = [registry.open(f"{n}.0.0.0") for n in range(2)]
-    assert registry.live() == ["owner"] + [f"gateway:{w}" for w in opened]
+    tended = registry.tended()
+    assert [g for g, _ in tended] == ["owner"] + [f"gateway:{w}" for w in opened]
+    assert [r for _, r in tended] == [registry.trace(w) for w in ["", *opened]]
