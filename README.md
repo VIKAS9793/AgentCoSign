@@ -6,11 +6,85 @@
 
 **Dual control for AI agents that move money on PayPal.** The agent proposes. Deterministic policy decides. A human co-signs risky actions on their phone. Every step lands in a tamper-evident ledger.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python: 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg)](https://fastapi.tiangolo.com/)
+<p align="center">
+  <a href="https://github.com/VIKAS9793/AgentCoSign/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/VIKAS9793/AgentCoSign/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2f7d4f"></a>
+  <img alt="PayPal sandbox only" src="https://img.shields.io/badge/PayPal-sandbox%20only-c2410c">
+  <a href="https://agentcosign-demo.onrender.com"><img alt="Live demo" src="https://img.shields.io/badge/demo-live%20on%20Render-1f2a24?logo=render&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://www.python.org/"><img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://fastapi.tiangolo.com/"><img alt="FastAPI 0.143" src="https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white"></a>
+  <a href="https://docs.pydantic.dev/"><img alt="Pydantic 2.14" src="https://img.shields.io/badge/Pydantic-2.14-E92063?logo=pydantic&logoColor=white"></a>
+  <a href="https://www.python-httpx.org/"><img alt="HTTPX 0.28" src="https://img.shields.io/badge/HTTPX-0.28-1f2a24"></a>
+  <a href="https://www.sqlite.org/"><img alt="SQLite WAL" src="https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white"></a>
+  <a href="https://github.com/duo-labs/py_webauthn"><img alt="WebAuthn passkeys" src="https://img.shields.io/badge/WebAuthn-py__webauthn%203.0-3423A6"></a>
+</p>
+
+<p align="center">
+  <a href="https://developer.paypal.com/"><img alt="PayPal REST APIs" src="https://img.shields.io/badge/PayPal-Orders%20v2%20%C2%B7%20Payments%20v2%20%C2%B7%20Disputes%20v1%20%C2%B7%20Webhooks-003087?logo=paypal&logoColor=white"></a>
+  <a href="https://groq.com/"><img alt="Groq" src="https://img.shields.io/badge/AI%20on-Groq%20(Zero%20Data%20Retention)-F55036"></a>
+</p>
+
+<sub>Versions are the ones tested locally; the container installs the newest release inside each range pinned in <code>pyproject.toml</code>.</sub>
 
 > Built during the **PayPal AI Hackathon 2026** (submission period Oct 1 – Nov 12, 2026). Sandbox only; no real funds.
+
+## How it works
+
+```mermaid
+flowchart LR
+    C(["Customer message"]) --> M["Masking<br/>cards, codes and IDs removed"]
+    M --> A["AI assistant<br/>proposes a refund<br/>holds no PayPal keys"]
+    M --> K["AI checks<br/>prompt guard, screening,<br/>reading of the customer's words"]
+    P[("PayPal sandbox<br/>order, refunds, disputes")] --> R
+    A --> R{"Rules engine<br/>R1 to R18<br/>strictest wins"}
+    K --> R
+    R -->|"small and clean"| S["Refund sent<br/>on its own"]
+    R -->|"needs a person"| H["Merchant reviews<br/>and signs with a passkey"]
+    R -->|"unsafe or unclear"| D["Refused<br/>nothing sent"]
+    H -->|"approve"| S
+    H -->|"decline"| D
+    S --> PP[("PayPal refund<br/>with PayPal-Request-Id")]
+    S --> L[("Signed record<br/>SHA-256 chain + HMAC")]
+    H --> L
+    D --> L
+    classDef ai fill:#f4e1d2,stroke:#c2410c,color:#1f2a24
+    classDef rule fill:#1f2a24,stroke:#1f2a24,color:#ffffff
+    classDef ok fill:#e3f1e7,stroke:#2f7d4f,color:#1f2a24
+    classDef stop fill:#fbe5e3,stroke:#b42318,color:#1f2a24
+    classDef store fill:#fdfcf9,stroke:#4b5563,color:#1f2a24
+    class A,K,M ai
+    class R rule
+    class S ok
+    class D stop
+    class P,PP,L,C store
+```
+
+A refund that needs the merchant, end to end:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Customer
+    participant AI as AI assistant
+    participant G as AgentCoSign
+    participant PP as PayPal sandbox
+    actor M as Merchant on a phone
+    Customer->>AI: The jacket is nothing like the photos, $40 back please
+    AI->>G: propose a $40.00 refund on the order
+    G->>PP: read the order, its refunds and disputes
+    G->>G: AI checks, then the rules: over the $25 automatic limit
+    G-->>M: needs your approval
+    M->>G: review, then sign this exact refund with a passkey
+    G->>PP: read again, then refund with the same PayPal-Request-Id
+    PP-->>G: COMPLETED and a refund id
+    G-->>M: $40.00 refunded, PayPal reference shown
+    Note over G: every step is sealed in the signed record
+```
+
+More detail: [Architecture](docs/ARCHITECTURE.md) (components, trust boundaries, state machine, API) · [Threat model](docs/THREAT_MODEL.md) · [Decisions](docs/DECISIONS.md).
 
 ## For judges and reviewers (60 seconds)
 
@@ -112,9 +186,43 @@ Rules, speed, record and PayPal (all measured at commit `cc575fa`):
 | Tamper detection | 7 of 7: an edited row, a deleted row, a rewrite without the key, a wrong key, a rewrite with the key (caught by a published head), a cut chain | [`docs/evidence/ledger/tamper-detection-2026-10-28.md`](docs/evidence/ledger/tamper-detection-2026-10-28.md) |
 | Live PayPal sandbox refunds | 7 sent (4 on their own, 3 after a passkey approval), all read back from PayPal as COMPLETED | [`docs/evidence/sandbox/refunds-2026-10.md`](docs/evidence/sandbox/refunds-2026-10.md) |
 
-## Tech stack
+## Built with, and special thanks
 
-Python 3.12+ · FastAPI · Pydantic v2 · PayPal Sandbox REST (the official `paypal-agent-toolkit` is an optional extra: it supports Python < 3.14 only) · Groq (OpenAI-compatible API, Zero Data Retention on) · SQLite (WAL) · WebAuthn · Ruff, mypy, bandit, pytest, hypothesis, gitleaks.
+This project stands on other people's excellent work. Thank you to the teams behind these services and open-source tools (each badge links to its home page).
+
+**Services and models**
+
+<p>
+  <a href="https://developer.paypal.com/"><img alt="PayPal Developer" src="https://img.shields.io/badge/PayPal%20Developer-003087?logo=paypal&logoColor=white"></a>
+  <a href="https://groq.com/"><img alt="Groq" src="https://img.shields.io/badge/Groq-F55036"></a>
+  <a href="https://github.com/openai/gpt-oss"><img alt="OpenAI gpt-oss" src="https://img.shields.io/badge/OpenAI%20gpt--oss-412991"></a>
+  <a href="https://github.com/QwenLM"><img alt="Qwen" src="https://img.shields.io/badge/Qwen-615CED"></a>
+  <a href="https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M"><img alt="Llama Prompt Guard 2" src="https://img.shields.io/badge/Llama%20Prompt%20Guard%202-0467DF?logo=meta&logoColor=white"></a>
+  <a href="https://render.com/"><img alt="Render" src="https://img.shields.io/badge/Render-1f2a24?logo=render&logoColor=white"></a>
+  <a href="https://cron-job.org/"><img alt="cron-job.org" src="https://img.shields.io/badge/cron--job.org-c2410c"></a>
+</p>
+
+**Libraries and tooling**
+
+<p>
+  <a href="https://fastapi.tiangolo.com/"><img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white"></a>
+  <a href="https://docs.pydantic.dev/"><img alt="Pydantic" src="https://img.shields.io/badge/Pydantic-E92063?logo=pydantic&logoColor=white"></a>
+  <a href="https://www.uvicorn.org/"><img alt="Uvicorn" src="https://img.shields.io/badge/Uvicorn-1f2a24"></a>
+  <a href="https://www.python-httpx.org/"><img alt="HTTPX" src="https://img.shields.io/badge/HTTPX-1f2a24"></a>
+  <a href="https://github.com/duo-labs/py_webauthn"><img alt="py_webauthn" src="https://img.shields.io/badge/py__webauthn-3423A6"></a>
+  <a href="https://www.sqlite.org/"><img alt="SQLite" src="https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white"></a>
+  <a href="https://docs.pytest.org/"><img alt="pytest" src="https://img.shields.io/badge/pytest-0A9EDC?logo=pytest&logoColor=white"></a>
+  <a href="https://hypothesis.works/"><img alt="Hypothesis" src="https://img.shields.io/badge/Hypothesis-1f2a24"></a>
+  <a href="https://docs.astral.sh/ruff/"><img alt="Ruff" src="https://img.shields.io/badge/Ruff-D7FF64?logo=ruff&logoColor=white"></a>
+  <a href="https://mypy-lang.org/"><img alt="mypy" src="https://img.shields.io/badge/mypy-2A6DB2"></a>
+  <a href="https://bandit.readthedocs.io/"><img alt="Bandit" src="https://img.shields.io/badge/Bandit-1f2a24"></a>
+  <a href="https://gitleaks.io/"><img alt="gitleaks" src="https://img.shields.io/badge/gitleaks-1f2a24"></a>
+  <a href="https://github.com/features/actions"><img alt="GitHub Actions" src="https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white"></a>
+  <a href="https://www.docker.com/"><img alt="Docker" src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white"></a>
+  <a href="https://www.anthropic.com/claude-code"><img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-D97757?logo=anthropic&logoColor=white"></a>
+</p>
+
+The official `paypal-agent-toolkit` is an optional extra rather than a dependency: it supports Python below 3.14 only and brings a large dependency tree for the four REST calls we need ([why](docs/ARCHITECTURE.md)).
 
 ## How this was built (use of AI tools)
 
@@ -137,7 +245,7 @@ ruff check . && ruff format --check . && mypy agentcosign/ && bandit -r agentcos
 
 ## Legal
 
-Independent open-source project, not affiliated with, sponsored by or endorsed by PayPal Holdings, Inc. or Groq, Inc. PayPal and Groq are trademarks of their respective owners. Models are accessed through the providers' hosted APIs under their own model licences; weights are not redistributed. A commercial deployment needs a licence check.
+Independent open-source project, not affiliated with, sponsored by or endorsed by PayPal Holdings, Inc., Groq, Inc., Render Services, Inc., OpenAI, Alibaba Cloud (Qwen), Meta Platforms, Inc., Anthropic PBC or any other company named here. All product names, logos and trademarks are the property of their owners and appear only to credit and identify the services and tools used. Models are accessed through the providers' hosted APIs under their own model licences; weights are not redistributed. A commercial deployment needs a licence check.
 
 ## Author and licence
 
