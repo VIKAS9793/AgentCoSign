@@ -164,6 +164,20 @@ The approval card shows what the customer asked for as a fixed sentence built fr
 | PayPal webhooks (refund and dispute events, signature verified by PayPal itself before anything is trusted) | ✅ Built, registered on the sandbox app, and verified end to end on the hosted demo ([evidence](docs/evidence/sandbox/webhook-2026-10-28.md)) |
 | Payouts adapter, native Android approver | ⏳ Optional, not built |
 
+## Beyond the demo: the merchant's approval app for money going out (direction, not built)
+
+The same design scales into a consumer app for PayPal merchants: the merchant's phone becomes the authenticator for every payment that leaves their account, whoever proposes it.
+
+| Today (built, PayPal sandbox) | At scale (not built) |
+|---|---|
+| One merchant on a sandbox business account | Every merchant connects their own PayPal business account with their consent, through PayPal's partner onboarding |
+| Each decision uses facts read live from PayPal's APIs (order, captures, refunds, disputes) | The same: PayPal's records stay the source of truth, read through the permissions the merchant granted, never copied in bulk |
+| Fingerprint approval while the app is open | A real-time push to the merchant's phone, approved with a passkey signature for that exact payment |
+| Refunds proposed by an AI support assistant | Any money-out action an AI agent or a staff member proposes: refunds, dispute acceptance, payouts |
+| A signed record per workspace | A signed record per merchant, keys held in a KMS, exportable for disputes and audits |
+
+What it would take, honestly: PayPal partner onboarding and production review, per-merchant data and key isolation, push notifications, a KMS for signing keys, an append-only production database, payee screening (OFAC/AML) for payouts, and security and data-protection compliance (SOC 2). The prototype was built so none of its rules or records change shape on that path; see [ARCHITECTURE section 10](docs/ARCHITECTURE.md).
+
 ## Results
 
 AI checks, measured live on 60 labelled synthetic threads (Oct 25; full report and raw results in [`docs/evidence/ai/eval-2026-10-25.md`](docs/evidence/ai/eval-2026-10-25.md)):
