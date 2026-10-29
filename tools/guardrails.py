@@ -238,7 +238,7 @@ EDGE_FLOOR = 49
 EDGE_MARK = "@pytest.mark.edge"
 CONSTRAINT_ID = re.compile(
     r"^(?:I(?:1[01]|[1-9])|R[1-9][0-9]?|H(?:10|[1-9])|G(?:10|[1-9])"
-    r"|G-P[1-8]|F-\d{2}|none)$"
+    r"|G-P[1-8]|F-\d{2,3}|none)$"
 )
 EVIDENCE_NODE = re.compile(r"^(tests/[\w/]+\.py)::(test_\w+)$")
 README_VALUES = ("updated", "checked")

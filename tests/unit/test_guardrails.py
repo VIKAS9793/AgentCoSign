@@ -771,3 +771,12 @@ def test_rule_ids_are_refused_when_the_engine_cannot_be_read() -> None:
         GOOD, ["agentcosign/services/x.py"], no_engine.get, lambda _spec: True
     )
     assert any("cannot be checked" in problem for problem in problems)
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize(
+    ("ident", "accepted"),
+    [("F-07", True), ("F-105", True), ("F-1", False), ("F-1000", False)],
+)
+def test_finding_ids_have_two_or_three_digits(ident: str, accepted: bool) -> None:
+    assert bool(guardrails.CONSTRAINT_ID.match(ident)) is accepted
