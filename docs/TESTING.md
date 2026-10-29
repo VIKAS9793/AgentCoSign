@@ -22,15 +22,15 @@ docker build -t agentcosign . && docker run -p 8000:8000 agentcosign
 
 | Layer | Command | Needs network/keys? | Purpose |
 |---|---|---|---|
-| Unit (policy scenarios planned) | `pytest` | No | Config, policy rules, ledger, API |
-| Property (bounded loss, planned) | `pytest -k property` | No | Auto-executed outflow ≤ daily cap and ≤ auto limit for any proposal sequence |
-| Injection benchmark (planned) | `python -m scripts.run_injection_eval` | Replay by default | Block rates per layer on dev and held-out sets, with 95% Wilson intervals |
-| Latency (planned) | `pytest -m slow -k latency` | No | p95 policy decision time |
-| Live integration | `pytest -m integration` | PayPal sandbox / Groq keys | Auth handshakes, model availability against configured IDs |
+| Unit, scenario and API | `pytest` | No | 1,298 offline tests (Oct 29, commit `548b8a0`, coverage 95.7%): config, every policy rule, the 113-row scenario table, ledger and tamper checks, PayPal client against a simulator, AI checks with recorded answers, API routes, the phone app's decisions run in Node, and the published diagrams |
+| Property (bounded loss) | `pytest tests/unit/test_policy_properties.py` | No | Hypothesis, for any input: an automatic approval is never unsafe; money sent without asking never passes the automatic limit; exposure never passes the captured amount or the daily cap, even if every escalation is approved; arbitrary input never raises and unknown tools never pass |
+| AI checks evaluation | `python -m tests.ai_eval.run_eval`, then `python -m tests.ai_eval.score_eval <results.json>` | Groq key (live) | 60 labelled threads (dev and held-out attacks, genuine customers) through the guard, screening, reading and rules, with 95% Wilson intervals and the checks-off number; report in [`evidence/ai/`](evidence/ai/) |
+| Decision latency | `python -m tests.benchmarks.decision_latency` | No | p95 of the rules alone and of the full step with the signed record write; report in [`evidence/performance/`](evidence/performance/) |
+| Live integration | `pytest -m integration` | PayPal sandbox and Groq keys | Sign-in, order and refund round trips, model availability against the configured ids |
 
 ## Run modes
 
-See [ARCHITECTURE §5](ARCHITECTURE.md). The default is **hermetic**: LLM answers and PayPal execution come from recorded real-sandbox evidence while the policy engine, approval flow and audit ledger run as real code. To use your own PayPal sandbox, copy `.env.example` to `.env`, set the PayPal keys and `AGENTCOSIGN_PAYPAL_EXECUTION=sandbox`.
+See [ARCHITECTURE §5](ARCHITECTURE.md). A fresh clone defaults to **hermetic**: model answers and PayPal execution come from recorded real-sandbox evidence while the policy engine, approval flow and audit ledger run as real code. The hosted demo runs **live**: real Groq models and the real PayPal sandbox. To use your own PayPal sandbox, copy `.env.example` to `.env`, set the PayPal keys and `AGENTCOSIGN_PAYPAL_EXECUTION=sandbox`.
 
 ## Quality gates
 
@@ -58,12 +58,22 @@ A reviewed exception is written on the line as `# guardrail: allow <rule> -- <re
 
 The pre-push hook also refuses force-pushes to and deletion of `main` and `release`, scans exactly the commits being pushed for secrets and re-checks their messages, so a commit made with `--no-verify` is still caught before it leaves the machine.
 
+## Evidence from live runs
+
+| What | Where |
+|---|---|
+| 15 sandbox refunds, each read back from PayPal as COMPLETED (8 on their own, 7 after a passkey approval) | [`evidence/sandbox/refunds-2026-10.md`](evidence/sandbox/refunds-2026-10.md) |
+| PayPal webhook verified end to end on the hosted demo, a fake event refused | [`evidence/sandbox/webhook-2026-10-28.md`](evidence/sandbox/webhook-2026-10-28.md) |
+| Tamper detection, 7 of 7 cases | [`evidence/ledger/tamper-detection-2026-10-28.md`](evidence/ledger/tamper-detection-2026-10-28.md) |
+
+Every change to the approver app is also run on a real Android phone against the live sandbox before it ships: the merchant unlocks with a fingerprint and the run is driven and captured over USB.
+
 ## Acceptance review
 
 What the first quality and acceptance (UAT) review found, how each problem was fixed and proven, and why acceptance testing matters for money-moving software, in plain language: [UAT-FINDINGS](UAT-FINDINGS.md).
 
 ## Methodology notes
 
-- Injection attacks are **synthetic**; they are split into a development set (used for prompt tuning) and a held-out set (never used for tuning). Reports include the policy-only (screening disabled) result.
+- Injection attacks are **synthetic** and written from published technique families, never copied; they are split into a development set (used for prompt tuning) and a held-out set (never used for tuning). Reports include the policy-only (screening disabled) result.
 - Recorded evidence contains sandbox identifiers only and is sanitised before commit.
 - Results are published in the README with the commit hash and date they were produced.

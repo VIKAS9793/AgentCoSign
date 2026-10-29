@@ -184,7 +184,7 @@ Rules, speed, record and PayPal (all measured at commit `cc575fa`):
 | Policy scenario table | 113 of 113 rows decide as expected (248 engine tests pass) | `tests/scenarios/policy_scenarios.py` |
 | Decision speed, excluding AI and the person | p95 **0.033 ms** for the rules alone, **14.4 ms** for the full step with the signed record write (226 decisions each; target under 300 ms) | [`docs/evidence/performance/decision-latency-2026-10-28.md`](docs/evidence/performance/decision-latency-2026-10-28.md) |
 | Tamper detection | 7 of 7: an edited row, a deleted row, a rewrite without the key, a wrong key, a rewrite with the key (caught by a published head), a cut chain | [`docs/evidence/ledger/tamper-detection-2026-10-28.md`](docs/evidence/ledger/tamper-detection-2026-10-28.md) |
-| Live PayPal sandbox refunds | 7 sent (4 on their own, 3 after a passkey approval), all read back from PayPal as COMPLETED | [`docs/evidence/sandbox/refunds-2026-10.md`](docs/evidence/sandbox/refunds-2026-10.md) |
+| Live PayPal sandbox refunds | 15 sent (8 on their own, 7 after a passkey approval), all read back from PayPal as COMPLETED | [`docs/evidence/sandbox/refunds-2026-10.md`](docs/evidence/sandbox/refunds-2026-10.md) |
 
 ## Built with, and special thanks
 
