@@ -101,7 +101,8 @@ def _sending(ending: Ending, money: str, how: str) -> tuple[str, str, str]:
 def finish(begun: Begun, ending: Ending, how: str) -> None:
     """Report the closing step: the headline and what the run took."""
     title, status, moved = headline(ending, how)
-    steps = trace.since(begun.seq)
+    # timed work can report into the same record mid-run; it is not this run's
+    steps = [step for step in trace.since(begun.seq) if not step.automatic]
     layers = [step.layer for step in steps]
     trace.emit(
         "outcome",

@@ -11,6 +11,8 @@ Edge cases (written before the code):
 | Not the hosted demo | Nothing is traced, and the work still runs |
 | A job fails | Logged; the other jobs and the next workspace still run |
 | After each workspace | The step record is switched back |
+| Timed work reports steps mid-run | The run's card counts only its own steps |
+| Attack line with no refund proposed | Nothing sent; no request refused |
 """
 
 from typing import Any
@@ -21,6 +23,8 @@ from agentcosign.core import trace
 from agentcosign.core.config import DemoSettings
 from agentcosign.core.exceptions import PayPalClientError
 from agentcosign.main import _tend_all
+from agentcosign.models.policy import ScreeningVerdict
+from agentcosign.services import ai_checks, run_report
 from agentcosign.services.workspaces import Workspaces
 
 LIMITS = DemoSettings(
@@ -151,3 +155,36 @@ async def test_the_step_record_is_switched_back_after_the_pass() -> None:
     assert not trace.active()
     await _tend_all(registry)
     assert not trace.active()
+
+
+@pytest.mark.edge
+async def test_a_runs_card_leaves_out_timed_work_that_ran_during_it() -> None:
+    registry, [visitor] = _workspaces(True, _Gateway("a", busy=("reconcile_if_due",)))
+    record = registry.trace(visitor)
+    token = trace.use(record)
+    try:
+        begun = run_report.begin("demo", "Scenario started")
+        await _tend_all(registry)  # the first reconciliation lands mid-run
+        trace.emit("ledger", "Record entry #2: attack_caught")
+        ending = run_report.Ending(None, caught=True)
+        run_report.finish(begun, ending, run_report.AUTOMATICALLY)
+    finally:
+        trace.reset(token)
+    card = record.after(0)[-1]  # type: ignore[union-attr]
+    assert card.layer == "outcome"
+    assert (card.detail["record_entries"], card.detail["paypal_calls"]) == ("1", "0")
+    assert card.detail["steps"] == "2"
+
+
+@pytest.mark.edge
+def test_the_attack_line_holds_with_or_without_a_proposal() -> None:
+    record = trace.Trace()
+    token = trace.use(record)
+    try:
+        ai_checks._report_screening(ScreeningVerdict.INJECTION, "model")
+        ai_checks._report_guard(True, "0.9700")
+    finally:
+        trace.reset(token)
+    for step in record.after(0):
+        assert "request" not in step.detail["safe"]
+        assert "nothing is sent" in step.detail["safe"]

@@ -185,7 +185,7 @@ def _report(signals: Signals, record: dict[str, str]) -> None:
 
 
 # where things stand after each finding, as the rules will treat it
-ATTACK_REFUSED = "Attack found: the rules refuse this request, nothing is sent"
+ATTACK_REFUSED = "Attack found: nothing is sent for this message"
 NOT_ON_ITS_OWN = "Could not run: the merchant decides, nothing goes out on its own"
 SCREENING_STILL_RUNS = "The safety screening still checks the message"
 

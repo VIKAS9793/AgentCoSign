@@ -63,7 +63,8 @@ async def _tend_all(workspaces: Workspaces[Gateway]) -> None:
     for gateway, record in workspaces.tended():
         token = trace.use(record)
         try:
-            await _tend(gateway)
+            with trace.automatic():
+                await _tend(gateway)
         finally:
             trace.reset(token)
 

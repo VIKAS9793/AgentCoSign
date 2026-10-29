@@ -34,6 +34,7 @@ class Step:
     status: str
     ms: int | None
     detail: Mapping[str, str] = field(default_factory=dict)
+    automatic: bool = False  # reported by the app's own timed work, not a visitor
 
 
 class Trace:
@@ -51,6 +52,7 @@ class Trace:
         status: str,
         ms: int | None,
         detail: Mapping[str, str],
+        automatic: bool = False,
     ) -> None:
         """Keep a step; the oldest one is dropped past the limit."""
         with self._lock:
@@ -64,6 +66,7 @@ class Trace:
                     status=status,
                     ms=ms,
                     detail=dict(detail),
+                    automatic=automatic,
                 )
             )
 
@@ -80,6 +83,7 @@ class Trace:
 
 
 _current: ContextVar[Trace | None] = ContextVar("trace", default=None)
+_automatic: ContextVar[bool] = ContextVar("trace_automatic", default=False)
 
 
 def use(trace: Trace | None) -> Token[Trace | None]:
@@ -102,7 +106,19 @@ def emit(
     """Report a step for the current workspace, if it is being traced."""
     trace = _current.get()
     if trace is not None:
-        trace.add(layer, title, status, ms, {k: str(v) for k, v in detail.items()})
+        details = {k: str(v) for k, v in detail.items()}
+        trace.add(layer, title, status, ms, details, _automatic.get())
+
+
+@contextmanager
+def automatic() -> Iterator[None]:
+    """Mark the steps reported inside as the app's own timed work, so a
+    visitor's run that overlaps it never counts them as its own."""
+    token = _automatic.set(True)
+    try:
+        yield
+    finally:
+        _automatic.reset(token)
 
 
 def position() -> int:
