@@ -1537,12 +1537,15 @@
       var hours = home ? home.settings.window_hours : "";
       var shown = Number(answer.total) > items.length ? "Latest " + items.length + " of " + answer.total + ", last " : "Last ";
       view.appendChild(el("p", shown + hours + " hours", "muted small"));
-      var list = el("div", "", "card list");
-      items.forEach(function (item) { list.appendChild(doneRow(item, openActivity)); });
-      view.appendChild(list);
-      if (answer.caught.length) {
+      if (items.length) {
+        var list = el("div", "", "card list");
+        items.forEach(function (item) { list.appendChild(doneRow(item, openActivity)); });
+        view.appendChild(list);
+      }
+      var caughtEntries = answer.caught || []; // an older server sends no list
+      if (caughtEntries.length) {
         var caught = el("div", "", "card list");
-        answer.caught.forEach(function (entry) { caught.appendChild(caughtRow(entry)); });
+        caughtEntries.forEach(function (entry) { caught.appendChild(caughtRow(entry)); });
         view.appendChild(caught);
       }
     }).catch(function (failure) {
@@ -2001,7 +2004,9 @@
     var outcome = result.outcome;
     var amount = result.amount ? "$" + result.amount : "The refund";
     if (!outcome && result.caught) {
-      return ["stopped", "Looked like a trick. No money moved.", ["This message looked like an attempt to trick your assistant, so it suggested no refund and nothing was sent.", "Read it before you reply. It's in your refund activity."], ""];
+      // point to the activity row only when the server says it was recorded
+      var next = result.recorded ? "Read it before you reply. It's in your refund activity." : "Read it before you reply.";
+      return ["stopped", "Looked like a trick. No money moved.", ["This message looked like an attempt to trick your assistant, so it suggested no refund and nothing was sent.", next], ""];
     }
     if (!outcome) {
       return ["stopped", "No refund suggested. No money moved.", ["Your assistant didn't find a refund to suggest in this message."], ""];

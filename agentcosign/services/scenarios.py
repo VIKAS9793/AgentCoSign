@@ -105,6 +105,7 @@ class ScenarioResult:
     customer: str = ""  # the test buyer's name, as the merchant's screens show it
     amount: Decimal | None = None  # the refund decided on, when one was proposed
     caught: bool = False  # no refund proposed, but the checks caught a trick
+    recorded: bool = False  # and it is in the signed record and the activity list
 
 
 class ScenarioRunner:
@@ -210,10 +211,12 @@ class ScenarioRunner:
         text = await gateway.message_text(message_id)
         suggestion = None if text is None else await suggest(self._assistant, text)
         if suggestion is None:
-            caught = await gateway.check_unproposed(message_id)
-            ending = run_report.Ending(None, caught=caught)
+            check = await gateway.check_unproposed(message_id)
+            ending = run_report.Ending(None, caught=check.caught)
             run_report.finish(begun, ending, run_report.AUTOMATICALLY)
-            return ScenarioResult(order_id, None, buyer, caught=caught)
+            return ScenarioResult(
+                order_id, None, buyer, caught=check.caught, recorded=check.recorded
+            )
         proposal = Proposal(
             request_id=stamp,
             tool="create_refund",

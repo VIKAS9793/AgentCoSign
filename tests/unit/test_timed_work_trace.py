@@ -13,6 +13,7 @@ Edge cases (written before the code):
 | After each workspace | The step record is switched back |
 | Timed work reports steps mid-run | The run's card counts only its own steps |
 | Attack line with no refund proposed | Nothing sent; no request refused |
+| A visitor's step lands while a job runs | Not counted as the job's; no label |
 """
 
 from typing import Any
@@ -39,10 +40,19 @@ LABEL = "Automatic check"
 class _Gateway:
     """Timed jobs that report a step when they have something to do."""
 
-    def __init__(self, name: str, busy: tuple[str, ...] = (), fails: str = "") -> None:
+    def __init__(
+        self,
+        name: str,
+        busy: tuple[str, ...] = (),
+        fails: str = "",
+        visitor: tuple[str, ...] = (),
+    ) -> None:
         self.name = name
         self.busy = busy
         self.fails = fails
+        self.visitor = (
+            visitor  # jobs during which a visitor's own request reports a step
+        )
         self.ran: list[str] = []
 
     def _job(self, job: str) -> None:
@@ -51,6 +61,9 @@ class _Gateway:
             raise PayPalClientError("down", {"retryable": True})
         if job in self.busy:
             trace.emit("paypal", f"{self.name} {job}")
+        record = trace._current.get()
+        if job in self.visitor and record is not None:
+            record.add("demo", "visitor's own step", trace.OK, None, {})
 
     def expire(self) -> list[str]:
         self._job("expire")
@@ -188,3 +201,10 @@ def test_the_attack_line_holds_with_or_without_a_proposal() -> None:
     for step in record.after(0):
         assert "request" not in step.detail["safe"]
         assert "nothing is sent" in step.detail["safe"]
+
+
+@pytest.mark.edge
+async def test_a_visitors_step_during_a_job_is_not_labelled_automatic() -> None:
+    registry, [visitor] = _workspaces(True, _Gateway("a", visitor=("expire",)))
+    await _tend_all(registry)
+    assert _titles(registry, visitor) == ["visitor's own step"]

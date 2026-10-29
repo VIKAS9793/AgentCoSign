@@ -163,7 +163,7 @@ async def test_a_trick_with_no_refund_proposed_is_recorded_and_listed(
 ) -> None:
     _checks(env, verdict, "500.00", guard=guard)
     result = await _runner(env, None).run_own(_gateway(env), "ws-a", TRICK)
-    assert (result.outcome, result.caught) == (None, True)
+    assert (result.outcome, result.caught, result.recorded) == (None, True, True)
     [entry] = _caught(env)
     assert set(entry) == {
         "at",
@@ -220,7 +220,7 @@ async def test_a_trick_that_cannot_be_recorded_is_still_caught(
 
     monkeypatch.setattr(_gateway(env)._ledger, "record_attack", broken)
     result = await _runner(env, None).run_own(_gateway(env), "ws-a", TRICK)
-    assert result.caught is True
+    assert (result.caught, result.recorded) == (True, False)
     assert "could not record" in caplog.text
     assert _caught(env) == []
 

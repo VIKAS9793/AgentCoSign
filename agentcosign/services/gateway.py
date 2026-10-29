@@ -221,6 +221,14 @@ def revoke_approver(
     return passkeys.revoke(approver, now, record)
 
 
+@dataclass(frozen=True, slots=True)
+class MessageCheck:
+    """What the AI checks found on a message with no refund proposed."""
+
+    caught: bool = False  # either check found an attempt to trick the assistant
+    recorded: bool = False  # and it is in the signed record and the activity list
+
+
 class Gateway:
     """Coordinates evidence, decision, approval and execution."""
 
@@ -1256,22 +1264,23 @@ class Gateway:
             return None
         return await asyncio.to_thread(self._messages.text, message_id)
 
-    async def check_unproposed(self, message_id: str) -> bool:
+    async def check_unproposed(self, message_id: str) -> MessageCheck:
         """Run the AI checks on a message the assistant proposed nothing for.
 
         No money is at stake, but a message that tried to trick the assistant
         is still recorded and shown to the merchant, so they read it before
         replying. Only a check that found something counts: clean or unable to
-        run is not an attack. Returns whether the checks caught it.
+        run is not an attack. Whether it was recorded is reported separately,
+        so the merchant is never pointed to an activity row that is missing.
         """
         if self._messages is None or self._checks is None:
-            return False
+            return MessageCheck()
         text = await self.message_text(message_id)
         if text is None:
-            return False
+            return MessageCheck()
         signals, record = await self._checks.run(text)
         if not looks_like_attack(signals):
-            return False
+            return MessageCheck()
         digest = await asyncio.to_thread(self._messages.digest, message_id)
         body = {
             "message_id": message_id,
@@ -1283,7 +1292,8 @@ class Gateway:
             await asyncio.to_thread(self._ledger.record_attack, body, self._clock())
         except (sqlite3.Error, AgentCoSignError):
             logger.exception("could not record a message the checks caught")
-        return True
+            return MessageCheck(caught=True)
+        return MessageCheck(caught=True, recorded=True)
 
     async def _customer_asked(self, request_id: str, order_id: str = "") -> str:
         """The card's sentence on what the customer's message asked for."""

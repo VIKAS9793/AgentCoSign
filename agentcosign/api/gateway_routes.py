@@ -272,6 +272,7 @@ async def _run_demo(run: Any) -> dict[str, Any]:
         "amount": None if result.amount is None else str(result.amount),
         "outcome": None if outcome is None else _out(outcome).model_dump(),
         "caught": result.caught,
+        "recorded": result.recorded,
     }
 
 

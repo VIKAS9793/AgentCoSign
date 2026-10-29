@@ -95,7 +95,8 @@ async def _tend(gateway: Gateway) -> None:
             await job()
         except (AgentCoSignError, sqlite3.Error):
             logger.exception("%s failed; will retry", name)
-        if trace.position() != before:
+        # a visitor's request can report into the same record meanwhile
+        if any(step.automatic for step in trace.since(before)):
             ran.append(name)
     if ran:
         trace.emit(

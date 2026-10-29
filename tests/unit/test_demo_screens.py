@@ -28,8 +28,10 @@ NOTICES = ["money", "noticesFor"]
 ORDER = {"customer": "Riya Sharma", "amount": "9.00"}
 
 
-def _ending(outcome: dict[str, Any] | None, caught: bool = False) -> Any:
-    result = {**ORDER, "outcome": outcome, "caught": caught}
+def _ending(
+    outcome: dict[str, Any] | None, caught: bool = False, recorded: bool = True
+) -> Any:
+    result = {**ORDER, "outcome": outcome, "caught": caught, "recorded": recorded}
     return run_js(ENDING, f"demoEnding({json.dumps(result)})")
 
 
@@ -133,3 +135,10 @@ def test_a_caught_trick_says_so_and_that_nothing_moved() -> None:
     assert "refund activity" in " ".join(lines)
     _, clean_title, _, _ = _ending(None)
     assert clean_title.startswith("No refund suggested.")
+
+
+@pytest.mark.edge
+def test_a_caught_trick_that_was_not_recorded_does_not_point_to_activity() -> None:
+    kind, title, lines, _ = _ending(None, caught=True, recorded=False)
+    assert (kind, title) == ("stopped", "Looked like a trick. No money moved.")
+    assert "refund activity" not in " ".join(lines)
