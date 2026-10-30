@@ -213,3 +213,24 @@ def test_a_tap_that_opened_a_request_drops_the_held_update() -> None:
 def test_a_held_update_waits_for_a_second_finger_to_lift() -> None:
     steps = "showHomeUpdate('new', 'old'); releaseHomeUpdate()"
     assert _page_after(True, steps) == {"drawn": [], "told": [], "held": True}
+
+
+AFTER_APPROVAL = ["changedTitle", "amountsMoved"]
+
+
+def _changed(before: dict[str, str], latest: dict[str, str]) -> Any:
+    expression = f"changedTitle({json.dumps(before)}, {json.dumps(latest)})"
+    return run_js(AFTER_APPROVAL, expression)
+
+
+@pytest.mark.edge
+def test_a_new_reason_alone_never_claims_the_order_changed() -> None:
+    same = {"refundable_now": "60.00"}
+    title = _changed(same, same)
+    assert title == "Something new came up before the refund went out. No money moved."
+
+
+@pytest.mark.edge
+def test_moved_amounts_still_say_the_order_changed() -> None:
+    title = _changed({"refundable_now": "60.00"}, {"refundable_now": "40.00"})
+    assert title == "The order changed before the refund went out. No money moved."

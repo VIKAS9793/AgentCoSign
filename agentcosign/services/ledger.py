@@ -521,13 +521,14 @@ def _outflow(conn: sqlite3.Connection, day_ago: str, leave_out: str) -> Decimal:
 
 
 def _approval_outcome(
-    fresh: PolicyResult, drift: PolicyResult | None
+    fresh: PolicyResult, drift: PolicyResult | None, seen: tuple[str, ...]
 ) -> tuple[ProposalState, PolicyResult]:
     """Where an approved request goes: the strictest of the fresh decision and the
     change in the order since it was decided.
 
-    The owner's approval answers "ask a person", so a fresh allow or ask goes ahead;
-    a refusal or a hold always wins over the approval.
+    The owner's approval answers the reasons they saw, so a fresh allow or the same
+    ask goes ahead; a reason they have not seen goes back to them first, and a
+    refusal or a hold always wins over the approval.
     """
     if fresh.decision is Decision.DENY:
         return S.DENIED, fresh
@@ -539,6 +540,10 @@ def _approval_outcome(
         # asked again with every reason that applies now, the change first
         reasons = _ask_again_reasons(drift.triggered_rules, fresh.triggered_rules)
         return S.PENDING_APPROVAL, replace(drift, triggered_rules=reasons)
+    unseen = tuple(r for r in fresh.triggered_rules if r not in {*seen, RULE_ALLOW})
+    if unseen:
+        reasons = _ask_again_reasons(unseen, fresh.triggered_rules)
+        return S.PENDING_APPROVAL, replace(fresh, triggered_rules=reasons)
     return S.EXECUTING, fresh
 
 
@@ -1108,7 +1113,8 @@ class Ledger:
             if decided and evidence is not None
             else None
         )
-        return (proposal, *_approval_outcome(fresh, drift))
+        seen = tuple(json.loads(row["triggered"] or "[]"))
+        return (proposal, *_approval_outcome(fresh, drift, seen))
 
     def _apply_approval(
         self,

@@ -1691,7 +1691,7 @@ def test_a_new_reason_counts_as_a_change_and_is_named() -> None:
     )
     assert changed is True
     lines = _run_js(
-        ["changedLines", "money"],
+        ["changedLines", "money", "amountsMoved"],
         f"changedLines({json.dumps(before)}, {json.dumps(after)})",
     )
     assert lines[0].startswith("This order is in a dispute")
@@ -1717,12 +1717,13 @@ def test_the_changed_screen_only_compares_figures_that_differ(
     before: str, after: str, has_line: bool
 ) -> None:
     lines = _run_js(
-        ["changedLines", "money"],
+        ["changedLines", "money", "amountsMoved"],
         f"changedLines({{refundable_now: {json.dumps(before)}}}, "
         f"{{refundable_now: {json.dumps(after)}}})",
     )
     assert any("was" in line for line in lines) is has_line
-    assert lines[-1] == "Review the new amounts and approve again if it's still right."
+    assert ("new amounts" in lines[-1]) is has_line
+    assert lines[-1].endswith("approve again if it's still right.")
 
 
 @pytest.mark.edge

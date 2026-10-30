@@ -10,7 +10,12 @@ import pytest
 
 from agentcosign.core.exceptions import AuditIntegrityError, FailClosedError
 from agentcosign.models.domain import Decision
-from agentcosign.models.policy import OrderEvidence, Proposal, Signals
+from agentcosign.models.policy import (
+    OrderEvidence,
+    Proposal,
+    ScreeningVerdict,
+    Signals,
+)
 from agentcosign.services.identity import card_fingerprint, payee_key
 from agentcosign.services.ledger import Ledger, ProposalState
 from tests.scenarios.policy_scenarios import ACCOUNT, NOW, policy, screening
@@ -739,6 +744,91 @@ def test_small_refunds_on_two_orders_share_the_customers_budget(ledger: Ledger) 
     assert _auto(ledger, "r1", "20.00", "ORD-1").state is ProposalState.EXECUTING
     other = _auto(ledger, "r2", "10.00", "ORD-2")
     assert other.result.rule_id == "R17"
+
+
+# --- a reason that appears at approval is shown before any money moves ------------
+UNCHECKED = Signals(screening=ScreeningVerdict.UNAVAILABLE)
+
+
+def _waiting_small_refund(ledger: Ledger) -> None:
+    """A small refund that asks the owner because the checks could not run."""
+    proposal = refund("r1", "10.00", "ORD-1")
+    recorded = ledger.decide(proposal, evidence("ORD-1"), UNCHECKED, SCREEN, NOW)
+    assert recorded.state is ProposalState.PENDING_APPROVAL
+
+
+def _approve_small(ledger: Ledger, at: datetime, refunded: str = "0.00"):  # noqa: ANN202
+    fresh = replace_time(evidence("ORD-1", refunded=refunded), at)
+    return ledger.approve(
+        "r1", fresh, UNCHECKED, SCREEN, at, APPROVER, decide_within=WINDOW
+    )
+
+
+@pytest.mark.edge
+def test_a_new_reason_at_approval_goes_back_to_the_owner_first(ledger: Ledger) -> None:
+    _waiting_small_refund(ledger)
+    # meanwhile a refund on another order uses up the customer's automatic budget
+    assert _auto(ledger, "r2", "20.00", "ORD-2").state is ProposalState.EXECUTING
+    at = NOW + timedelta(seconds=60)
+    recorded = _approve_small(ledger, at)
+    assert recorded.state is ProposalState.PENDING_APPROVAL
+    assert recorded.result.triggered_rules[0] == "R17"
+    assert "R15" in recorded.result.triggered_rules
+    timing = ledger.timing("r1")
+    assert timing is not None and timing[2] > NOW.isoformat()  # a fresh window
+    assert ledger.verify_records() >= 1  # the sealed record agrees with the row
+
+
+@pytest.mark.edge
+def test_approving_after_seeing_the_new_reason_goes_ahead(ledger: Ledger) -> None:
+    _waiting_small_refund(ledger)
+    _auto(ledger, "r2", "20.00", "ORD-2")
+    at = NOW + timedelta(seconds=60)
+    _approve_small(ledger, at)
+    again = _approve_small(ledger, at + timedelta(seconds=30))
+    assert again.state is ProposalState.EXECUTING
+
+
+@pytest.mark.edge
+def test_the_same_reasons_at_approval_need_no_second_look(ledger: Ledger) -> None:
+    _waiting_small_refund(ledger)
+    recorded = _approve_small(ledger, NOW + timedelta(seconds=60))
+    assert recorded.state is ProposalState.EXECUTING
+
+
+@pytest.mark.edge
+def test_a_reason_that_went_away_is_not_a_new_reason(ledger: Ledger) -> None:
+    _waiting_small_refund(ledger)
+    at = NOW + timedelta(seconds=60)
+    fresh = replace_time(evidence("ORD-1"), at)
+    recorded = ledger.approve(
+        "r1", fresh, Signals(), SCREEN, at, APPROVER, decide_within=WINDOW
+    )
+    assert recorded.state is ProposalState.EXECUTING
+
+
+@pytest.mark.edge
+def test_a_limit_raised_while_waiting_needs_no_second_look(tmp_path: Path) -> None:
+    first = Ledger(tmp_path / "ledger.db", SECRET, policy(), ACCOUNT)
+    decide(first, refund("r1", "60.00"))
+    raised = Ledger(
+        tmp_path / "ledger.db",
+        SECRET,
+        policy(refund_auto_limit="100.00"),
+        ACCOUNT,
+    )
+    recorded = approve(raised, "r1", NOW + timedelta(seconds=60))
+    assert recorded.state is ProposalState.EXECUTING
+
+
+@pytest.mark.edge
+def test_a_new_reason_and_an_order_change_are_both_shown(ledger: Ledger) -> None:
+    _waiting_small_refund(ledger)
+    _auto(ledger, "r2", "20.00", "ORD-2")
+    recorded = _approve_small(ledger, NOW + timedelta(seconds=60), refunded="5.00")
+    assert recorded.state is ProposalState.PENDING_APPROVAL
+    assert "R17" in recorded.result.triggered_rules
+    assert len(recorded.result.triggered_rules) >= 2
 
 
 @pytest.mark.edge

@@ -1302,8 +1302,9 @@
 
   // What to say when the order moved: then and now only when they differ.
   function changedLines(before, latest) {
-    var lines = ["Review the new amounts and approve again if it's still right."];
-    if (latest.refundable_now && latest.refundable_now !== before.refundable_now) {
+    var moved = amountsMoved(before, latest);
+    var lines = [moved ? "Review the new amounts and approve again if it's still right." : "Review it and approve again if it's still right."];
+    if (moved) {
       lines.unshift("Left to refund: was " + money(before.refundable_now) + ", now " + money(latest.refundable_now) + ".");
     }
     // a reason that was not there before (such as a new dispute) comes first
@@ -1322,13 +1323,24 @@
     return { intent: intent, seen: { paid: item.paid, already_refunded: item.already_refunded } };
   }
 
-  // The order moved under the merchant: show then and now, and ask again.
+  function amountsMoved(before, latest) {
+    return Boolean(latest.refundable_now) && latest.refundable_now !== before.refundable_now;
+  }
+
+  // Only moved amounts are called a changed order: a new reason can appear on its own.
+  function changedTitle(before, latest) {
+    return amountsMoved(before, latest)
+      ? "The order changed before the refund went out. No money moved."
+      : "Something new came up before the refund went out. No money moved.";
+  }
+
+  // The server sent the request back: show what is different, and ask again.
   function showChanged(item) {
-    var title = "The order changed before the refund went out. No money moved.";
     readHome().then(function () {
-      showOutcome("check", title, changedLines(item, findItem(item.request_id) || {}), item);
+      var latest = findItem(item.request_id) || {};
+      showOutcome("check", changedTitle(item, latest), changedLines(item, latest), item);
     }).catch(function () {
-      showOutcome("check", title, ["Review it again in Refund requests."], item);
+      showOutcome("check", "This refund needs another look. No money moved.", ["Review it again in Refund requests."], item);
     });
   }
 
