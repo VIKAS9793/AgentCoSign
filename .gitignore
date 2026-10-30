@@ -85,3 +85,6 @@ docs/agent-context/
 
 # Spike run output (IDs only, but keep local until sanitised)
 spikes/out/
+
+# local tool settings for this machine
+.claude/
