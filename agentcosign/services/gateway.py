@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import partial
 from typing import Any
+from urllib.parse import urlsplit
 
 from agentcosign.clients.paypal import PayPalClient
 from agentcosign.core import trace
@@ -46,6 +47,7 @@ from agentcosign.core.exceptions import (
     AuditIntegrityError,
     ConfigurationError,
     FailClosedError,
+    LimitReachedError,
     PayPalClientError,
 )
 from agentcosign.models.domain import Decision, ToolAction
@@ -168,6 +170,7 @@ def token_is_valid(secret: bytes, purpose: str, token: str, now: datetime) -> bo
 
 
 PASSKEY_CONTROL = "control:passkeys"
+PAYPAL_DOMAIN = "paypal.com"
 WEBHOOK_HEADERS = (
     "paypal-auth-algo",
     "paypal-cert-url",
@@ -219,6 +222,17 @@ def revoke_approver(
         ledger.append_event(conn, PASSKEY_CONTROL, "passkey_revoked", body, now)
 
     return passkeys.revoke(approver, now, record)
+
+
+def _from_paypal(cert_url: str) -> bool:
+    """Whether a webhook's certificate address is on PayPal's own https domain."""
+    try:
+        parts = urlsplit(cert_url)
+        host = parts.hostname or ""
+    except ValueError:
+        return False
+    on_domain = host == PAYPAL_DOMAIN or host.endswith(f".{PAYPAL_DOMAIN}")
+    return parts.scheme == "https" and on_domain
 
 
 @dataclass(frozen=True, slots=True)
@@ -815,7 +829,10 @@ class Gateway:
         }
 
     async def handle_webhook(
-        self, headers: Mapping[str, str], event: Mapping[str, Any]
+        self,
+        headers: Mapping[str, str],
+        event: Mapping[str, Any],
+        may_check: Callable[[], bool],
     ) -> str:
         """Verify a PayPal event with PayPal, record it once, then re-read PayPal.
 
@@ -825,6 +842,7 @@ class Gateway:
         Raises:
             ConfigurationError: when no webhook id is configured.
             FailClosedError: when headers are missing or PayPal does not verify it.
+            LimitReachedError: when this minute's verification budget is spent.
             PayPalClientError: when PayPal cannot be reached to verify it.
         """
         if not self._webhook_id:
@@ -833,6 +851,11 @@ class Gateway:
         event_id, event_type = event.get("id"), event.get("event_type")
         if missing or not isinstance(event_id, str) or not isinstance(event_type, str):
             raise FailClosedError("the webhook is missing its signature or identity")
+        if not _from_paypal(headers["paypal-cert-url"]):
+            raise FailClosedError("the webhook's certificate is not from PayPal")
+        # the cheap checks come first, so a refused fake spends no budget
+        if not may_check():
+            raise LimitReachedError("too many webhooks to check right now")
         if not await self._paypal.verify_webhook(
             headers, dict(event), self._webhook_id
         ):

@@ -27,6 +27,7 @@ def make_limits(**overrides: object) -> LimitSettings:
         "exempt_paths": ["/health"],
         "streaming_paths": ["/stream"],
         "max_open_streams": 2,
+        "webhook_checks_per_minute": 30,
         "public": {
             "general": {"capacity": 3, "refill_seconds": 10},
             "live_llm": {"capacity": 2, "refill_seconds": 60},

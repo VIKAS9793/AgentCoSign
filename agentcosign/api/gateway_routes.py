@@ -441,12 +441,17 @@ async def paypal_webhook(request: Request) -> dict[str, str]:
     if not isinstance(event, dict):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Not an event.")
     headers = {name.lower(): value for name, value in request.headers.items()}
+    guard: TrafficGuard = request.app.state.guard
     try:
-        outcome = await _gateway(request).handle_webhook(headers, event)
+        outcome = await _gateway(request).handle_webhook(
+            headers, event, lambda: guard.allow_webhook_check(monotonic_ms())
+        )
     except ConfigurationError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, exc.message) from exc
     except FailClosedError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.message) from exc
+    except LimitReachedError as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, exc.message) from exc
     except PayPalClientError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, exc.message) from exc
     return {"status": outcome}

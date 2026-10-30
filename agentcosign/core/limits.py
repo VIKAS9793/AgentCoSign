@@ -21,6 +21,7 @@ from enum import StrEnum
 from agentcosign.core.config import BucketSpec, LimitSettings, TierLimits
 
 MS_PER_SECOND = 1_000
+MS_PER_MINUTE = 60 * MS_PER_SECOND
 DAY_MS = 24 * 60 * 60 * MS_PER_SECOND
 UNKNOWN_CLIENT = "unknown"
 IPV6_PREFIX = 64  # one household or host rotates addresses inside a /64
@@ -196,6 +197,8 @@ class TrafficGuard:
         self._provider_exhausted = False
         # each model's latest daily quota from the provider: (left, limit)
         self._provider_quotas: dict[str, tuple[int, int]] = {}
+        self._webhook_minute = -1
+        self._webhook_checks = 0
 
     # ----------------------------------------------------------------- admission
 
@@ -295,6 +298,16 @@ class TrafficGuard:
         if tier is Tier.REVIEWER and self._try_pool(kind, Tier.PUBLIC, now_ms):
             return LiveDecision(live=True)
         return LiveDecision(live=False, reason="daily_budget")
+
+    def allow_webhook_check(self, now_ms: int) -> bool:
+        """Spend one PayPal verification from this minute's shared budget."""
+        minute = now_ms // MS_PER_MINUTE
+        if minute != self._webhook_minute:
+            self._webhook_minute, self._webhook_checks = minute, 0
+        if self._webhook_checks >= self._limits.webhook_checks_per_minute:
+            return False
+        self._webhook_checks += 1
+        return True
 
     def observe_provider_quota(
         self, remaining: int | None, limit: int | None, source: str = ""

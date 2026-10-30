@@ -255,6 +255,9 @@ class LimitSettings(BaseModel):
     # their own cap instead of the request slots everyone else needs.
     streaming_paths: list[str]
     max_open_streams: int = Field(ge=1, le=256)
+    # Anyone can post a webhook and each one verified is a call to PayPal, so the
+    # calls share one budget that does not depend on who sent them.
+    webhook_checks_per_minute: int = Field(ge=1, le=600)
     public: TierLimits
     reviewer: TierLimits
     live_llm_budget: LlmBudget

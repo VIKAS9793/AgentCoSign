@@ -153,6 +153,9 @@ limits:
   # use the in-flight slots above.
   streaming_paths: ["/v1/approvals/stream"]
   max_open_streams: 8
+  # Verifying a webhook calls PayPal, and anyone can post one, so these calls share
+  # one budget. Past it the answer is 429 and PayPal retries the delivery later.
+  webhook_checks_per_minute: 30
 
   # A bucket holds `capacity` requests and gains one every `refill_seconds`.
   public:
