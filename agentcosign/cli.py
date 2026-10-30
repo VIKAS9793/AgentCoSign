@@ -119,7 +119,7 @@ def customer_message(settings: Settings, text: str) -> int:
     )
     suggestion = asyncio.run(_suggest(model, open_messages(settings).text(message_id)))
     if suggestion is None:
-        _out("The assistant proposed no refund. A person should read this message.")
+        _report_unproposed(settings, message_id)
         return 0
     _out(
         f"Assistant proposes {suggestion.amount} {suggestion.currency} "
@@ -136,6 +136,20 @@ def customer_message(settings: Settings, text: str) -> int:
             "message_id": message_id,
         },
     )
+
+
+def _report_unproposed(settings: Settings, message_id: str) -> None:
+    """A message with no refund proposed still gets the AI checks, the same way
+    the service does it, so an attempt to trick the assistant is never lost."""
+    check = asyncio.run(build_gateway(settings).check_unproposed(message_id))
+    if check.recorded:
+        _out("The checks caught a trick. Nothing was sent.")
+        _out("It is in the merchant's activity.")
+    elif check.caught:
+        _out("The checks caught a trick. Nothing was sent.")
+        _out("It could not be recorded: check the server log.")
+    else:
+        _out("The assistant proposed no refund. A person should read this message.")
 
 
 async def _suggest(
