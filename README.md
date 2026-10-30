@@ -7,6 +7,12 @@
 **Dual control for AI agents that move money on PayPal.** The agent proposes. Deterministic policy decides. A human co-signs risky actions on their phone. Every step lands in a tamper-evident ledger.
 
 <p align="center">
+  <a href="https://youtu.be/MBnqli0L1aI"><img height="64" alt="Watch the 2:28 demo on YouTube" src="https://img.shields.io/badge/WATCH%20THE%202:28%20DEMO-FF0000?style=for-the-badge&logo=youtube&logoColor=white"></a>
+  &nbsp;
+  <a href="https://agentcosign-demo.onrender.com"><img height="64" alt="Try the live demo" src="https://img.shields.io/badge/TRY%20THE%20LIVE%20DEMO-1F2A24?style=for-the-badge&logo=render&logoColor=white"></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/VIKAS9793/AgentCoSign/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/VIKAS9793/AgentCoSign/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2f7d4f"></a>
   <img alt="PayPal sandbox only" src="https://img.shields.io/badge/PayPal-sandbox%20only-c2410c">
@@ -90,7 +96,7 @@ More detail: [Architecture](docs/ARCHITECTURE.md) (components, trust boundaries,
 
 | I want to… | Do this |
 |---|---|
-| See it | Video: _link added at submission_ · Hosted demo: _link added at submission_ (free tier: the first load may take ~60 s, and test data resets when it sleeps) |
+| See it | [Video (2:28)](https://youtu.be/MBnqli0L1aI) · [Hosted demo](https://agentcosign-demo.onrender.com) (free tier: the first load may take ~60 s, and test data resets when it sleeps) |
 | Try it on the hosted demo (2 minutes) | 1. Open the link on a phone or laptop and set up with your fingerprint, face or PIN: you get your own private test workspace. 2. Press **Try a scenario**: each one creates a real PayPal sandbox order, then a customer message goes through the AI checks and the rules (or write your own message). 3. Switch on **Behind the scenes** in the top bar to watch every backend step live beside the app: PayPal calls with PayPal's own ids, each model's answer, the rules' decision in plain words, the signed record, and an outcome block saying what happened to the money |
 | Run it with **no credentials** | `pip install -e ".[dev]" && pytest && uvicorn agentcosign.main:app` or `docker build -t agentcosign . && docker run -p 8000:8000 agentcosign` |
 | Understand the design | [Architecture](docs/ARCHITECTURE.md) · [Threat model](docs/THREAT_MODEL.md) · [Decisions](docs/DECISIONS.md) |
