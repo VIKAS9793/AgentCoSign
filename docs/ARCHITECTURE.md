@@ -94,7 +94,7 @@ stateDiagram-v2
     Paused --> Denied: declined by the owner
     Evaluating --> Executing: R1 clean (budget RESERVED)
     PendingApproval --> Executing: passkey co-sign, then every rule re-run on fresh PayPal facts
-    PendingApproval --> PendingApproval: co-sign, but the order changed and still fits (fresh window)
+    PendingApproval --> PendingApproval: co-sign, but the order changed or a new reason appeared (fresh window)
     PendingApproval --> Denied: rejected, or co-sign refused by the fresh re-check
     PendingApproval --> Paused: co-sign, but the customer is now over the repeat limit
     PendingApproval --> Expired: open window elapsed (reservation released)
@@ -143,6 +143,8 @@ The hosted demo is public and runs on free tiers, so protection is layered from 
 | Visitor allowances | Each visitor workspace runs at most 15 test runs a day, checked before any shared budget is spent; at most 5 setups per address a day; at most 200 open workspaces | Partly (per workspace yes, per address no) |
 | Provider quota feedback | Each model's own remaining daily quota (response headers) is tracked; the tightest decides: public runs stop when any model runs low, all runs stop when one runs out | Yes |
 | Spent budget | A test run that cannot start is refused before anything is created, and the visitor is told "No money moved" first | Yes |
+
+Webhook verification has its own shared budget of 30 calls a minute, spent only after the cheap checks (headers present, certificate address `https` on `paypal.com`), because anyone can post to that address and rotating addresses defeats per-client limits. Past the budget the answer is 429 and PayPal retries the delivery.
 
 `/health` is exempt from limits and also answers `HEAD`, so uptime monitors and the daily check can always reach it. It reports `capacity` as `normal`, `public_replay` or `replay_only`. Per-client state is bounded (least recently used eviction) so address rotation cannot exhaust memory. In-process limits cannot absorb a volumetric flood: that needs an edge in front (see the decision log).
 

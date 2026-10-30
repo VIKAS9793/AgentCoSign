@@ -22,11 +22,11 @@ docker build -t agentcosign . && docker run -p 8000:8000 agentcosign
 
 | Layer | Command | Needs network/keys? | Purpose |
 |---|---|---|---|
-| Unit, scenario and API | `pytest` | No | 1,298 offline tests (Oct 29, commit `548b8a0`, coverage 95.7%): config, every policy rule, the 113-row scenario table, ledger and tamper checks, PayPal client against a simulator, AI checks with recorded answers, API routes, the phone app's decisions run in Node, and the published diagrams |
+| Unit, scenario and API | `pytest` | No | 1,330 offline tests (Oct 30, commit `15db942`, coverage 95.9%): config, every policy rule, the 113-row scenario table, ledger and tamper checks, PayPal client against a simulator, AI checks with recorded answers, API routes, the phone app's decisions run in Node, and the published diagrams |
 | Property (bounded loss) | `pytest tests/unit/test_policy_properties.py` | No | Hypothesis, for any input: an automatic approval is never unsafe; money sent without asking never passes the automatic limit; exposure never passes the captured amount or the daily cap, even if every escalation is approved; arbitrary input never raises and unknown tools never pass |
 | AI checks evaluation | `python -m tests.ai_eval.run_eval`, then `python -m tests.ai_eval.score_eval <results.json>` | Groq key (live) | 60 labelled threads (dev and held-out attacks, genuine customers) through the guard, screening, reading and rules, with 95% Wilson intervals and the checks-off number; report in [`evidence/ai/`](evidence/ai/) |
 | Decision latency | `python -m tests.benchmarks.decision_latency` | No | p95 of the rules alone and of the full step with the signed record write; report in [`evidence/performance/`](evidence/performance/) |
-| Live integration | `pytest -m integration` | PayPal sandbox and Groq keys | Sign-in, order and refund round trips, model availability against the configured ids |
+| Live integration | `pytest -m integration` | PayPal sandbox and Groq keys | 11 live checks: sign-in, order and refund round trips, model availability against the configured ids |
 
 ## Run modes
 
