@@ -13,6 +13,11 @@ Edge cases (written before the code):
 | No refund, the checks caught a trick | A likely trick, nothing moved, see activity |
 | The scenario's own request changes | No notice repeats what its screen says |
 | That request later fails | Still announced |
+| Home update while a finger is down | Not drawn: the list never moves under a tap |
+| Two updates during one touch | The newest is kept, notices compare with the first |
+| Finger lifts and the tap opened a request | The held update is dropped |
+| Finger lifts and home is still showing | The held update is drawn, once |
+| Home update with no touch | Drawn at once |
 | Any other request changes | Announced as before |
 """
 
@@ -142,3 +147,69 @@ def test_a_caught_trick_that_was_not_recorded_does_not_point_to_activity() -> No
     kind, title, lines, _ = _ending(None, caught=True, recorded=False)
     assert (kind, title) == ("stopped", "Looked like a trick. No money moved.")
     assert "refund activity" not in " ".join(lines)
+
+
+HOME = ["showHomeUpdate", "releaseHomeUpdate"]
+# stands in for the page: what was drawn and announced
+PAGE = (
+    "var touching = %s, heldHome = null, current = {view: 'home'};"
+    "var drawn = [], told = [];"
+    "function renderHome(data) { drawn.push(data); }"
+    "function noticesFor(previous, next) { return [previous + '>' + next]; }"
+    "function toast(note) { told.push(note); }"
+)
+
+
+def _page_after(touching: bool, steps: str) -> Any:
+    """Run page steps, then report what the merchant saw."""
+    flag = "true" if touching else "false"
+    expression = (
+        f"(function () {{ {PAGE % flag} {steps};"
+        " return {drawn: drawn, told: told, held: heldHome !== null}; })()"
+    )
+    return run_js([], _with_functions(expression))
+
+
+def _with_functions(expression: str) -> str:
+    bodies = " ".join(script_function(name) + "}" for name in HOME)
+    return expression.replace("(function () {", "(function () {" + bodies, 1)
+
+
+@pytest.mark.edge
+def test_a_home_update_with_no_touch_is_drawn_at_once() -> None:
+    seen = _page_after(False, "showHomeUpdate('new', 'old')")
+    assert seen == {"drawn": ["new"], "told": ["old>new"], "held": False}
+
+
+@pytest.mark.edge
+def test_a_home_update_never_moves_the_list_under_a_finger() -> None:
+    seen = _page_after(True, "showHomeUpdate('new', 'old')")
+    assert seen == {"drawn": [], "told": [], "held": True}
+
+
+@pytest.mark.edge
+def test_two_updates_in_one_touch_keep_the_newest_and_the_first_comparison() -> None:
+    steps = (
+        "showHomeUpdate('one', 'old'); showHomeUpdate('two', 'one');"
+        "touching = false; releaseHomeUpdate()"
+    )
+    assert _page_after(True, steps) == {
+        "drawn": ["two"],
+        "told": ["old>two"],
+        "held": False,
+    }
+
+
+@pytest.mark.edge
+def test_a_tap_that_opened_a_request_drops_the_held_update() -> None:
+    steps = (
+        "showHomeUpdate('new', 'old'); touching = false;"
+        "current.view = 'review'; releaseHomeUpdate()"
+    )
+    assert _page_after(True, steps) == {"drawn": [], "told": [], "held": False}
+
+
+@pytest.mark.edge
+def test_a_held_update_waits_for_a_second_finger_to_lift() -> None:
+    steps = "showHomeUpdate('new', 'old'); releaseHomeUpdate()"
+    assert _page_after(True, steps) == {"drawn": [], "told": [], "held": True}

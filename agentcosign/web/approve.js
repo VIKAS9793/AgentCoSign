@@ -9,6 +9,8 @@
   var skew = 0;
   var current = { view: "", requestId: "" };
   var deciding = false;
+  var touching = false;
+  var heldHome = null;
   var stream = null;
   var RECONNECT_FIRST_MS = 1000;
   var RECONNECT_MAX_MS = 30000;
@@ -16,6 +18,7 @@
   var flipTimer = null;
   var MS_PER_DAY = 86400000;
   var TOAST_SHOW_MS = 6000;
+  var TAP_SETTLE_MS = 400; // a finished tap has opened its screen by then
   var retryDelay = RECONNECT_FIRST_MS;
   var sessionMinutes = 0;
   var lastVersion = null;
@@ -1706,6 +1709,34 @@
       (item.reasons || []).join("~"), item.flag || ""].join("|");
   }
 
+  // A redraw between finger down and finger up can turn a tap on one request into
+  // a tap on another, so home waits until the finger has lifted.
+  function showHomeUpdate(data, previous) {
+    if (touching) {
+      heldHome = { data: data, previous: heldHome ? heldHome.previous : previous };
+      return;
+    }
+    heldHome = null;
+    noticesFor(previous, data).forEach(toast);
+    renderHome(data);
+  }
+
+  function releaseHomeUpdate() {
+    if (!heldHome) {
+      return;
+    }
+    var held = heldHome;
+    heldHome = null;
+    if (current.view === "home") {
+      showHomeUpdate(held.data, held.previous);
+    }
+  }
+
+  function fingerLifted() {
+    touching = false;
+    setTimeout(releaseHomeUpdate, TAP_SETTLE_MS);
+  }
+
   // Re-read the server. Home redraws; an open request is never replaced under the
   // merchant's thumb: they are told it changed and sending waits until they look.
   function somethingChanged() {
@@ -1727,8 +1758,7 @@
         return;
       }
       if (view === "home") {
-        noticesFor(previous, data).forEach(toast);
-        renderHome(data);
+        showHomeUpdate(data, previous);
         return;
       }
       if (["review", "final", "paused-view"].indexOf(view) === -1 || !before) {
@@ -1908,6 +1938,10 @@
       note.remove();
     }, TOAST_SHOW_MS);
   }
+
+  document.addEventListener("pointerdown", function () { touching = true; }, true);
+  document.addEventListener("pointerup", fingerLifted, true);
+  document.addEventListener("pointercancel", fingerLifted, true);
 
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible" && session) {
