@@ -14,8 +14,12 @@ Edge cases (written before the code):
 | Timed work reports steps mid-run | The run's card counts only its own steps |
 | Attack line with no refund proposed | Nothing sent; no request refused |
 | A visitor's step lands while a job runs | Not counted as the job's; no label |
+| A job raises something unexpected | Logged by name; other jobs and workspaces run |
+| The same job fails every pass | Later jobs still run on every pass |
+| Shutdown cancels a job | The cancel gets through and the pass ends |
 """
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -46,19 +50,20 @@ class _Gateway:
         busy: tuple[str, ...] = (),
         fails: str = "",
         visitor: tuple[str, ...] = (),
+        raises: BaseException | None = None,
     ) -> None:
         self.name = name
         self.busy = busy
         self.fails = fails
-        self.visitor = (
-            visitor  # jobs during which a visitor's own request reports a step
-        )
+        # jobs during which a visitor's own request reports a step
+        self.visitor = visitor
+        self.raises = raises or PayPalClientError("down", {"retryable": True})
         self.ran: list[str] = []
 
     def _job(self, job: str) -> None:
         self.ran.append(job)
         if job == self.fails:
-            raise PayPalClientError("down", {"retryable": True})
+            raise self.raises
         if job in self.busy:
             trace.emit("paypal", f"{self.name} {job}")
         record = trace._current.get()
@@ -208,3 +213,35 @@ async def test_a_visitors_step_during_a_job_is_not_labelled_automatic() -> None:
     registry, [visitor] = _workspaces(True, _Gateway("a", visitor=("expire",)))
     await _tend_all(registry)
     assert _titles(registry, visitor) == ["visitor's own step"]
+
+
+@pytest.mark.edge
+async def test_an_unexpected_error_in_a_job_stops_nothing_else(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    first = _Gateway("a", fails="settle_pending", raises=KeyError("surprise"))
+    second = _Gateway("b")
+    registry, _ = _workspaces(True, first, second)
+    await _tend_all(registry)
+    assert first.ran[-1] == "check_records_if_due"
+    assert second.ran[-1] == "check_records_if_due"
+    assert "refunds pending at PayPal failed" in caplog.text
+
+
+@pytest.mark.edge
+async def test_a_job_that_always_fails_never_starves_the_later_jobs() -> None:
+    gateway = _Gateway("a", fails="expire", raises=ValueError("always"))
+    registry, _ = _workspaces(True, gateway)
+    await _tend_all(registry)
+    await _tend_all(registry)
+    assert gateway.ran.count("reconcile_if_due") == 2
+
+
+@pytest.mark.edge
+async def test_shutdown_still_cancels_a_running_job() -> None:
+    gateway = _Gateway("a", fails="release_due", raises=asyncio.CancelledError())
+    registry, _ = _workspaces(True, gateway)
+    with pytest.raises(asyncio.CancelledError):
+        await _tend_all(registry)
+    assert "check_records_if_due" not in gateway.ran
+    assert not trace.active()

@@ -5,7 +5,6 @@ FastAPI application factory for the policy gateway.
 
 import asyncio
 import logging
-import sqlite3
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -20,7 +19,6 @@ from agentcosign.api.traffic import router as traffic_router
 from agentcosign.clients.paypal import PayPalClient
 from agentcosign.core import trace
 from agentcosign.core.config import Settings, get_settings
-from agentcosign.core.exceptions import AgentCoSignError
 from agentcosign.core.limits import TrafficGuard
 from agentcosign.services.gateway import Gateway
 from agentcosign.services.scenarios import ScenarioRunner
@@ -93,7 +91,8 @@ async def _tend(gateway: Gateway) -> None:
         before = trace.position()
         try:
             await job()
-        except (AgentCoSignError, sqlite3.Error):
+        # anything uncaught here would silently end the timed work for everyone
+        except Exception:  # guardrail: allow blind-except -- one job must not stop all
             logger.exception("%s failed; will retry", name)
         # a visitor's request can report into the same record meanwhile
         if any(step.automatic for step in trace.since(before)):
