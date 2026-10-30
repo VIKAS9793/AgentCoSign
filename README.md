@@ -174,6 +174,12 @@ The approval card shows what the customer asked for as a fixed sentence built fr
 
 The same design scales into a consumer app for PayPal merchants: the merchant's phone becomes the authenticator for every payment that leaves their account, whoever proposes it.
 
+<p align="center">
+  <a href="https://corner-grab-62044884.figma.site/#welcome"><img height="56" alt="View the clickable app concept" src="https://img.shields.io/badge/VIEW%20THE%20CLICKABLE%20APP%20CONCEPT-C2410C?style=for-the-badge&logo=figma&logoColor=white"></a>
+</p>
+
+<sub>A design concept made in Figma with sample data: nothing in it is built or connected to PayPal.</sub>
+
 | Today (built, PayPal sandbox) | At scale (not built) |
 |---|---|
 | One merchant on a sandbox business account | Every merchant connects their own PayPal business account with their consent, through PayPal's partner onboarding |
