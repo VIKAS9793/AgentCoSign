@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/VIKAS9793/AgentCoSign/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/VIKAS9793/AgentCoSign/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2f7d4f"></a>
+  <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/License-AGPL--3.0-2f7d4f"></a>
   <img alt="PayPal sandbox only" src="https://img.shields.io/badge/PayPal-sandbox%20only-c2410c">
   <a href="https://agentcosign-demo.onrender.com"><img alt="Live demo" src="https://img.shields.io/badge/demo-live%20on%20Render-1f2a24?logo=render&logoColor=white"></a>
 </p>
@@ -256,6 +256,7 @@ Built by one person, Vikas Sahani, with **Claude Code** (Anthropic, Claude Pro p
 
 - **Owner: decision maker and business problem solver.** Defined the problem and the product (the rules and their limits, when a refund may go out alone, how the merchant's screens read), approved every specification before it was built, and kept every action with real consequences: the PayPal and Groq accounts and keys, Zero Data Retention, the PayPal webhook, deployment, repository visibility, and every passkey approval in testing.
 - **Claude Code: engineering partner, steered by the owner.** Researched options and sources, wrote and revised code, tests and documentation drafts, ran the test suites and drove the browser during acceptance runs while the owner signed. It never held PayPal or model credentials and could not approve anything.
+- **Other AI tools.** The banner and other image assets were generated with ChatGPT (OpenAI). The clickable app concept was generated with Figma Make and is not part of the working product.
 - **Held to the product's own standard.** Every change passes the offline test suite with a coverage floor, lint and type checks, secret scanning and a project checklist on each commit; every safety check is mutation-tested; live sandbox runs were checked by the owner.
 
 ## Develop
@@ -271,8 +272,8 @@ ruff check . && ruff format --check . && mypy agentcosign/ && bandit -r agentcos
 
 ## Legal
 
-Independent open-source project, not affiliated with, sponsored by or endorsed by PayPal Holdings, Inc., Groq, Inc., Render Services, Inc., OpenAI, Alibaba Cloud (Qwen), Meta Platforms, Inc., Anthropic PBC or any other company named here. All product names, logos and trademarks are the property of their owners and appear only to credit and identify the services and tools used. Models are accessed through the providers' hosted APIs under their own model licences; weights are not redistributed. A commercial deployment needs a licence check.
+Independent open-source project, not affiliated with, sponsored by or endorsed by PayPal Holdings, Inc., Groq, Inc., Render Services, Inc., OpenAI, Alibaba Cloud (Qwen), Meta Platforms, Inc., Anthropic PBC or any other company named here. All product names, logos and trademarks are the property of their owners and appear only to credit and identify the services and tools used. The licence covers only the original work in this repository: third-party SDKs, APIs, models and services stay with their owners under their own terms ([NOTICE](NOTICE.md)). Models are accessed through the providers' hosted APIs under their own model licences; weights are not redistributed. A commercial deployment needs a licence check.
 
 ## Author and licence
 
-Vikas Sahani ([@VIKAS9793](https://github.com/VIKAS9793)) · [vikassahani17@gmail.com](mailto:vikassahani17@gmail.com) · [MIT License](LICENSE)
+Vikas Sahani ([@VIKAS9793](https://github.com/VIKAS9793)) · [vikassahani17@gmail.com](mailto:vikassahani17@gmail.com) · [GNU AGPL-3.0](LICENSE) · [Third-party notices and AI use](NOTICE.md)

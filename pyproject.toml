@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Dual control for AI agents that move money on PayPal: propose, decide, co-sign, prove"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = { text = "AGPL-3.0-only" }
 authors = [
     { name = "Vikas Sahani", email = "vikassahani17@gmail.com" }
 ]
@@ -16,7 +16,7 @@ keywords = ["ai-agents", "paypal", "policy-gateway", "maker-checker", "security"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

@@ -2,6 +2,7 @@
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -109,3 +110,13 @@ def test_the_landing_page_leads_into_the_app() -> None:
     assert "Try a scenario" in page and "Behind the scenes" in page
     assert "no public way" not in page
     assert get("/approve").status_code == 200
+
+
+def test_the_public_pages_and_the_licence_file_agree() -> None:
+    root = Path(__file__).resolve().parents[2]
+    landing = (root / "agentcosign" / "web" / "index.html").read_text(encoding="utf-8")
+    licence = (root / "LICENSE").read_text(encoding="utf-8")
+    assert "GNU AGPL-3.0" in landing
+    assert "MIT" not in landing
+    assert licence.lstrip().startswith("GNU AFFERO GENERAL PUBLIC LICENSE")
+    assert (root / "NOTICE.md").is_file()
