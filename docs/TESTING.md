@@ -64,9 +64,10 @@ The pre-push hook also refuses force-pushes to and deletion of `main` and `relea
 |---|---|
 | 15 sandbox refunds, each read back from PayPal as COMPLETED (8 on their own, 7 after a passkey approval) | [`evidence/sandbox/refunds-2026-10.md`](evidence/sandbox/refunds-2026-10.md) |
 | PayPal webhook verified end to end on the hosted demo, a fake event refused | [`evidence/sandbox/webhook-2026-10-28.md`](evidence/sandbox/webhook-2026-10-28.md) |
+| Twelve attack styles on the hosted demo, including the one that found a real defect | [`evidence/attacks/live-attacks-2026-10-31.md`](evidence/attacks/live-attacks-2026-10-31.md) |
 | Tamper detection, 7 of 7 cases | [`evidence/ledger/tamper-detection-2026-10-28.md`](evidence/ledger/tamper-detection-2026-10-28.md) |
 
-Every change to the approver app is also run on a real Android phone against the live sandbox before it ships: the merchant unlocks with a fingerprint and the run is driven and captured over USB.
+Changes to the approver app are also run on a real Android phone against the live sandbox: the merchant unlocks with a fingerprint and the run is driven and captured over USB.
 
 ## Acceptance review
 

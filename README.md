@@ -37,6 +37,15 @@
 
 > Built during the **PayPal AI Hackathon 2026** (submission period Oct 1 – Nov 12, 2026). Sandbox only; no real funds.
 
+## What this is, and what it is not
+
+AgentCoSign is a hackathon concept and a learning project. It explores one question: how should an AI assistant be allowed near a refund button?
+
+- **Sandbox only.** It moves no real money and has never run against a live PayPal account.
+- **Not production software.** It has had no independent security review and has not been tried by real merchants.
+- **Not claimed to be unbreakable.** Our own testing kept finding problems, including a real defect on Oct 31 ([what happened](docs/evidence/attacks/live-attacks-2026-10-31.md)). Expect more, and please report what you find.
+- **The numbers below are ours.** They come from small test sets written by the author, so read them as a learning record, not as a measure of real-world safety.
+
 ## How it works
 
 ```mermaid
@@ -97,11 +106,11 @@ More detail: [Architecture](docs/ARCHITECTURE.md) (components, trust boundaries,
 | I want to… | Do this |
 |---|---|
 | See it | [Video (2:28)](https://youtu.be/MBnqli0L1aI) · [Hosted demo](https://agentcosign-demo.onrender.com) (free tier: the first load may take ~60 s, and test data resets when it sleeps) |
-| Try it on the hosted demo (2 minutes) | 1. Open the link on a phone or laptop and set up with your fingerprint, face or PIN: you get your own private test workspace. 2. Press **Try a scenario**: each one creates a real PayPal sandbox order, then a customer message goes through the AI checks and the rules (or write your own message). 3. Switch on **Behind the scenes** in the top bar to watch every backend step live beside the app: PayPal calls with PayPal's own ids, each model's answer, the rules' decision in plain words, the signed record, and an outcome block saying what happened to the money |
+| Try it on the hosted demo (2 minutes) | 1. Open the link on a phone or laptop and set up with your fingerprint, face or PIN: you get your own private test workspace. 2. Press **Try a scenario**: each one creates a real PayPal sandbox order, then a customer message goes through the AI checks and the rules (or write your own message; each visitor gets 8 runs at once, then one every 3 minutes, up to 15 a day). 3. Switch on **Behind the scenes** in the top bar to watch every backend step live beside the app: PayPal calls with PayPal's own ids, each model's answer, the rules' decision in plain words, the signed record, and an outcome block saying what happened to the money |
 | Run it with **no credentials** | `pip install -e ".[dev]" && pytest && uvicorn agentcosign.main:app` or `docker build -t agentcosign . && docker run -p 8000:8000 agentcosign` |
 | Understand the design | [Architecture](docs/ARCHITECTURE.md) · [Threat model](docs/THREAT_MODEL.md) · [Decisions](docs/DECISIONS.md) |
 | Use my own PayPal sandbox | [Testing guide](docs/TESTING.md) and `.env.example` |
-| Review the exact submitted code | Tag `v1.0-submission` (created at freeze) |
+| Review the exact submitted code | Tag `v1.0-submission` |
 
 **Honesty note on modes:** the hosted demo runs live: real PayPal sandbox calls and live AI models. A local run with no keys is "hermetic": the policy engine, approval flow and ledger run as real code, while PayPal execution comes from *recorded real-sandbox evidence*. Each mode is stated in `/health` (`paypal_execution`, `ai_models`) and in the behind-the-scenes panel. Set sandbox keys and `AGENTCOSIGN_PAYPAL_EXECUTION=sandbox` to send refunds to the PayPal sandbox yourself.
 
@@ -118,7 +127,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 | **Checker** | Human on a mobile PWA, passkey co-sign | Approve or reject escalations | Propose on the agent's behalf |
 | **Auditor** | Read-only key | Verify the ledger | Mutate anything |
 
-**Bounded loss, proven by a property test:** auto-executed outflow never exceeds the configured rolling-24h cap, and refunds sent without asking never exceed the auto limit per order, or per customer in 24 hours (defaults $25 / $1,000).
+**Bounded loss, checked by a property test:** within the rules as modelled, money sent without asking stays under the configured rolling-24h cap, and under the auto limit per order, or per customer in 24 hours (defaults $25 / $1,000). This limits how much can go wrong; it does not mean nothing can.
 
 ### Policy rules (limits live in [`config.yaml`](config.yaml); invariants are not configurable)
 
@@ -137,7 +146,7 @@ PayPal's Agent Toolkit exposes money-out tools (`create_refund`, `accept_dispute
 | R11 | Prompt injection detected | DENY + log |
 | R12 | Any error, schema mismatch or unknown tool | DENY (fail closed) |
 | R13 | Currency or account mismatch | DENY |
-| R14 | Agent claims differ from PayPal evidence, or evidence changed before execution | DENY (asks the person again when only refunds or dispute state changed) |
+| R14 | Agent claims differ from PayPal evidence, evidence changed before execution, or the refund is for a different order than the message came in on | DENY (asks the person again when only refunds or dispute state changed) |
 | R15 | Screening unavailable | ESCALATE |
 | R16 | The merchant pressed the emergency stop | DENY every money action; only the merchant's fingerprint turns refunds back on |
 | R17 | Refunds sent without asking would pass the auto limit for the order, or for the customer in 24 h | ESCALATE (one refund cannot be split into several small automatic ones) |
@@ -164,6 +173,7 @@ The approval card shows what the customer asked for as a fixed sentence built fr
 | Policy engine R1–R18 plus execution-drift check: 113-row scenario table, property tests for bounded exposure | ✅ Built and called by the propose route |
 | Ledger (hash chain + HMAC, atomic reservations), PayPal evidence fetcher, idempotent executor with a hard cap just before each PayPal call, retry of unanswered refunds with the same request id, propose and approve API | ✅ Built; sandbox refunds executed end to end from a real phone |
 | Prompt guard, screening and a separate reading of the customer's words in the request path | ✅ Built; measured on 60 labelled threads (see Results) |
+| Messages that try to trick the assistant: checked even when no refund is proposed, recorded, and shown to the merchant | ✅ Built; tested on a real Android phone (Oct 31) |
 | Mobile PWA approver with WebAuthn passkey co-sign (approval bound to the exact refund) | ✅ Built; tested on a real Android phone and in Chrome against the PayPal sandbox |
 | Audit: each refund's own history in the app, checked against the sealed record; a public record head (`/api/v1/audit/head`) and command-line tools to publish and verify it | ✅ Built |
 | A full record browser for auditors | 🚧 Not built |
@@ -172,7 +182,7 @@ The approval card shows what the customer asked for as a fixed sentence built fr
 
 ## Beyond the demo: the merchant's approval app for money going out (direction, not built)
 
-The same design scales into a consumer app for PayPal merchants: the merchant's phone becomes the authenticator for every payment that leaves their account, whoever proposes it.
+An idea for where this could go, untested at any scale: a consumer app for PayPal merchants, where the merchant's phone becomes the authenticator for payments leaving their account, whoever proposes them.
 
 <p align="center">
   <a href="https://corner-grab-62044884.figma.site/#welcome"><img height="56" alt="View the clickable app concept" src="https://img.shields.io/badge/VIEW%20THE%20CLICKABLE%20APP%20CONCEPT-C2410C?style=for-the-badge&logo=figma&logoColor=white"></a>
@@ -192,16 +202,18 @@ What it would take, honestly: PayPal partner onboarding and production review, p
 
 ## Results
 
-AI checks, measured live on 60 labelled synthetic threads (Oct 25; full report and raw results in [`docs/evidence/ai/eval-2026-10-25.md`](docs/evidence/ai/eval-2026-10-25.md)):
+AI checks, measured live on 60 synthetic threads labelled by the author (Oct 25, a small set; full report and raw results in [`docs/evidence/ai/eval-2026-10-25.md`](docs/evidence/ai/eval-2026-10-25.md)):
 
 | Question | Result |
 |---|---|
-| Did any attack move money without the merchant? | **0 of 40**, even with the assistant assumed fully taken over |
+| Did any attack in this set move money without the merchant? | 0 of 40, with the assistant assumed fully taken over. This set did not include the attack that found the Oct 31 defect |
 | Same, with the AI checks switched off (limits only) | 1 of 40 (a $24 refund under the $25 automatic limit) |
-| Did anything go out alone that should have asked the merchant? | **0 of 60** |
+| Did anything in this set go out alone that should have asked the merchant? | 0 of 60 |
 | Genuine customers wrongly flagged as attacks | 0 of 20 |
 | Reading the customer's words (order, amount, currency, reason) | 20 of 20 each; "send it elsewhere" 19 of 20 |
-| Screening alone on held-out attacks | 13 of 19 (68%, 95% CI 46% to 85%): the checks are one layer; the limits and the merchant's approval are what keep money safe when they miss |
+| Screening alone on held-out attacks | 13 of 19 (68%, 95% CI 46% to 85%): the checks are one layer and they miss things; the limits and the merchant's approval reduce what a miss can cost |
+
+Live attacks from a real phone on the hosted demo (Oct 31, 12 styles, written by the author): 10 moved no money; a believable $24 request went out on its own, as designed under the $25 limit; and a $20 refund went out on another customer's order, a real defect, since fixed ([details](docs/evidence/attacks/live-attacks-2026-10-31.md)).
 
 Rules, speed and record measured at commit `cc575fa`; PayPal refunds read back through Oct 29:
 
@@ -248,7 +260,7 @@ This project stands on other people's excellent work. Thank you to the teams beh
   <a href="https://www.anthropic.com/claude-code"><img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-D97757?logo=anthropic&logoColor=white"></a>
 </p>
 
-The official `paypal-agent-toolkit` is an optional extra rather than a dependency: it supports Python below 3.14 only and brings a large dependency tree for the four REST calls we need ([why](docs/ARCHITECTURE.md)).
+The official `paypal-agent-toolkit` is an optional extra rather than a dependency: it supports Python below 3.14 only and brings a large dependency tree for the few REST calls we need ([why](docs/ARCHITECTURE.md)).
 
 ## How this was built (use of AI tools)
 
@@ -257,7 +269,7 @@ Built by one person, Vikas Sahani, with **Claude Code** (Anthropic, Claude Pro p
 - **Owner: decision maker and business problem solver.** Defined the problem and the product (the rules and their limits, when a refund may go out alone, how the merchant's screens read), approved every specification before it was built, and kept every action with real consequences: the PayPal and Groq accounts and keys, Zero Data Retention, the PayPal webhook, deployment, repository visibility, and every passkey approval in testing.
 - **Claude Code: engineering partner, steered by the owner.** Researched options and sources, wrote and revised code, tests and documentation drafts, ran the test suites and drove the browser during acceptance runs while the owner signed. It never held PayPal or model credentials and could not approve anything.
 - **Other AI tools.** The banner and other image assets were generated with ChatGPT (OpenAI). The clickable app concept was generated with Figma Make and is not part of the working product.
-- **Held to the product's own standard.** Every change passes the offline test suite with a coverage floor, lint and type checks, secret scanning and a project checklist on each commit; every safety check is mutation-tested; live sandbox runs were checked by the owner.
+- **Held to the product's own standard.** Every change passes the offline test suite with a coverage floor, lint and type checks, secret scanning and a project checklist on each commit; new safety checks are mutation-tested; live sandbox runs were checked by the owner. None of this replaces an independent review.
 
 ## Develop
 
