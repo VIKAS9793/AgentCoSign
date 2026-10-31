@@ -9,6 +9,9 @@ Edge cases (written before the code):
 | Different order, no order, different amount, no amount | Merchant |
 | Different currency; money asked to go elsewhere | Merchant |
 | Charged twice, earlier refund missing, unrecognised charge, changed mind | Merchant |
+| No clear reason, or no reason read | Merchant |
+| Each plain reason | Allowed |
+| A message whose order is not known | Merchant, never alone |
 | Message could not be read; marked read but nothing came back | Merchant |
 | A reading on its own | Never refuses |
 | No customer message tied to the request | No reading check |
@@ -48,7 +51,16 @@ MISMATCHES = [
     {"reason": "refund_not_received"},
     {"reason": "unrecognised_charge"},
     {"reason": "changed_mind"},
+    {"reason": "other"},
+    {"reason": None},
 ]
+PLAIN = (
+    "not_received",
+    "damaged",
+    "not_as_described",
+    "wrong_item",
+    "subscription_cancelled",
+)
 
 
 def _decide(signals: Signals, **proposal: Any) -> tuple[Decision, tuple[str, ...]]:
@@ -59,7 +71,24 @@ def _decide(signals: Signals, **proposal: Any) -> tuple[Decision, tuple[str, ...
 
 
 def _read(reading: CustomerReading | None) -> Signals:
-    return Signals(reading_status=ReadingStatus.READ, reading=reading)
+    return Signals(
+        reading_status=ReadingStatus.READ, reading=reading, message_order="ORD-1"
+    )
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize("reason", PLAIN)
+def test_each_plain_reason_may_go_alone(reason: str) -> None:
+    decision, _ = _decide(_read(replace(MATCH, reason=reason)))
+    assert decision is Decision.ALLOW
+
+
+@pytest.mark.edge
+def test_a_message_whose_order_is_not_known_never_goes_alone() -> None:
+    signals = replace(_read(MATCH), message_order=None)
+    decision, rules = _decide(signals)
+    assert decision is Decision.ESCALATE
+    assert RULE_CUSTOMER_WORDS in rules
 
 
 @pytest.mark.edge

@@ -118,6 +118,18 @@ UNPROVABLE_REASONS = frozenset(
 )
 
 
+# reasons a plain refund can rest on; anything else, or no clear reason, asks a person
+PLAIN_REASONS = frozenset(
+    {
+        "not_received",
+        "damaged",
+        "not_as_described",
+        "wrong_item",
+        "subscription_cancelled",
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class RuleHit:
     """One rule that fired, with a machine code and a plain-language detail."""
@@ -379,6 +391,8 @@ def _reading_problems(proposal: Proposal, reading: CustomerReading) -> list[str]
         problems.append("the customer asked for the money to go somewhere else")
     if reading.reason in UNPROVABLE_REASONS:
         problems.append("PayPal's record for this order cannot confirm the reason")
+    elif reading.reason not in PLAIN_REASONS:
+        problems.append("the customer gave no clear reason for a refund")
     return problems
 
 
@@ -395,6 +409,8 @@ def _rule_customer_words(case: _Case) -> RuleHit | None:
         problems = _reading_problems(case.proposal, signals.reading)
     else:
         problems = ["the customer's message could not be read"]
+    if signals.message_order is None:
+        problems.append("the order this message came in on is not known")
     if not problems:
         return None
     return _hit(

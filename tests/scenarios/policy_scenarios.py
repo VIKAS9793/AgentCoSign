@@ -152,7 +152,11 @@ def words(**changes: Any) -> dict[str, Any]:
         "wants_other_destination": False,
         **changes,
     }
-    return {"reading_status": ReadingStatus.READ, "reading": CustomerReading(**reading)}
+    return {
+        "reading_status": ReadingStatus.READ,
+        "reading": CustomerReading(**reading),
+        "message_order": "ORD-1",
+    }
 
 
 SCENARIOS: tuple[Scenario, ...] = (

@@ -69,7 +69,7 @@ def _install(env: Env, verdict: str = "clean", asked: str = "10.00") -> _Model:
 
 
 def _message(env: Env, text: str = "Order ORD-1 never came, refund $10") -> str:
-    return str(_gateway(env)._messages.add(text, NOW))
+    return str(_gateway(env)._messages.add(text, NOW, "ORD-1"))
 
 
 def test_matching_words_let_a_small_refund_go_alone(env: Env) -> None:
