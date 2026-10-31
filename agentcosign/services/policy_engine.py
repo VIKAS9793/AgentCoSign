@@ -347,6 +347,21 @@ def _rule_evidence(case: _Case) -> RuleHit | None:
     return _hit(RULE_EVIDENCE, Decision.DENY, "claims_differ", "; ".join(problems))
 
 
+def _rule_message_order(case: _Case) -> RuleHit | None:
+    """A customer's message can only ask about its own order. Naming another
+    order in the text moves nothing: the order comes from where the message came
+    in, and anything else refuses, even under the automatic limit."""
+    order = case.signals.message_order
+    if order is None or order == case.proposal.order_id:
+        return None
+    return _hit(
+        RULE_EVIDENCE,
+        Decision.DENY,
+        "other_order",
+        "The refund is for a different order than the one the message came in on.",
+    )
+
+
 def _reading_problems(proposal: Proposal, reading: CustomerReading) -> list[str]:
     """Where the customer's own words fail to back the proposal exactly."""
     problems: list[str] = []
@@ -577,6 +592,7 @@ RULES: tuple[Rule, ...] = (
     _rule_stopped,
     _rule_scope,
     _rule_evidence,
+    _rule_message_order,
     _rule_injection,
     _rule_screening_down,
     _rule_cumulative,

@@ -121,3 +121,5 @@ class Signals:
     prescreen_hit: bool = False
     reading_status: ReadingStatus = ReadingStatus.NOT_SUPPLIED
     reading: CustomerReading | None = None
+    # the order the message came in on, from intake: never from a model or its words
+    message_order: str | None = None

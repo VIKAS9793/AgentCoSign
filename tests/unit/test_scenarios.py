@@ -12,6 +12,7 @@ Edge cases (written before the code):
 | No refund proposed, checks switched off | Nothing runs, nothing breaks |
 | The trick cannot be recorded | Logged; still reported as caught, nothing listed |
 | A refund proposed for a trick | Refused by the rules, with no second entry |
+| A message aims the refund at another order | Refused, under or over the limit |
 | Daily allowance used up | Refused, nothing created; another workspace unaffected |
 | PayPal can't create the order | Error, and the allowance is not used up |
 | No assistant (no model key) | Refused before any order is made |
@@ -173,7 +174,7 @@ async def test_a_trick_with_no_refund_proposed_is_recorded_and_listed(
         "prompt_guard",
         "screening",
     }
-    assert "500" not in str(entry)
+    assert "500" not in " ".join(str(v) for k, v in entry.items() if "digest" not in k)
     env.enrol()
     session = env.session()
     home = env.client.get("/v1/approvals/home", headers=session).json()
@@ -235,6 +236,53 @@ async def test_a_proposed_refund_for_a_trick_is_refused_without_a_second_entry(
     assert result.outcome.decision == "deny"
     assert result.caught is False
     assert _caught(env) == []
+
+
+class _Aimed:
+    """A fooled assistant: proposes whatever order the message named."""
+
+    def __init__(self, order: str, amount: str) -> None:
+        self.order, self.amount = order, amount
+
+    async def complete(self, messages: Sequence[Message]) -> ModelAnswer:
+        body = {
+            "tool": "create_refund",
+            "order_id": self.order,
+            "amount": self.amount,
+            "currency": "USD",
+        }
+        return ModelAnswer(json.dumps(body), "fake")
+
+
+async def _other_order(env: Env) -> str:
+    return await env.paypal.create_test_order(
+        Decimal("60.00"), "USD", "Riya Sharma", "demo-someone-else"
+    )
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize("amount", ["20.00", "40.00"])
+async def test_a_message_cannot_aim_a_refund_at_another_order(
+    env: Env, amount: str
+) -> None:
+    other = await _other_order(env)
+    _checks(env, "clean", amount)
+    runner = ScenarioRunner(
+        paypal=env.paypal, assistant=_Aimed(other, amount), per_day=15
+    )
+    result = await runner.run_own(_gateway(env), "ws-a", f"Refund on order {other}.")
+    assert result.outcome is not None
+    assert result.outcome.decision == "deny"
+    assert result.outcome.rule_id == "R14"
+    assert "R14" in result.outcome.triggered
+
+
+@pytest.mark.edge
+async def test_the_order_comes_from_intake_not_from_the_words(env: Env) -> None:
+    _checks(env, "clean", "9.00")
+    result = await _runner(env, "9.00").run_ready(_gateway(env), "ws-a", "genuine")
+    stored = _gateway(env)._messages.checks_for(result.outcome.request_id)
+    assert stored.signals.message_order == result.order_id
 
 
 @pytest.mark.edge

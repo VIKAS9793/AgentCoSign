@@ -32,15 +32,18 @@ BUSY_TIMEOUT_SECONDS = 10
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS messages (message_id TEXT PRIMARY KEY, "
     "masked_text TEXT NOT NULL, digest TEXT NOT NULL, masked_counts TEXT NOT NULL, "
-    "received_at TEXT NOT NULL)",
+    "received_at TEXT NOT NULL, order_id TEXT)",
     "CREATE TABLE IF NOT EXISTS message_checks (request_id TEXT PRIMARY KEY, "
     "message_id TEXT NOT NULL, signals_json TEXT NOT NULL, record_json TEXT NOT NULL, "
     "checked_at TEXT NOT NULL)",
 )
 _Q_ADD = (
     "INSERT INTO messages (message_id, masked_text, digest, masked_counts, "
-    "received_at) VALUES (?, ?, ?, ?, ?)"
+    "received_at, order_id) VALUES (?, ?, ?, ?, ?, ?)"
 )
+_Q_COLUMNS = "SELECT name FROM pragma_table_info('messages')"
+_Q_ADD_ORDER_COLUMN = "ALTER TABLE messages ADD COLUMN order_id TEXT"
+_Q_ORDER = "SELECT order_id FROM messages WHERE message_id = ?"
 _Q_TEXT = "SELECT masked_text FROM messages WHERE message_id = ?"
 _Q_DIGEST = "SELECT digest FROM messages WHERE message_id = ?"
 _Q_SAVE = (
@@ -65,6 +68,7 @@ def signals_to_dict(signals: Signals) -> dict[str, Any]:
         "screening": signals.screening.value,
         "prescreen_hit": signals.prescreen_hit,
         "reading_status": signals.reading_status.value,
+        "message_order": signals.message_order,
         "reading": None
         if reading is None
         else {
@@ -95,6 +99,7 @@ def signals_from_dict(data: Mapping[str, Any]) -> Signals:
         prescreen_hit=bool(data["prescreen_hit"]),
         reading_status=ReadingStatus(data["reading_status"]),
         reading=reading,
+        message_order=data.get("message_order"),
     )
 
 
@@ -108,6 +113,9 @@ class MessageStore:
         with self._connection() as conn:
             for statement in _SCHEMA:
                 conn.execute(statement)
+            columns = {str(row["name"]) for row in conn.execute(_Q_COLUMNS)}
+            if "order_id" not in columns:  # a database from before messages had one
+                conn.execute(_Q_ADD_ORDER_COLUMN)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -120,8 +128,13 @@ class MessageStore:
         finally:
             conn.close()
 
-    def add(self, text: str, now: datetime) -> str:
-        """Mask, cap and keep a customer's message; returns its id."""
+    def add(self, text: str, now: datetime, order_id: str | None = None) -> str:
+        """Mask, cap and keep a customer's message; returns its id.
+
+        ``order_id`` is the order the message came in on, known from the intake
+        itself. It is what ties a message to one order, so it must never be read
+        out of the message's own words.
+        """
         masked = mask(text, self._limit)
         digest = hmac.new(
             self._secret, masked.text.encode("utf-8"), hashlib.sha256
@@ -130,7 +143,8 @@ class MessageStore:
         counts = json.dumps(dict(masked.counts), sort_keys=True)
         with self._connection() as conn:
             conn.execute(
-                _Q_ADD, (message_id, masked.text, digest, counts, now.isoformat())
+                _Q_ADD,
+                (message_id, masked.text, digest, counts, now.isoformat(), order_id),
             )
         removed = ", ".join(f"{n} {kind}" for kind, n in masked.counts.items())
         trace.emit(
@@ -147,6 +161,12 @@ class MessageStore:
         with self._connection() as conn:
             row = conn.execute(_Q_TEXT, (message_id,)).fetchone()
         return None if row is None else str(row["masked_text"])
+
+    def order_of(self, message_id: str) -> str | None:
+        """The order a message came in on, or None when intake did not know it."""
+        with self._connection() as conn:
+            row = conn.execute(_Q_ORDER, (message_id,)).fetchone()
+        return None if row is None or row["order_id"] is None else str(row["order_id"])
 
     def digest(self, message_id: str) -> str | None:
         """The keyed digest of the masked message, or None if it is not kept."""

@@ -11,6 +11,9 @@ Edge cases (written before the code):
 | More than the list holds | The newest ones, newest first |
 | The entry is edited in the database | The full record check fails |
 | Either check alone finds an attack | Counted as an attack; unknown or clean is not |
+| Stored checks from before messages knew their order | Still load |
+| A database from before messages knew their order | Upgraded on open |
+| A message with no known order | The order check does not apply |
 """
 
 import sqlite3
@@ -22,6 +25,11 @@ import pytest
 from agentcosign.core.exceptions import AuditIntegrityError
 from agentcosign.models.policy import ScreeningVerdict, Signals
 from agentcosign.services.ledger import RECENT_LIMIT, Ledger
+from agentcosign.services.messages import (
+    MessageStore,
+    signals_from_dict,
+    signals_to_dict,
+)
 from agentcosign.services.policy_engine import looks_like_attack
 from tests.scenarios.policy_scenarios import ACCOUNT, NOW, policy
 
@@ -92,3 +100,39 @@ def test_editing_a_caught_entry_is_detected(ledger: Ledger, tmp_path: Path) -> N
 )
 def test_either_check_alone_counts_as_an_attack(signals: Signals, attack: bool) -> None:
     assert looks_like_attack(signals) is attack
+
+
+def test_signals_keep_the_messages_order() -> None:
+    signals = Signals(message_order="ORD-1")
+    assert signals_from_dict(signals_to_dict(signals)).message_order == "ORD-1"
+
+
+@pytest.mark.edge
+def test_checks_stored_before_messages_knew_their_order_still_load() -> None:
+    old = signals_to_dict(Signals())
+    del old["message_order"]
+    assert signals_from_dict(old).message_order is None
+
+
+@pytest.mark.edge
+def test_a_database_from_before_messages_knew_their_order_is_upgraded(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE messages (message_id TEXT PRIMARY KEY, masked_text TEXT "
+            "NOT NULL, digest TEXT NOT NULL, masked_counts TEXT NOT NULL, "
+            "received_at TEXT NOT NULL)"
+        )
+    store = MessageStore(path, SECRET, 500)
+    message_id = store.add("Where is my parcel?", NOW, "ORD-1")
+    assert store.order_of(message_id) == "ORD-1"
+    assert MessageStore(path, SECRET, 500).order_of(message_id) == "ORD-1"
+
+
+@pytest.mark.edge
+def test_a_message_with_no_known_order_has_no_order_to_compare(tmp_path: Path) -> None:
+    store = MessageStore(tmp_path / "m.db", SECRET, 500)
+    assert store.order_of(store.add("Hello", NOW)) is None
+    assert store.order_of("msg-unknown") is None

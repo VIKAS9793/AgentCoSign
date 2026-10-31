@@ -1275,11 +1275,14 @@ class Gateway:
                 return stored.signals
         return UNCHECKED
 
-    async def keep_message(self, text: str, now: datetime) -> str:
-        """Mask and keep a customer's message; returns its id."""
+    async def keep_message(
+        self, text: str, now: datetime, order_id: str | None = None
+    ) -> str:
+        """Mask and keep a customer's message, tied to the order it came in on;
+        returns its id."""
         if self._messages is None:
             raise FailClosedError("customer messages are not kept here")
-        return await asyncio.to_thread(self._messages.add, text, now)
+        return await asyncio.to_thread(self._messages.add, text, now, order_id)
 
     async def message_text(self, message_id: str) -> str | None:
         """A kept message as stored (masked), or None if unknown."""
@@ -1346,6 +1349,8 @@ class Gateway:
             record = {"checks": "message unknown" if text is None else "checks off"}
         else:
             signals, record = await self._checks.run(text)
+        order = await asyncio.to_thread(self._messages.order_of, proposal.message_id)
+        signals = replace(signals, message_order=order)
         await asyncio.to_thread(
             self._messages.save_checks,
             proposal.request_id,

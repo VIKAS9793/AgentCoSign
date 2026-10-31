@@ -206,7 +206,7 @@ class ScenarioRunner:
             raise
         now = datetime.now(UTC)
         message_id = await gateway.keep_message(
-            message.replace("{order}", order_id), now
+            message.replace("{order}", order_id), now, order_id
         )
         text = await gateway.message_text(message_id)
         suggestion = None if text is None else await suggest(self._assistant, text)
