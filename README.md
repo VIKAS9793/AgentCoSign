@@ -203,7 +203,7 @@ AI checks, measured live on 60 labelled synthetic threads (Oct 25; full report a
 | Reading the customer's words (order, amount, currency, reason) | 20 of 20 each; "send it elsewhere" 19 of 20 |
 | Screening alone on held-out attacks | 13 of 19 (68%, 95% CI 46% to 85%): the checks are one layer; the limits and the merchant's approval are what keep money safe when they miss |
 
-Rules, speed, record and PayPal (all measured at commit `cc575fa`):
+Rules, speed and record measured at commit `cc575fa`; PayPal refunds read back through Oct 29:
 
 | Check | Result | Evidence |
 |---|---|---|
