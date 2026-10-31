@@ -160,7 +160,8 @@ limits:
   # A bucket holds `capacity` requests and gains one every `refill_seconds`.
   public:
     general: { capacity: 60, refill_seconds: 1 }
-    live_llm: { capacity: 5, refill_seconds: 180 }
+    # enough for every ready scenario plus a few of a visitor's own messages
+    live_llm: { capacity: 8, refill_seconds: 180 }
     live_execution: { capacity: 2, refill_seconds: 1800 }
   # Reviewers get roomier buckets and their own reserved daily pools.
   reviewer:
