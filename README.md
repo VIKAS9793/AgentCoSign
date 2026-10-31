@@ -101,13 +101,35 @@ sequenceDiagram
 
 More detail: [Architecture](docs/ARCHITECTURE.md) (components, trust boundaries, state machine, API) · [Threat model](docs/THREAT_MODEL.md) · [Decisions](docs/DECISIONS.md).
 
+## Try the hosted demo: a 5-minute walkthrough
+
+You need a phone or laptop with a screen lock (fingerprint, face or PIN) and a normal browser such as Chrome, Safari or Edge. No account, no PayPal login, no real money.
+
+| Step | Do this | Expect |
+|---|---|---|
+| 1 | Open https://agentcosign-demo.onrender.com, press **Open the app**, and set up with your fingerprint, face or PIN | Your own private test space |
+| 2 | Press **Try a scenario**, then **Genuine small refund** | A real PayPal sandbox refund goes out on its own, with PayPal's reference |
+| 3 | **Refund over your limit**, then **Check and refund**, then confirm with your fingerprint | It waits for you, then PayPal confirms it |
+| 4 | **Fake system message**, then write your own attack in **Or write your own customer message** | Usually refused, or shown as "Looked like a trick". If money moves when it should not, please open an issue with the message you used |
+| 5 | Switch on **Behind the scenes** | Every step of the run: each PayPal call, each AI check, the decision and the signed record |
+
+**If something goes wrong**
+
+| What you see | What to do |
+|---|---|
+| The first load is slow | The free host may be waking up: wait about a minute |
+| The fingerprint prompt does not appear | Open the link in Chrome, Safari or Edge, not inside another app such as LinkedIn, and make sure the device has a screen lock |
+| "This test setup has closed" | The demo restarted and test data was cleared: set up again, it takes about a minute |
+| "You've run several tests in a row" | Each visitor gets 8 runs at once, then one every 3 minutes, up to 15 a day. No money moved |
+| Signed out | Sign-in lasts 10 idle minutes: confirm it's you again |
+
 ## For judges and reviewers (60 seconds)
 
 | I want to… | Do this |
 |---|---|
 | See it | [Video (2:28)](https://youtu.be/MBnqli0L1aI) · [Hosted demo](https://agentcosign-demo.onrender.com) (free tier: the first load may take ~60 s, and test data resets when it sleeps) |
 | Try it on the hosted demo (2 minutes) | 1. Open the link on a phone or laptop and set up with your fingerprint, face or PIN: you get your own private test workspace. 2. Press **Try a scenario**: each one creates a real PayPal sandbox order, then a customer message goes through the AI checks and the rules (or write your own message; each visitor gets 8 runs at once, then one every 3 minutes, up to 15 a day). 3. Switch on **Behind the scenes** in the top bar to watch every backend step live beside the app: PayPal calls with PayPal's own ids, each model's answer, the rules' decision in plain words, the signed record, and an outcome block saying what happened to the money |
-| Run it with **no credentials** | `pip install -e ".[dev]" && pytest && uvicorn agentcosign.main:app` or `docker build -t agentcosign . && docker run -p 8000:8000 agentcosign` |
+| Run it with **no credentials** | `pip install -e ".[dev]" && pytest && uvicorn agentcosign.main:app` or `docker build -t agentcosign . && docker run -p 8000:8000 agentcosign`. This runs the code, tests and API with recorded data; the scenarios and the live experience are on the hosted demo |
 | Understand the design | [Architecture](docs/ARCHITECTURE.md) · [Threat model](docs/THREAT_MODEL.md) · [Decisions](docs/DECISIONS.md) |
 | Use my own PayPal sandbox | [Testing guide](docs/TESTING.md) and `.env.example` |
 | Review the exact submitted code | Tag `v1.0-submission` |
@@ -213,7 +235,7 @@ AI checks, measured live on 60 synthetic threads labelled by the author (Oct 25,
 | Reading the customer's words (order, amount, currency, reason) | 20 of 20 each; "send it elsewhere" 19 of 20 |
 | Screening alone on held-out attacks | 13 of 19 (68%, 95% CI 46% to 85%): the checks are one layer and they miss things; the limits and the merchant's approval reduce what a miss can cost |
 
-Live attacks from a real phone on the hosted demo (Oct 31, 12 styles, written by the author): 10 moved no money; a believable $24 request went out on its own, as designed under the $25 limit; and a $20 refund went out on another customer's order, a real defect, since fixed ([details](docs/evidence/attacks/live-attacks-2026-10-31.md)).
+Live attacks from a real phone on the hosted demo (Oct 31, 12 styles, written by the author): 10 moved no money; a believable $24 request went out on its own, as designed under the $25 limit; and a $20 refund went out on another customer's order, a real defect, fixed and re-tested live. A $24 message pretending to be PayPal also went out on its own, which led to a further change: a message with no clear reason now asks the merchant ([details](docs/evidence/attacks/live-attacks-2026-10-31.md)).
 
 Rules, speed and record measured at commit `cc575fa`; PayPal refunds read back through Oct 29:
 

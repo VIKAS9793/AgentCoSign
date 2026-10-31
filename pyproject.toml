@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentcosign"
-version = "0.1.0"
+version = "1.0.0"
 description = "Dual control for AI agents that move money on PayPal: propose, decide, co-sign, prove"
 readme = "README.md"
 requires-python = ">=3.12"
