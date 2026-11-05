@@ -3,6 +3,7 @@ package com.agentcosign.core.designsystem
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -113,13 +114,24 @@ fun SettingRow(
     }
 }
 
+/**
+ * A row with an on/off switch. The whole row is one control for TalkBack (role Switch),
+ * so the label and its state are read together and the switch is not a second stop.
+ */
 @Composable
 fun ToggleRow(title: String, checked: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
-    SettingRow(title, modifier, onClick = { onChange(!checked) }) {
+    SettingRow(
+        title,
+        modifier.toggleable(value = checked, role = Role.Switch, onValueChange = onChange),
+    ) {
         Switch(
             checked = checked,
-            onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(checkedTrackColor = CoSign.colors.ink),
+            onCheckedChange = null,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = CoSign.colors.ink,
+                uncheckedBorderColor = CoSign.colors.controlBorder,
+                uncheckedThumbColor = CoSign.colors.controlBorder,
+            ),
         )
     }
 }
@@ -185,7 +197,7 @@ fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modi
         onClick = onClick,
         modifier = modifier.heightIn(min = 48.dp),
         shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, CoSign.colors.border),
+        border = BorderStroke(1.dp, CoSign.colors.controlBorder),
         colors = ButtonDefaults.outlinedButtonColors(containerColor = CoSign.colors.surface, contentColor = CoSign.colors.ink),
     ) {
         if (icon != null) {
@@ -196,7 +208,7 @@ fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modi
     }
 }
 
-/** Marks a control whose gateway endpoint does not exist yet, so nobody mistakes it for working. */
+/** Marks a control whose gateway endpoint does not exist yet, so nobody mistakes it for working. Waiting colour on the page meets AA (5.2:1). */
 @Composable
 fun NotBuiltNote(text: String = "Not connected yet. Changes stay on this phone.", modifier: Modifier = Modifier) {
     Text(text, style = MaterialTheme.typography.bodyMedium, color = CoSign.colors.waiting, modifier = modifier.padding(top = 6.dp, start = 2.dp))

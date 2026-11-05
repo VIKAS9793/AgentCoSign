@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -105,7 +108,7 @@ private fun HomeContent(home: HomeSnapshot, onReview: (String) -> Unit, onSettin
         }
         if (home.refundsStopped) {
             item(key = "stopped") {
-                StatusPill("All refunds are stopped", colors.danger, colors.waitingSoft, icon = Icons.Outlined.Pause)
+                StatusPill("All refunds are stopped", colors.danger, colors.dangerSoft, icon = Icons.Outlined.Pause)
             }
         }
         item(key = "period") { Text("Last 24 hours", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp)) }
@@ -197,8 +200,14 @@ private fun Tabs(selected: HomeTab, waiting: Int, onSelect: (HomeTab) -> Unit) {
 private fun TabButton(label: String, icon: ImageVector, selected: Boolean, badge: Int?, modifier: Modifier, onClick: () -> Unit) {
     val colors = CoSign.colors
     val fg = if (selected) colors.surface else colors.ink
-    Surface(modifier.clickable(onClick = onClick), shape = RoundedCornerShape(10.dp), color = if (selected) colors.ink else colors.ground.copy(alpha = 0f)) {
-        Row(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+    Surface(
+        modifier
+            .heightIn(min = 48.dp)
+            .selectable(selected = selected, role = Role.Tab, onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) colors.ink else colors.ground.copy(alpha = 0f),
+    ) {
+        Row(Modifier.padding(vertical = 14.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = fg, modifier = Modifier.size(18.dp))
             Spacer(Modifier.size(8.dp))
             Text(label, color = fg, style = MaterialTheme.typography.labelLarge)
@@ -217,7 +226,14 @@ private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 @Composable
 private fun RequestCard(request: PendingRequest, onClick: () -> Unit) {
     val colors = CoSign.colors
-    Surface(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(14.dp), color = colors.surface, border = BorderStroke(1.dp, colors.border)) {
+    Surface(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClickLabel = "Review", role = Role.Button, onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = colors.surface,
+        border = BorderStroke(1.dp, colors.border),
+    ) {
         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(Modifier.size(36.dp), shape = CircleShape, color = colors.waitingSoft) {
                 Icon(Icons.Outlined.Schedule, null, tint = colors.waiting, modifier = Modifier.padding(8.dp))
@@ -247,9 +263,9 @@ private fun LedgerRow(entry: LedgerEntry) {
         }
         when (entry.outcome) {
             Outcome.REFUNDED -> StatusPill("Refunded", colors.good, colors.goodSoft)
-            Outcome.DECLINED -> StatusPill("Declined", colors.danger, colors.waitingSoft, icon = Icons.Outlined.HighlightOff)
-            Outcome.STOPPED -> StatusPill("Stopped", colors.danger, colors.waitingSoft, icon = Icons.Outlined.Pause)
-            Outcome.EXPIRED -> StatusPill("Expired", colors.muted, colors.border, icon = Icons.Outlined.Schedule)
+            Outcome.DECLINED -> StatusPill("Declined", colors.danger, colors.dangerSoft, icon = Icons.Outlined.HighlightOff)
+            Outcome.STOPPED -> StatusPill("Stopped", colors.danger, colors.dangerSoft, icon = Icons.Outlined.Pause)
+            Outcome.EXPIRED -> StatusPill("Expired", colors.muted, colors.surface, icon = Icons.Outlined.Schedule)
         }
     }
 }

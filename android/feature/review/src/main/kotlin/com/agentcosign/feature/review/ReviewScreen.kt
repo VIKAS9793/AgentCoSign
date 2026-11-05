@@ -32,6 +32,7 @@ import com.agentcosign.core.designsystem.BrandChip
 import com.agentcosign.core.designsystem.CoSign
 import com.agentcosign.core.designsystem.GroupCard
 import com.agentcosign.core.designsystem.GroupDivider
+import com.agentcosign.core.designsystem.MoneyText
 import com.agentcosign.core.designsystem.NotBuiltNote
 import com.agentcosign.core.designsystem.PrimaryButton
 import com.agentcosign.core.designsystem.SecondaryButton
@@ -66,7 +67,7 @@ private fun Ready(state: ReviewUiState.Ready, onDecide: (Decision) -> Unit) {
     val request: PendingRequest = state.request
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text("Refund to ${request.customer}", style = MaterialTheme.typography.headlineMedium)
-        Text(request.amount.display(), style = MaterialTheme.typography.headlineLarge, modifier = Modifier.padding(vertical = 12.dp))
+        MoneyText(request.amount.display(), Modifier.padding(vertical = 12.dp), style = MaterialTheme.typography.headlineLarge)
         GroupCard {
             SettingRow("Customer paid", value = request.paid.display())
             GroupDivider()

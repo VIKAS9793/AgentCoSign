@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- One light theme. forceDarkAllowed stops the system from auto-darkening it,
+         which would break the measured contrast of the colour tokens. -->
+    <style name="Theme.AgentCoSign" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:windowBackground">@color/ground</item>
+    </style>
+</resources>
