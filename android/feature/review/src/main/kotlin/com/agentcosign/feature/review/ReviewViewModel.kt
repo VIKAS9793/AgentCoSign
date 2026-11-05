@@ -6,6 +6,7 @@ import com.agentcosign.core.domain.ApprovalsRepository
 import com.agentcosign.core.model.Decision
 import com.agentcosign.core.model.DecisionResult
 import com.agentcosign.core.model.PendingRequest
+import com.agentcosign.core.model.SeenFigures
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
@@ -53,7 +54,8 @@ class ReviewViewModel @AssistedInject constructor(
         if (ready.deciding) return
         _state.value = ready.copy(deciding = true, refusal = null)
         viewModelScope.launch {
-            when (val result = approvals.decide(requestId, decision)) {
+            val seen = SeenFigures(paid = ready.request.paid, alreadyRefunded = ready.request.alreadyRefunded)
+            when (val result = approvals.decide(requestId, decision, seen)) {
                 is DecisionResult.Done -> _state.value = ReviewUiState.Decided(result)
                 is DecisionResult.Refused -> _state.update { ready.copy(deciding = false, refusal = result.reason) }
             }

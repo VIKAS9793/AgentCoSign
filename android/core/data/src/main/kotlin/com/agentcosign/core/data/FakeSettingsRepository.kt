@@ -1,6 +1,5 @@
 package com.agentcosign.core.data
 
-import com.agentcosign.core.domain.LimitsRule
 import com.agentcosign.core.domain.SettingsRepository
 import com.agentcosign.core.model.Alerts
 import com.agentcosign.core.model.ApproverDevice
@@ -15,7 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-/** In-memory settings. The gateway has no endpoint for these yet. */
+/** In-memory settings matching the gateway defaults in `config.yaml`. */
 class FakeSettingsRepository : SettingsRepository {
 
     private val state = MutableStateFlow(
@@ -39,12 +38,6 @@ class FakeSettingsRepository : SettingsRepository {
     )
 
     override val settings: Flow<Settings> = state.asStateFlow()
-
-    override suspend fun saveLimits(limits: Limits): Result<Unit> {
-        LimitsRule.check(limits)?.let { return Result.failure(it) }
-        state.update { it.copy(limits = limits) }
-        return Result.success(Unit)
-    }
 
     override suspend fun setAlerts(alerts: Alerts) = state.update { it.copy(alerts = alerts) }
 

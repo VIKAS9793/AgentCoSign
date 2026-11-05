@@ -4,6 +4,7 @@ import com.agentcosign.core.model.Decision
 import com.agentcosign.core.model.DecisionResult
 import com.agentcosign.core.model.Money
 import com.agentcosign.core.model.Outcome
+import com.agentcosign.core.model.SeenFigures
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -14,6 +15,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+
+private val SEEN = SeenFigures(paid = Money.usd("40.00"), alreadyRefunded = Money.ZERO)
 
 class FakeApprovalsRepositoryTest {
 
@@ -29,7 +32,7 @@ class FakeApprovalsRepositoryTest {
 
     @Test fun approvingMovesTheRequestToTheLedger() = runTest {
         val repo = repo()
-        val result = repo.decide("req-arjun", Decision.APPROVE)
+        val result = repo.decide("req-arjun", Decision.APPROVE, SEEN)
         assertTrue(result is DecisionResult.Done)
         val home = repo.home.first()
         assertTrue(home.waiting.isEmpty())
@@ -38,35 +41,43 @@ class FakeApprovalsRepositoryTest {
 
     @Test fun rejectingRecordsADecline() = runTest {
         val repo = repo()
-        val result = repo.decide("req-arjun", Decision.REJECT) as DecisionResult.Done
+        val result = repo.decide("req-arjun", Decision.REJECT, SEEN) as DecisionResult.Done
         assertEquals(Outcome.DECLINED, result.entry.outcome)
     }
 
     @Test fun stoppedRefundsRefuseApproval() = runTest {
         val repo = repo()
         repo.setRefundsStopped(true)
-        assertTrue(repo.decide("req-arjun", Decision.APPROVE) is DecisionResult.Refused)
+        assertTrue(repo.decide("req-arjun", Decision.APPROVE, SEEN) is DecisionResult.Refused)
         assertEquals(1, repo.home.first().waiting.size)
     }
 
     @Test fun stoppedRefundsStillAllowReject() = runTest {
         val repo = repo()
         repo.setRefundsStopped(true)
-        assertTrue(repo.decide("req-arjun", Decision.REJECT) is DecisionResult.Done)
+        assertTrue(repo.decide("req-arjun", Decision.REJECT, SEEN) is DecisionResult.Done)
+    }
+
+    @Test fun changedOrderIsRefusedEvenForDecline() = runTest {
+        val repo = repo()
+        val stale = SeenFigures(paid = Money.usd("40.00"), alreadyRefunded = Money.usd("10.00"))
+        val result = repo.decide("req-arjun", Decision.REJECT, stale) as DecisionResult.Refused
+        assertTrue(result.reason.contains("changed"))
+        assertEquals(1, repo.home.first().waiting.size)
     }
 
     @Test fun expiredRequestIsRefused() = runTest {
         val clock = MovableClock(start)
         val repo = FakeApprovalsRepository(clock)
         clock.now = start.plus(Duration.ofHours(5))
-        val result = repo.decide("req-arjun", Decision.APPROVE) as DecisionResult.Refused
+        val result = repo.decide("req-arjun", Decision.APPROVE, SEEN) as DecisionResult.Refused
         assertEquals("The time to decide has passed.", result.reason)
     }
 
     @Test fun decidingTwiceIsRefused() = runTest {
         val repo = repo()
-        repo.decide("req-arjun", Decision.APPROVE)
-        assertTrue(repo.decide("req-arjun", Decision.APPROVE) is DecisionResult.Refused)
+        repo.decide("req-arjun", Decision.APPROVE, SEEN)
+        assertTrue(repo.decide("req-arjun", Decision.APPROVE, SEEN) is DecisionResult.Refused)
     }
 }
 

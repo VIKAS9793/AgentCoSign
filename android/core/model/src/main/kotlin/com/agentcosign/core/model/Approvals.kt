@@ -50,6 +50,14 @@ data class HomeSnapshot(
 /** The owner's decision on one request. */
 enum class Decision { APPROVE, REJECT }
 
+/**
+ * The order figures on the owner's screen when they decided.
+ *
+ * The gateway compares these with PayPal before asking for a fingerprint; if the
+ * order changed, the decision is refused and the owner is shown the new figures.
+ */
+data class SeenFigures(val paid: Money, val alreadyRefunded: Money)
+
 /** What the gateway reports after a decision. */
 sealed interface DecisionResult {
     data class Done(val entry: LedgerEntry) : DecisionResult

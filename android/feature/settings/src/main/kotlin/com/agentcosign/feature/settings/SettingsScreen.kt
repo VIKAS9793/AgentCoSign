@@ -23,7 +23,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.agentcosign.core.designsystem.BrandChip
 import com.agentcosign.core.designsystem.CoSign
@@ -40,16 +40,15 @@ import com.agentcosign.core.model.Settings
 import java.time.Duration
 
 @Composable
-fun SettingsRoute(onBack: () -> Unit, onEditLimits: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
+fun SettingsRoute(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    SettingsScreen(state, onBack, onEditLimits, viewModel::setAlerts, viewModel::setAssistantEnabled)
+    SettingsScreen(state, onBack, viewModel::setAlerts, viewModel::setAssistantEnabled)
 }
 
 @Composable
 internal fun SettingsScreen(
     state: SettingsUiState,
     onBack: () -> Unit,
-    onEditLimits: () -> Unit,
     onAlerts: (Alerts) -> Unit,
     onAssistant: (Boolean) -> Unit,
 ) {
@@ -62,30 +61,30 @@ internal fun SettingsScreen(
         when (state) {
             SettingsUiState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             is SettingsUiState.Error -> Text(state.message, color = CoSign.colors.danger)
-            is SettingsUiState.Success -> SettingsContent(state.settings, onEditLimits, onAlerts, onAssistant)
+            is SettingsUiState.Success -> SettingsContent(state.settings, onAlerts, onAssistant)
         }
     }
 }
 
 @Composable
-private fun SettingsContent(settings: Settings, onEditLimits: () -> Unit, onAlerts: (Alerts) -> Unit, onAssistant: (Boolean) -> Unit) {
+private fun SettingsContent(settings: Settings, onAlerts: (Alerts) -> Unit, onAssistant: (Boolean) -> Unit) {
     val colors = CoSign.colors
     val limits = settings.limits
     Column(Modifier.verticalScroll(rememberScrollState())) {
         SectionHeader("Your limits")
         GroupCard {
-            SettingRow("Refunds on their own up to", value = limits.automaticUpTo.display(), trailing = RowTrailing.CHEVRON, onClick = onEditLimits)
+            SettingRow("Refunds on their own up to", value = limits.automaticUpTo.display())
             GroupDivider()
-            SettingRow("Needs your approval up to", subtitle = "Above this, refunds are refused.", value = limits.approvalUpTo.display(), trailing = RowTrailing.CHEVRON, onClick = onEditLimits)
+            SettingRow("Needs your approval up to", subtitle = "Above this, refunds are refused.", value = limits.approvalUpTo.display())
             GroupDivider()
-            SettingRow("Most per day", value = limits.dailyMost.display(), trailing = RowTrailing.CHEVRON, onClick = onEditLimits)
+            SettingRow("Most per day", value = limits.dailyMost.display())
             GroupDivider()
-            SettingRow("Refunds per customer", value = "${limits.perCustomerCount} in ${hours(limits.perCustomerWindow)}", trailing = RowTrailing.CHEVRON)
+            SettingRow("Refunds per customer", value = "${limits.perCustomerCount} in ${hours(limits.perCustomerWindow)}")
             GroupDivider()
-            SettingRow("Time to decide", value = hours(limits.timeToDecide), trailing = RowTrailing.CHEVRON)
+            SettingRow("Time to decide", value = hours(limits.timeToDecide))
         }
-        Hint("Changing a limit needs your fingerprint.")
-        NotBuiltNote()
+        Hint("Set on your AgentCoSign server.")
+        NotBuiltNote("Changing limits from the phone isn't available yet.")
 
         SectionHeader("Who can suggest refunds")
         GroupCard {

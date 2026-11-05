@@ -103,7 +103,7 @@ fun SettingRow(
             Text(title, style = MaterialTheme.typography.titleMedium.copy(fontSize = MaterialTheme.typography.bodyMedium.fontSize), color = titleColor)
             if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = CoSign.colors.muted)
         }
-        if (value != null) Text(value, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 8.dp))
+        if (value != null) MoneyText(value, Modifier.padding(start = 8.dp))
         end?.invoke()
         when (trailing) {
             RowTrailing.CHEVRON -> Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.padding(start = 6.dp))
@@ -149,7 +149,14 @@ fun StatTile(label: String, value: String, labelColor: Color, modifier: Modifier
                 }
                 Text(label, color = labelColor, style = MaterialTheme.typography.labelLarge)
             }
-            Text(value, style = MaterialTheme.typography.headlineMedium.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize * 1.4f), fontWeight = FontWeight.Bold)
+            Text(
+                value,
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    fontSize = MaterialTheme.typography.titleMedium.fontSize * 1.4f,
+                    fontFeatureSettings = TABULAR_FIGURES,
+                ),
+                fontWeight = FontWeight.Bold,
+            )
             footer?.invoke()
         }
     }
@@ -193,4 +200,13 @@ fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modi
 @Composable
 fun NotBuiltNote(text: String = "Not connected yet. Changes stay on this phone.", modifier: Modifier = Modifier) {
     Text(text, style = MaterialTheme.typography.bodyMedium, color = CoSign.colors.waiting, modifier = modifier.padding(top = 6.dp, start = 2.dp))
+}
+
+/**
+ * Text for an amount or other figure, set with tabular figures so columns line up.
+ * The value is shown as given; this never animates or reformats digits.
+ */
+@Composable
+fun MoneyText(text: String, modifier: Modifier = Modifier, style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.labelLarge) {
+    Text(text, modifier = modifier, style = style.copy(fontFeatureSettings = TABULAR_FIGURES))
 }

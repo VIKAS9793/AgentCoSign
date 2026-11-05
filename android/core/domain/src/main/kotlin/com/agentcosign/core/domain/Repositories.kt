@@ -4,8 +4,8 @@ import com.agentcosign.core.model.Alerts
 import com.agentcosign.core.model.Decision
 import com.agentcosign.core.model.DecisionResult
 import com.agentcosign.core.model.HomeSnapshot
-import com.agentcosign.core.model.Limits
 import com.agentcosign.core.model.PendingRequest
+import com.agentcosign.core.model.SeenFigures
 import com.agentcosign.core.model.Settings
 import kotlinx.coroutines.flow.Flow
 
@@ -17,18 +17,28 @@ interface ApprovalsRepository {
 
     suspend fun request(id: String): PendingRequest?
 
-    /** Decide one request. The real gateway demands a passkey signature bound to [id] and [decision]. */
-    suspend fun decide(id: String, decision: Decision): DecisionResult
+    /**
+     * Decide one request.
+     *
+     * The real gateway demands a passkey signature bound to [id] and [decision], and
+     * refuses when [seen] no longer matches what PayPal reports.
+     *
+     * @param seen the paid and already-refunded figures exactly as shown to the owner.
+     */
+    suspend fun decide(id: String, decision: Decision, seen: SeenFigures): DecisionResult
 
     /** Stop or resume every new refund and approval at once. */
     suspend fun setRefundsStopped(stopped: Boolean)
 }
 
+/**
+ * The owner's settings as the gateway reports them.
+ *
+ * Limits are read-only: they live in the gateway's configuration and no endpoint
+ * changes them, so the phone never edits or validates them.
+ */
 interface SettingsRepository {
     val settings: Flow<Settings>
-
-    /** Replace the limits. Fails with [LimitsRule.Violation] when they do not hold together. */
-    suspend fun saveLimits(limits: Limits): Result<Unit>
 
     suspend fun setAlerts(alerts: Alerts)
 

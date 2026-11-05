@@ -8,6 +8,7 @@ import com.agentcosign.core.model.LedgerEntry
 import com.agentcosign.core.model.Money
 import com.agentcosign.core.model.Outcome
 import com.agentcosign.core.model.PendingRequest
+import com.agentcosign.core.model.SeenFigures
 import java.time.Clock
 import java.time.Duration
 import kotlinx.coroutines.flow.Flow
@@ -34,11 +35,13 @@ class FakeApprovalsRepository(private val clock: Clock) : ApprovalsRepository {
 
     override suspend fun request(id: String): PendingRequest? = state.value.waiting.firstOrNull { it.id == id }
 
-    override suspend fun decide(id: String, decision: Decision): DecisionResult = lock.withLock {
+    override suspend fun decide(id: String, decision: Decision, seen: SeenFigures): DecisionResult = lock.withLock {
         val now = state.value
         val pending = now.waiting.firstOrNull { it.id == id }
             ?: return DecisionResult.Refused("This request is no longer waiting.")
         val refusal = when {
+            seen.paid != pending.paid || seen.alreadyRefunded != pending.alreadyRefunded ->
+                "This order changed since you opened it. Check the new figures."
             decision == Decision.REJECT -> null
             now.refundsStopped -> "Refunds are stopped. Resume them first."
             clock.instant().isAfter(pending.decideBy) -> "The time to decide has passed."

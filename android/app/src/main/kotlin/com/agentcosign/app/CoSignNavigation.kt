@@ -1,6 +1,7 @@
 package com.agentcosign.app
 
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
@@ -22,7 +23,6 @@ import kotlinx.serialization.Serializable
 @Serializable data object Home : NavKey
 @Serializable data class Review(val requestId: String) : NavKey
 @Serializable data object SettingsKey : NavKey
-@Serializable data object EditLimits : NavKey
 
 @Composable
 fun CoSignNavigation() {
@@ -37,16 +37,18 @@ fun CoSignNavigation() {
     NavDisplay(
         backStack = backStack,
         onBack = { back() },
-        entryDecorators = listOf(rememberSaveableStateHolderNavEntryDecorator()),
+        entryDecorators = listOf(
+            rememberSaveableStateHolderNavEntryDecorator(),
+            rememberViewModelStoreNavEntryDecorator(),
+        ),
         entryProvider = entryProvider {
             entry<Welcome> { WelcomeScreen(onGetStarted = { go(ConnectPayPal) }) }
             entry<ConnectPayPal> { ConnectPayPalScreen(onConnect = { go(LimitsSetup) }, onNotNow = { go(LimitsSetup) }, onBack = ::back) }
-            entry<LimitsSetup> { LimitsSetupRoute(onSaved = { go(EnrolPhone) }, onBack = ::back) }
+            entry<LimitsSetup> { LimitsSetupRoute(onContinue = { go(EnrolPhone) }, onBack = ::back) }
             entry<EnrolPhone> { EnrolPhoneScreen(onSetUp = { startAt(Home) }, onNotNow = { startAt(Home) }, onBack = ::back) }
             entry<Home> { HomeRoute(onReview = { go(Review(it)) }, onSettings = { go(SettingsKey) }) }
             entry<Review> { key -> ReviewRoute(key.requestId, onDone = ::back) }
-            entry<SettingsKey> { SettingsRoute(onBack = ::back, onEditLimits = { go(EditLimits) }) }
-            entry<EditLimits> { LimitsSetupRoute(onSaved = ::back, onBack = ::back) }
+            entry<SettingsKey> { SettingsRoute(onBack = ::back) }
         },
     )
 }

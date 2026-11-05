@@ -2,6 +2,8 @@ package com.agentcosign.core.designsystem
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -11,7 +13,10 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-/** Colours taken from the approved mockups: cream ground, green-black ink, rust accent. */
+/**
+ * Colour roles for the app. Light values come from the approved mockups (cream ground,
+ * green-black ink, rust accent); dark values keep the same roles at accessible contrast.
+ */
 @Immutable
 data class CoSignColors(
     val ground: Color = Color(0xFFF3F0E9),
@@ -27,7 +32,28 @@ data class CoSignColors(
     val danger: Color = Color(0xFFA8241B),
 )
 
+/** Dark counterparts of the light roles. Status is never shown by colour alone. */
+val DarkCoSignColors = CoSignColors(
+    ground = Color(0xFF151A17),
+    surface = Color(0xFF1E2420),
+    border = Color(0xFF323A35),
+    ink = Color(0xFFECEAE3),
+    muted = Color(0xFFA7ADA8),
+    accent = Color(0xFFE08A63),
+    good = Color(0xFF7FCB98),
+    goodSoft = Color(0xFF1F3A2A),
+    waiting = Color(0xFFE5B85C),
+    waitingSoft = Color(0xFF3A2F17),
+    danger = Color(0xFFF08A80),
+)
+
 val LocalCoSignColors = staticCompositionLocalOf { CoSignColors() }
+
+/**
+ * Tabular figures, so amounts line up in lists and do not shift width when they change.
+ * Apply to every text that shows money.
+ */
+const val TABULAR_FIGURES = "tnum"
 
 object CoSign {
     val colors: CoSignColors
@@ -44,10 +70,16 @@ private val CoSignTypography = Typography(
     labelMedium = TextStyle(fontSize = 13.sp, lineHeight = 16.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.2.sp),
 )
 
+/**
+ * App theme. Follows the system light or dark setting.
+ *
+ * @param darkTheme whether to use the dark roles; defaults to the system setting.
+ */
 @Composable
-fun CoSignTheme(content: @Composable () -> Unit) {
-    val colors = CoSignColors()
-    val scheme = lightColorScheme(
+fun CoSignTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
+    val colors = if (darkTheme) DarkCoSignColors else CoSignColors()
+    val base = if (darkTheme) darkColorScheme() else lightColorScheme()
+    val scheme = base.copy(
         primary = colors.ink,
         onPrimary = colors.surface,
         secondary = colors.accent,

@@ -2,7 +2,7 @@ package com.agentcosign.core.model
 
 import java.time.Duration
 
-/** The owner's money limits. Every value is checked by [com.agentcosign.core.domain.LimitsRule]. */
+/** The owner's money limits, as configured on the gateway. Shown, never edited, by the app. */
 data class Limits(
     val automaticUpTo: Money,
     val approvalUpTo: Money,
